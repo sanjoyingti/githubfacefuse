@@ -1584,6 +1584,8 @@ class MainActivity : ComponentActivity() {
             if (it == "auto" || it == "on" || it == "off") ModelPaths.setLowMemory(this, it)
         }
         ModelPaths.apply(this)
+        Thermal.init(this)
+        reportLastExit()
         forcedBackend = ModelPaths.forcedBackend(this)
         ncnnGpu = ModelPaths.ncnnGpu(this)
         lowMemory = ModelPaths.lowMemory(this)
@@ -4437,6 +4439,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * If the app's LAST process ended abnormally -- a crash, running out of memory, the
+     * system killing it for heat or CPU -- say so once, in the status line and the log (which
+     * the bug report carries). Before this, "the app closed itself" left nothing to go on.
+     */
+    private fun reportLastExit() {
+        runCatching {
+            val am = getSystemService(android.app.ActivityManager::class.java) ?: return
+            val info = am.getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull()
+                ?: return
+            val prefs = getSharedPreferences("ff_exit", MODE_PRIVATE)
+            if (info.timestamp <= prefs.getLong("seen", 0L)) return
+            prefs.edit().putLong("seen", info.timestamp).apply()
+            val why = when (info.reason) {
+                android.app.ApplicationExitInfo.REASON_CRASH -> "an app error (crash)"
+                android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "a native crash"
+                android.app.ApplicationExitInfo.REASON_ANR -> "not responding (ANR)"
+                android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "running out of memory"
+                android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE ->
+                    "using too much CPU or getting too hot"
+                android.app.ApplicationExitInfo.REASON_SIGNALED -> "being stopped by the system"
+                else -> return
+            }
+            val msg = getString(R.string.status_last_exit, why) +
+                (info.description?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: "")
+            appendLog(msg)
+            status = msg
+        }
+    }
+
     private fun runSwap() {
         if (opts.swapsFace && sourceUri == null) return
         val tgt = targetFile ?: return
@@ -4452,8 +4484,12 @@ class MainActivity : ComponentActivity() {
         // Deletes the PREVIOUS run's file, not merely the reference to it.
         discardOutput()
         preview = null; framesDone = 0; framesTotal = 0; elapsedS = 0.0
+        // Background keep-alive: a foreground notification and a wake lock for the length
+        // of the run, so leaving the app or turning the screen off does not stop it.
+        SwapService.start(this)
 
         lifecycleScope.launch {
+          try {
             // The run owns the pipeline for its whole length, minutes on a long clip. The
             // API server gets 503 for the duration, which is the honest answer.
             if (!PipeGuard.acquire("swap", 5000)) {
@@ -4506,8 +4542,12 @@ class MainActivity : ComponentActivity() {
                         appendLog("content gate: W8A16 build, biased " +
                                   "+${ContentGate.QUANTISED_BIAS} toward refusing")
                     screenSourceList(prepared.bitmaps, "run")?.let { throw ContentGate.Refused(it) }
-                    // The target, sampled across the clip.
-                    ContentGate.inspectClip(tgt).let {
+                    // The target, sampled across the part of the clip this run processes.
+                    ContentGate.inspectClip(
+                        tgt, (trimStartMs * 1000).toLong(),
+                        if (trimEndMs >= durationMs) Long.MAX_VALUE
+                        else (trimEndMs * 1000).toLong(),
+                    ).let {
                         // `detail` is an ARGUMENT, never interpolated into the format
                         // string: it reads "0/11 flagged (0.0%)", and that trailing `%)`
                         // is parsed as a conversion -- UnknownFormatConversionException,
@@ -4565,6 +4605,7 @@ class MainActivity : ComponentActivity() {
                                     else (trimEndMs * 1000).toLong(),
                         onProgress = { done, total ->
                             val now = System.currentTimeMillis()
+                            SwapStatus.done = done; SwapStatus.total = total
                             if (now - lastProgress >= 100 || done >= total) {
                                 lastProgress = now
                                 framesDone = done; framesTotal = total
@@ -4586,7 +4627,8 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onLog = { appendLog(it) },
-                        isCancelled = { cancelRequested },
+                        // The in-app Cancel, or Cancel on the background notification.
+                        isCancelled = { cancelRequested || SwapStatus.cancelRequested },
                     ).swap(tgt!!.absolutePath, out.absolutePath).getOrThrow()
 
                     appendLog("total %.1f s".format((System.currentTimeMillis() - t0) / 1000.0))
@@ -4629,6 +4671,9 @@ class MainActivity : ComponentActivity() {
             NativePipe.release()
             PipeGuard.release()
             busy = false
+          } finally {
+            SwapService.stop()
+          }
         }
     }
 

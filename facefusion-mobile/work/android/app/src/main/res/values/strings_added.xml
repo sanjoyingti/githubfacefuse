@@ -14,6 +14,11 @@
     <string name="opt_keep_mouth_hint">Teeth, tongue and whatever is in the mouth stay as filmed. Best for eating and talking.</string>
     <string name="opt_keep_lips">Keep original lips too</string>
     <string name="opt_keep_lips_hint">The lips also stay as filmed, so the whole mouth is the real one. Most natural while eating or with the mouth wide open; the lips are then the original person\'s, not the source face\'s.</string>
+    <string name="notif_swap_channel">Swap in progress</string>
+    <string name="notif_swap_title">Swapping faces</string>
+    <string name="notif_swap_text">Frame %1$d of %2$d</string>
+    <string name="notif_swap_preparing">Preparing…</string>
+    <string name="status_last_exit">The app closed unexpectedly last time, because of %1$s. If it happens again, try the Fast preset, 30 fps or a shorter trim, and share a bug report (Settings, About).</string>
     <string name="opt_realism">Realism</string>
     <string name="opt_realism_off">off</string>
     <string name="opt_realistic_preset">Most realistic</string>

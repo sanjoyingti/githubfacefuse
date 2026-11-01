@@ -434,8 +434,22 @@ class VideoSwapper(
         var cancelled = false
         // The last output slot already written, for rate conversion. -1 so slot 0 is free.
         var lastSlot = -1L
+        var lastThermal = -1
 
         while (!sawDecodeEOS) {
+            // HEAT: rest between frames once the phone is warm (see Thermal), so a long run
+            // is slowed a little instead of throttled hard or killed by the system.
+            val thermal = Thermal.status()
+            if (thermal != lastThermal) {
+                if (lastThermal >= 0 || Thermal.pauseMs(thermal) > 0)
+                    onLog("phone temperature: ${Thermal.label(thermal)}" +
+                          (if (Thermal.pauseMs(thermal) > 0)
+                               ", resting ${Thermal.pauseMs(thermal)} ms per frame to cool"
+                           else ""))
+                lastThermal = thermal
+            }
+            Thermal.pauseMs(thermal).takeIf { it > 0 }?.let { Thread.sleep(it) }
+
             // Checked before the work, not after, so pressing Cancel stops the next frame
             // rather than finishing it first.
             if (isCancelled()) {

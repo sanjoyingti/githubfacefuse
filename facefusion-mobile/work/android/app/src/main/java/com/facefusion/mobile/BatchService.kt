@@ -64,7 +64,15 @@ object BatchStatus {
  */
 class BatchService : Service() {
 
+    private var wake: android.os.PowerManager.WakeLock? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        runCatching { wake?.takeIf { it.isHeld }?.release() }
+        wake = null
+        super.onDestroy()
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
@@ -73,6 +81,14 @@ class BatchService : Service() {
         }
         createChannel()
         startForeground(NOTIF_ID, build())
+        // The CPU keeps feeding the NPU with the screen off, for the length of the batch.
+        if (wake == null) {
+            wake = (getSystemService(POWER_SERVICE) as android.os.PowerManager)
+                .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "facefusion:batch").apply {
+                    setReferenceCounted(false)
+                    acquire(8 * 60 * 60 * 1000L)
+                }
+        }
         // Poll rather than observe: the state lives in an object the runner writes from a
         // worker thread, and a notification refreshed twice a second is cheaper than any
         // callback plumbing across a service boundary.
