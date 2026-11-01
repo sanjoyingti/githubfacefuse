@@ -86,7 +86,6 @@
       [
         "expo-notifications",
         {
-          "color": "#16A34A",
           "sounds": [
             "./assets/sounds/ringtone.wav"
           ]
