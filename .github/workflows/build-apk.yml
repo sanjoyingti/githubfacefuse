@@ -60,6 +60,8 @@ jobs:
 
           On first launch the app downloads its face models (Settings -> Models).
 
+          The content check is ON, as in the original app: photos and videos flagged as nudity are refused before any processing.
+
           Not yet tested on a phone; built automatically from this commit.
           NOTES
           gh release create "$tag" "$apk" \
