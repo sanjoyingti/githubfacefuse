@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import YoutubePlayer, { PLAYER_STATES, type YoutubeIframeRef } from 'react-native-youtube-iframe';
@@ -65,7 +65,11 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
   const { width } = useWindowDimensions();
   const height = Math.round((width * 9) / 16);
   const player = useRef<YoutubeIframeRef | null>(null);
-  const [playing, setPlaying] = useState(true);
+  // `want` is what we ask the player to do; `isPlaying` is what it is really doing.
+  const [want, setWant] = useState(true);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [started, setStarted] = useState(false); // video has really shown at least one frame
+  const [buffering, setBuffering] = useState(true);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [ended, setEnded] = useState(false);
@@ -76,7 +80,7 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
 
   // Update the progress bar while playing.
   useEffect(() => {
-    if (!playing || !ready) return;
+    if (!isPlaying || !ready) return;
     const t = setInterval(async () => {
       const p = player.current;
       if (!p) return;
@@ -84,17 +88,47 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
       if (!duration) setDuration(await p.getDuration());
     }, 500);
     return () => clearInterval(t);
-  }, [playing, ready, duration]);
+  }, [isPlaying, ready, duration]);
+
+  // If the phone silently refuses to start the video, stop the spinner and show our play button.
+  useEffect(() => {
+    if (!ready || started) return;
+    const t = setTimeout(() => setBuffering(false), 2500);
+    return () => clearTimeout(t);
+  }, [ready, started]);
 
   const onState = (s: PLAYER_STATES) => {
-    if (s === PLAYER_STATES.ENDED) {
-      setPlaying(false);
-      setEnded(true);
-    } else if (s === PLAYER_STATES.PLAYING) {
-      setPlaying(true);
+    if (s === PLAYER_STATES.PLAYING) {
+      setIsPlaying(true);
+      setStarted(true);
+      setBuffering(false);
       setEnded(false);
-    } else if (s === PLAYER_STATES.PAUSED) setPlaying(false);
+      setWant(true);
+    } else if (s === PLAYER_STATES.BUFFERING) {
+      setBuffering(true);
+    } else if (s === PLAYER_STATES.ENDED) {
+      setIsPlaying(false);
+      setBuffering(false);
+      setEnded(true);
+      setWant(false);
+    } else if (s === PLAYER_STATES.PAUSED) {
+      setIsPlaying(false);
+      setBuffering(false);
+      setWant(false);
+    } else if (s === PLAYER_STATES.UNSTARTED || s === PLAYER_STATES.VIDEO_CUED) {
+      setBuffering(false); // phone blocked auto-start: our play button takes over
+    }
   };
+
+  /** Ask the player to play, even if we had already asked before (the phone may have ignored it). */
+  const play = () => {
+    setBuffering(true);
+    if (want) {
+      setWant(false);
+      requestAnimationFrame(() => setWant(true));
+    } else setWant(true);
+  };
+  const pause = () => setWant(false);
 
   const seek = (delta: number) => {
     const t = Math.max(0, Math.min(duration || 1e9, time + delta));
@@ -105,9 +139,10 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
     player.current?.seekTo(0, true);
     setTime(0);
     setEnded(false);
-    setPlaying(true);
+    play();
   };
-  const toggle = () => (ended ? restart() : setPlaying((p) => !p));
+  const toggle = () => (ended ? restart() : isPlaying ? pause() : play());
+  const showPlaying = isPlaying || (want && buffering);
   const pct = duration ? Math.min(100, (time / duration) * 100) : 0;
 
   return (
@@ -120,7 +155,8 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
               height={height}
               width={width}
               videoId={videoId}
-              play={playing}
+              play={want}
+              forceAndroidAutoplay
               playbackRate={speed}
               onReady={() => setReady(true)}
               onChangeState={onState}
@@ -128,15 +164,24 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
               initialPlayerParams={{ controls: false, rel: false, iv_load_policy: 3, preventFullScreen: true }}
               webViewProps={{ allowsFullscreenVideo: false }}
             />
-            {/* Tap anywhere on the video to play/pause */}
+            {/* Our own cover: hides YouTube's red play button, title and suggestions. Tap = play/pause. */}
             <Pressable style={StyleSheet.absoluteFill} onPress={toggle}>
-              {(!playing || ended) && ready && (
+              {(!started || ended) && (
+                <Image source={{ uri: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` }} style={[StyleSheet.absoluteFill, styles.cover]} resizeMode="cover" />
+              )}
+              {started && !ended && !isPlaying && <View style={[StyleSheet.absoluteFill, styles.dim]} />}
+              {want && buffering ? (
                 <View style={styles.centerIcon}>
-                  <Ionicons name={ended ? 'refresh' : 'play'} size={44} color="#fff" />
+                  <ActivityIndicator color="#fff" size="large" />
                 </View>
+              ) : (
+                !isPlaying && (
+                  <View style={styles.centerIcon}>
+                    <Ionicons name={ended ? 'refresh' : 'play'} size={52} color="#fff" style={ended ? undefined : { marginLeft: 6 }} />
+                  </View>
+                )
               )}
             </Pressable>
-            {!ready && <ActivityIndicator color="#fff" size="large" style={StyleSheet.absoluteFill} />}
           </>
         ) : (
           <View style={styles.offline}>
@@ -173,10 +218,10 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
       <View style={styles.controls}>
         <Ctrl icon="play-back" label="Rewind 10s" onPress={() => seek(-10)} />
         <View style={{ alignItems: 'center' }}>
-          <Pressable style={styles.playBtn} onPress={toggle} accessibilityLabel={playing ? 'Pause' : 'Play'}>
-            <Ionicons name={ended ? 'refresh' : playing ? 'pause' : 'play'} size={40} color="#fff" />
+          <Pressable style={styles.playBtn} onPress={toggle} accessibilityLabel={showPlaying ? 'Pause' : 'Play'}>
+            <Ionicons name={ended ? 'refresh' : showPlaying ? 'pause' : 'play'} size={40} color="#fff" />
           </Pressable>
-          <Text style={styles.ctrlLabel}>{ended ? 'Replay' : playing ? 'Pause' : 'Play'}</Text>
+          <Text style={styles.ctrlLabel}>{ended ? 'Replay' : showPlaying ? 'Pause' : 'Play'}</Text>
         </View>
         <Ctrl icon="play-forward" label="Forward 10s" onPress={() => seek(10)} />
       </View>
@@ -213,7 +258,9 @@ function Ctrl({ icon, label, onPress }: { icon: React.ComponentProps<typeof Ioni
 }
 
 const styles = StyleSheet.create({
-  centerIcon: { position: 'absolute', alignSelf: 'center', top: '35%', width: 84, height: 84, borderRadius: 42, backgroundColor: 'rgba(22,163,74,0.9)', alignItems: 'center', justifyContent: 'center' },
+  cover: { backgroundColor: '#000' },
+  dim: { backgroundColor: 'rgba(0,0,0,0.75)' },
+  centerIcon: { position: 'absolute', top: '50%', left: '50%', marginTop: -55, marginLeft: -55, width: 110, height: 110, borderRadius: 55, backgroundColor: 'rgba(22,163,74,0.9)', alignItems: 'center', justifyContent: 'center' },
   offline: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   offlineText: { color: '#e2e8f0', textAlign: 'center', marginTop: 8, fontSize: 15 },
   retry: { marginTop: 12, backgroundColor: colors.primary, paddingHorizontal: 18, height: 42, borderRadius: 21, justifyContent: 'center' },
