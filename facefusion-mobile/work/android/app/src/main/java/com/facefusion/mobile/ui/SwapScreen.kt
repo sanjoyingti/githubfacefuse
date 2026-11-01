@@ -1,0 +1,1829 @@
+package com.facefusion.mobile.ui
+
+import android.graphics.Bitmap
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.facefusion.mobile.FaceDetectorCard
+import com.facefusion.mobile.FaceMaskerCard
+import com.facefusion.mobile.FaceSwapperCard
+import com.facefusion.mobile.BatchItem
+import com.facefusion.mobile.BatchState
+import com.facefusion.mobile.ModelDownload
+import com.facefusion.mobile.OptionSegments
+import com.facefusion.mobile.OptionSlider
+import com.facefusion.mobile.OptionSteps
+import com.facefusion.mobile.ModelPaths
+import com.facefusion.mobile.SwapOptions
+import java.io.File
+import kotlin.math.roundToInt
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import com.facefusion.mobile.R
+import androidx.compose.material.icons.filled.Check
+
+/**
+ * Everything the two preview panes need to draw themselves.
+ *
+ * @Immutable: the fields are all `val` and are treated as never-mutated in place -- a new
+ * fact arrives as a NEW instance, which is how the Activity already builds this. Without
+ * the annotation Compose cannot know that, because `Bitmap` and `FloatArray` are unstable
+ * types, and an unstable argument can never be skipped: every pass of the Activity's scope
+ * (a log line, a progress tick, a preview frame) re-ran the whole screen -- scroll state,
+ * every card, both panes. Kept from #3, which is where the measurement was done.
+ */
+@Immutable
+data class PreviewUi(
+    val original: Bitmap? = null,
+    val swapped: Bitmap? = null,
+    val timeLabel: String = "",
+    /** Whether the pipeline is loaded. Until it is, the swapped pane cannot draw anything. */
+    val warm: Boolean = false,
+    val busy: Boolean = false,
+    /** "No face detected", or an error. Shown in place of the image. */
+    val note: String? = null,
+    /**
+     * What the detector found in [original], five floats per face, in the ORIGINAL's own
+     * pixel coordinates. Null when the overlay is off or nothing has been asked yet.
+     */
+    val faceBoxes: FloatArray? = null,
+    /** The faces that get the lip sync, if any -- drawn green. */
+    val lipReferenceBoxes: List<FloatArray> = emptyList(),
+)
+
+/**
+ * Which trim handle the user is dragging.
+ *
+ * The previews follow the handle under the finger. Before this, both panes always showed
+ * the START frame, so dragging the end handle appeared to do nothing at all -- the
+ * "slider doesn't move the preview" report was this, not a stale pane.
+ */
+enum class TrimEdge { Start, End }
+
+/**
+ * Progress of an actual swap run.
+ *
+ * @Immutable for the same reason as [PreviewUi], and it matters more here: this one is
+ * rebuilt on every progress tick. Paired with the 10 Hz cap in `MainActivity`, which is
+ * the other half -- the annotation lets Compose skip the screen, the cap stops asking it
+ * to 25 times a second.
+ */
+@Immutable
+data class RunUi(
+    val busy: Boolean = false,
+    val preparing: Boolean = false,
+    val progress: Float = 0f,
+    val framesDone: Int = 0,
+    val framesTotal: Int = 0,
+    val elapsedS: Double = 0.0,
+)
+
+@Composable
+fun SwapScreen(
+    sourceThumb: Bitmap?,
+    /** Every source face, in native slot order. Drawn by the shared [SourceRow]. */
+    sourceThumbs: List<Bitmap> = emptyList(),
+    activeSource: Int = 0,
+    onSelectSource: (Int) -> Unit = {},
+    /**
+     * ASSIGN PER PERSON, the Swap screen's own. Live decides by tracking a person through
+     * a sequence of frames; there is no sequence here, so a tap stores the person's
+     * IDENTITY and native matches it on every frame of the run.
+     */
+    assignMode: Boolean = false,
+    /**
+     * The people found when the mode was switched on, in that FROZEN frame's order.
+     *
+     * ⚠ NOT `faceBoxes`' order. Those boxes follow the frame on screen and are
+     * re-scored on every seek; this row is captured once per target precisely so the
+     * detector's per-frame ordering cannot change which face "Person 1" means. The two
+     * agree on the frame the snapshot came from and nowhere else, which is why nothing
+     * indexes one with the other.
+     */
+    personThumbs: List<Bitmap> = emptyList(),
+    selectedPerson: Int = -1,
+    /** person index -> source slot, or -1 for "keeps their own face". */
+    personAssignments: Map<Int, Int> = emptyMap(),
+    keepOriginalBrush: Boolean = false,
+    onKeepOriginal: () -> Unit = {},
+    onToggleAssignMode: () -> Unit = {},
+    onSelectPerson: (Int) -> Unit = {},
+    onClearAssignments: () -> Unit = {},
+    hasSource: Boolean,
+    hasTarget: Boolean,
+    /**
+     * The target is a STILL.
+     *
+     * There is nothing to run: the swapped pane already holds the finished image, at full
+     * resolution and through the same pipeline a run would use. So the Swap button is not
+     * drawn at all -- pressing it would spend seconds reloading the models to produce a
+     * second copy of the picture already on screen.
+     */
+    imageTarget: Boolean,
+    durationMs: Long,
+    trimStartMs: Float,
+    trimEndMs: Float,
+    onTrimChange: (Float, Float, TrimEdge) -> Unit,
+    /** width / height of the target. Below 1 the panes go side by side. */
+    targetAspect: Float,
+    /** The target video's own rate, and the cap on what can be chosen. */
+    inputFps: Int,
+    /** The target's own pixel size, upright. The cap on what output sizes are offered. */
+    targetW: Int,
+    targetH: Int,
+    fmt: (Float) -> String,
+    preview: PreviewUi,
+    run: RunUi,
+    status: String,
+    /**
+     * Whether [status] describes a FAILURE, decided by the Activity rather than re-derived
+     * here.
+     *
+     * This used to be `status.startsWith("Failed")` -- a test on a string that is shown to
+     * the user. Translating the status would have silently removed the bug-report button in
+     * every language but English, which is precisely the language whose users are least
+     * likely to need it.
+     */
+    statusIsError: Boolean,
+    log: String,
+    opts: SwapOptions,
+    onOptsChange: (SwapOptions) -> Unit,
+    hasHyperswap1b: Boolean = false,
+    hasHyperswap1c: Boolean = false,
+    hasEnhancer: Boolean,
+    hasLipSyncer: Boolean,
+    /** The face editor's four files are on disk (ModelPaths.LIVEPORTRAIT). */
+    hasFaceEditor: Boolean = false,
+    /** face_animator's driver video, picked. */
+    hasDriver: Boolean = false,
+    driverName: String? = null,
+    onPickDriver: () -> Unit = {},
+    onClearDriver: () -> Unit = {},
+    /** The PHOTO target's run makes a video (animator, or the talking photo). */
+    photoMakesVideo: Boolean = false,
+    /**
+     * A processor whose model is not on the device was tapped.
+     *
+     * Two arguments: the chip's LABEL, which is localized and only ever shown, and the
+     * MODEL name the downloader knows it by ("gpen", "edtalk"). ⚠ It used to pass the
+     * label alone, which left the prompt's Continue with nothing to ask for but "the
+     * missing set" -- and the missing set excludes exactly these two models by name.
+     */
+    onRequestModel: (label: String, model: String) -> Unit,
+    /** Whether the detector's boxes are drawn over the ORIGINAL pane. */
+    showFaceBoxes: Boolean,
+    /**
+     * Lips pick mode: when true, a tap on a face chooses who gets the lip sync.
+     * The button with the lips icon toggles it. Outside this mode taps on faces
+     * do nothing (who gets swapped is Assign per person's job).
+     */
+    lipPickMode: Boolean = false,
+    onToggleLipPickMode: () -> Unit = {},
+    /** A face tapped while [lipPickMode] is on: the lips target. 2nd tap clears. */
+    onPickLipFace: (Float, Float) -> Unit = { _, _ -> },
+    /** A tap that hit no face box while picking. Says so instead of silence. */
+    onPickLipMiss: () -> Unit = {},
+    /**
+     * The run queue, item one being the VISIBLE target -- roadmap 14.
+     *
+     * Size 1 is the ordinary single-clip screen and draws no queue at all: one source,
+     * many targets is a mode you enter by picking several files, not by finding a switch.
+     */
+    batch: List<BatchItem>,
+    /** Drop a queued clip. Only offered while it is still waiting. */
+    onRemoveFromBatch: (Int) -> Unit,
+    /** Add more clips to the queue, leaving the visible target alone. */
+    onAddToBatch: () -> Unit,
+    /**
+     * Play the target through the pipeline, live -- see [LivePlayerOverlay].
+     *
+     * Always passed, reachable only on dev: the button below is the ONE place the
+     * feature is switched on, and `MainActivity.startPlayer` checks the same flag
+     * again rather than trusting that a button nobody drew cannot be pressed.
+     */
+    onLivePlay: () -> Unit,
+    /** Show a finished batch clip in the output pane, by its index in [batch]. */
+    onOpenBatchOutput: (Int) -> Unit,
+    /**
+     * The output on screen is already in the gallery, put there by the batch's auto-save.
+     *
+     * Hides the Save button rather than disabling it: a greyed control still asks the user
+     * to work out why, and the answer -- "because it is already saved" -- is better said by
+     * the label that replaces it.
+     */
+    outputAutoSaved: Boolean,
+    /** Copy every finished batch clip straight to the gallery. */
+    batchAutoSave: Boolean,
+    onBatchAutoSave: (Boolean) -> Unit,
+    openCard: String,
+    onToggleCard: (String) -> Unit,
+    /** There is something to save: a finished video, or a swapped still on the pane. */
+    hasOutput: Boolean,
+    /** The finished video, for the output pane. Null when the target was a still. */
+    outputFile: File?,
+    /** True when the run was cancelled, so the output is only as long as it got. */
+    outputPartial: Boolean,
+    onSaveFrame: (Int) -> Unit,
+    saved: Boolean,
+    savedPath: String?,
+    onPickSource: () -> Unit,
+    onPickTarget: () -> Unit,
+    /** The lip syncer's driving audio -- see [onPickVoice]'s doc, and `VideoSwapper.voicePath`. */
+    hasVoice: Boolean,
+    voiceName: String?,
+    /** The loaded voice's full length, ms. 0 until a file is loaded. */
+    voiceDurationMs: Long,
+    /**
+     * The part of the voice that drives the lips, ms -- the audio equivalent of
+     * [trimStartMs]/[trimEndMs] on the target. Only this range is decoded for the mouth
+     * and copied into the output's audio track.
+     */
+    voiceTrimStartMs: Float,
+    voiceTrimEndMs: Float,
+    onVoiceTrimChange: (Float, Float) -> Unit,
+    /** Playback of the loaded voice: the playhead position and whether it is running. */
+    voicePosMs: Float,
+    voicePlaying: Boolean,
+    onVoicePlayPause: () -> Unit,
+    onVoiceSeek: (Float) -> Unit,
+    /**
+     * Pick the file that DRIVES the mouth -- deliberately not the target. Only shown once
+     * Lip Sync is on, because syncing a clip to the audio it already has has nothing to
+     * fix: this is upstream's actual use for the feature (dubbing a different voice onto
+     * the target), not a way to verify the target's own performance.
+     */
+    onPickVoice: () -> Unit,
+    onClearVoice: () -> Unit,
+    /** Microphone capture of the driving voice, in-app. */
+    recordingVoice: Boolean,
+    onToggleRecordVoice: () -> Unit,
+    /**
+     * Save the frame currently shown in the SWAPPED pane, as an image.
+     *
+     * Distinct from [onSaveFrame], which takes a position and reads it out of the
+     * FINISHED video. This one needs no argument because the frame is already on
+     * screen, and it works before any run has happened.
+     */
+    onSavePreviewFrame: () -> Unit,
+    onClearSource: () -> Unit,
+    /** Shoot the source face with the camera. Stills only -- a source is an identity. */
+    onCaptureSource: () -> Unit,
+    /** Keep the SHOWN face when the row is next cleared. */
+    onSaveSource: () -> Unit = {},
+    /** Already kept, so the button says so instead of offering it twice. */
+    sourceSaved: Boolean = false,
+    /** Open the kept-faces library. */
+    onOpenFaces: () -> Unit = {},
+    /** Take a still / record a clip with the system camera, as the target. */
+    onCapturePhoto: () -> Unit,
+    onCaptureVideo: () -> Unit,
+    onClearTarget: () -> Unit,
+    /** Delete the rendered file. Confirms first -- see the dialog at the end of this file. */
+    onDeleteOutput: () -> Unit,
+    onSwap: () -> Unit,
+    onCancel: () -> Unit,
+    modelsMissing: Boolean,
+    /** Why the models are missing when it is not simply "never downloaded". */
+    modelsMissingNote: String? = null,
+    onDownload: () -> Unit,
+    onShareLog: () -> Unit,
+    onSave: () -> Unit,
+    onShare: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val idle = !run.busy && !run.preparing
+
+    // Both panes share one height, chosen so the pair fits on screen together with the
+    // controls around them. The reserve is the wordmark, source button, captions, trim,
+    // Swap and the nav bar; whatever is left is split in two.
+    val screenH = LocalConfiguration.current.screenHeightDp
+    // Side-by-side panes are half as wide, so they can afford to be taller: the pair costs
+    // ONE pane's height instead of two, which is the whole reason portrait gets this layout.
+    val paneHeight = if (targetAspect < 1f) (screenH - 400).coerceIn(200, 460).dp
+                     else ((screenH - 470) / 2).coerceIn(140, 320).dp
+
+    // ONE instance for every pane, which is what makes them zoom together (item 4).
+    val zoom = remember { ZoomState() }
+
+    // A source is required only while face_swapper runs (SwapOptions.swapsFace): the
+    // editor, the enhancer or the lip syncer alone works on the target by itself.
+    val sourceReady = hasSource || !opts.swapsFace
+
+    // Which processor's settings sheet is open: "swapper", "enhancer", "lipsync", or null.
+    //
+    // Local and saveable rather than hoisted into MainActivity like [openCard], because it
+    // is transient view state with no bearing on a run -- MainActivity holds what the swap
+    // needs to know, and which sheet is showing is not that. rememberSaveable so a rotation
+    // does not close it mid-adjustment.
+    var settingsFor by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmDeleteOutput by rememberSaveable { mutableStateOf(false) }
+    // The primary action follows you down the page. It is the bottom of a long scroll,
+    // and on a tall phone the top of that scroll is nowhere near it -- so when it is out
+    // of view a copy sits above the tab bar instead. Only a copy: the real one keeps its
+    // place, so nothing moves when you do scroll to it.
+    var actionOnScreen by remember { mutableStateOf(true) }
+    Box(Modifier.fillMaxSize()) {
+    Column(
+        modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // ---------------------------------------------------------------- processors
+        //
+        // Above Advanced, and named the way FaceFusion names them. The enhancer is a
+        // PROCESSOR -- a stage that either runs or does not -- and burying its on/off
+        // switch three taps deep inside "Advanced", next to blend weights and detector
+        // thresholds, filed a yes/no question with the dials. FaceFusion puts the same two
+        // side by side at the top; so does this now.
+        //
+        // face_swapper is drawn selected and is not clickable: this app IS the swapper, and
+        // a control that cannot be turned off should still be visible, because the row is
+        // there to say WHICH stages will run.
+        run {
+            Caption(stringResource(R.string.swap_processors))
+            // Styled after upstream FaceFusion's own web UI, which is what these controls
+            // are a port of: ON is a solid red chip with a white label and a filled darker
+            // circle holding a white tick; OFF is a plain surface chip with a flat grey
+            // disc and no tick. Both colours are sampled from a screenshot of it --
+            // #EF4444 and #DC2626, in ui/Theme.kt.
+            //
+            // Deliberately NOT Material3's default FilterChip look, which says "selected"
+            // with a faint tonal wash and a bare tick. Upstream's row is the thing a user
+            // arriving from the desktop app already knows how to read.
+            @Composable
+            fun ProcessorChip(
+                name: String,
+                /** What the downloader calls this stage's model; "" for one always present. */
+                model: String,
+                installed: Boolean,
+                on: Boolean,
+                available: Boolean,
+                onToggle: () -> Unit,
+                // The gear, drawn INSIDE the chip at its trailing edge. Null for a chip
+                // with nothing to configure; also hidden while the model is missing, where
+                // the chip's job is to offer the download and settings would be settings
+                // for something that cannot run.
+                onSettings: (() -> Unit)? = null,
+            ) {
+                val active = installed && on && available
+                val clickable = idle && (!installed || available)
+                Surface(
+                    onClick = { if (installed) onToggle() else onRequestModel(name, model) },
+                    enabled = clickable,
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (active) FfRed else MaterialTheme.colorScheme.surfaceVariant,
+                    // No border on the red: a solid chip that also has an outline reads as
+                    // two controls stacked.
+                    border = if (active) null
+                             else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Box(
+                            Modifier
+                                .size(18.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    when {
+                                        active -> FfRedDeep
+                                        // A model that is not on the device gets a hollow
+                                        // disc, so "off" and "not installed" are not the
+                                        // same picture. Upstream has no such state.
+                                        !installed -> Color.Transparent
+                                        else -> MaterialTheme.colorScheme.outlineVariant
+                                    }
+                                )
+                                .then(
+                                    if (!installed)
+                                        Modifier.border(1.dp, MaterialTheme.colorScheme.outline,
+                                                        CircleShape)
+                                    else Modifier
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (active) {
+                                Icon(Icons.Default.Check, null, Modifier.size(12.dp),
+                                     tint = Color.White)
+                            } else if (!installed) {
+                                Icon(Icons.Default.Add, null, Modifier.size(12.dp),
+                                     tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Text(
+                            name,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = when {
+                                active -> Color.White
+                                !installed -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> MaterialTheme.colorScheme.onSurface
+                            },
+                            // ⚠ weight(fill = false) is what keeps every gear THE SAME
+                            // SIZE. Row does not wrap, it SQUEEZES, and with two chips
+                            // across a phone the squeeze landed on whichever child had no
+                            // weight -- the icon. So face_swapper and face_enhancer, which
+                            // share a row, drew a visibly smaller gear than lip_syncer,
+                            // which has its row to itself. A weighted child is measured
+                            // with what is LEFT after the unweighted ones, so the label now
+                            // absorbs the shortfall (it ellipsises) and the gear never
+                            // changes size. fill = false so a short label still does not
+                            // stretch the chip.
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        // Its own clickable inside the chip's, which Compose resolves to the
+                        // innermost -- so the gear opens settings and does NOT also toggle
+                        // the stage underneath it. 22 dp of touch target inside a 36 dp
+                        // chip is below the 48 dp guideline, but a chip that grew to hold a
+                        // 48 dp box would no longer fit two across a phone, which is the
+                        // layout constraint this row is already built around.
+                        if (installed && onSettings != null) {
+                            Icon(
+                                Icons.Default.Settings,
+                                stringResource(R.string.swap_proc_settings, name),
+                                Modifier
+                                    .size(18.dp)
+                                    .clip(CircleShape)
+                                    .clickable(enabled = idle) { onSettings() },
+                                tint = if (active) Color.White.copy(alpha = 0.85f)
+                                       else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Two rows of two, upstream's shape. Three chips do not fit across a phone and
+            // Row does not wrap -- it SQUEEZES, so labels lose their shape rather than
+            // moving down, and these are upstream's identifiers.
+            //
+            // 8 dp both ways here, unlike the Material chips this replaces: a Surface has
+            // no enforced 48 dp interactive box padding it out, so the spacing asked for
+            // is the spacing seen.
+            // THE RULES, in one place. Processors are drawn in the order they RUN --
+            // swap or animate, then edit, then lip sync, then enhance -- so what overwrites
+            // what can be read off the screen. Upstream runs any subset; here the swapper
+            // and the animator exclude each other (swapping an animated photo is animating
+            // a different photo), and the last processor on cannot be switched off.
+            val ctx = LocalContext.current
+            fun explicitOn(o: SwapOptions) = listOf(
+                o.swapEnabled && !o.faceAnimate, o.faceAnimate, o.faceEdit, o.lipSync,
+                o.faceEnhance).count { it }
+            fun change(o: SwapOptions) {
+                if (explicitOn(o) == 0) {
+                    android.widget.Toast.makeText(ctx, R.string.swap_last_processor,
+                                                  android.widget.Toast.LENGTH_SHORT).show()
+                    return
+                }
+                onOptsChange(o)
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ProcessorChip(
+                        name = stringResource(R.string.swap_proc_swapper),
+                        // Always installed -- missing() makes it a REQUIRED model, so the
+                        // app never reaches this row without it.
+                        model = "",
+                        installed = true, on = opts.swapsFace, available = true,
+                        onToggle = {
+                            change(if (opts.swapsFace) opts.copy(swapEnabled = false)
+                                   else opts.copy(swapEnabled = true, faceAnimate = false))
+                        },
+                        // Opens with the Face Swapper card already expanded, so the
+                        // weight slider -- the knob most runs actually touch -- is there
+                        // on arrival rather than one tap further in. Only when nothing
+                        // else is open, so a card the user deliberately left open on a
+                        // previous visit is respected.
+                        onSettings = {
+                            settingsFor = "swapper"
+                            if (openCard.isEmpty()) onToggleCard("swapper")
+                        },
+                    )
+                    // A PHOTO target only: it moves a still's face like a driver video's,
+                    // and the run makes a video. The face editor's models.
+                    ProcessorChip(
+                        name = stringResource(R.string.swap_proc_animator),
+                        model = ModelPaths.LIVEPORTRAIT,
+                        installed = hasFaceEditor,
+                        on = opts.faceAnimate,
+                        available = !hasTarget || imageTarget,
+                        onToggle = { change(opts.copy(faceAnimate = !opts.faceAnimate)) },
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Photos AND video, as upstream: a still is one edit, a clip gets the
+                    // same edit on every frame.
+                    ProcessorChip(
+                        name = stringResource(R.string.swap_proc_face_editor),
+                        model = ModelPaths.LIVEPORTRAIT,
+                        installed = hasFaceEditor,
+                        on = opts.faceEdit,
+                        available = true,
+                        onToggle = { change(opts.copy(faceEdit = !opts.faceEdit)) },
+                        onSettings = { settingsFor = "editor" },
+                    )
+                    // A video, or a PHOTO with a voice: the talking photo, a video the
+                    // voice's length (upstream's audio-to-image).
+                    ProcessorChip(
+                        name = stringResource(R.string.swap_proc_lip_syncer),
+                        // edtalk, matching hasLipSyncer -- wav2lip is not offered because
+                        // ffpipe no longer opens it.
+                        model = "edtalk",
+                        installed = hasLipSyncer,
+                        on = opts.lipSync,
+                        available = true,
+                        onToggle = { change(opts.copy(lipSync = !opts.lipSync)) },
+                        onSettings = { settingsFor = "lipsync" },
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ProcessorChip(
+                        name = stringResource(R.string.swap_proc_enhancer),
+                        model = "gpen",
+                        installed = hasEnhancer,
+                        on = opts.faceEnhance,
+                        available = true,
+                        onToggle = { change(opts.copy(faceEnhance = !opts.faceEnhance)) },
+                        onSettings = { settingsFor = "enhancer" },
+                    )
+                }
+            }
+        }
+
+        // The processors' knobs used to sit inline here, each under the chip that turns it
+        // on. They are behind that chip's own GEAR now: with three processors the inline
+        // form pushed the source and target panes off the first screen whenever two stages
+        // were enabled, and the panes are the primary path. They did not move far: one tap,
+        // on the chip they already belong to, instead of a scroll down to Advanced.
+        //
+        // Each still reads and writes the SAME `opts` field it always did, so nothing about
+        // the native side changed -- only where the control is drawn.
+
+        // Only while Lip Sync is ON. It is a
+        // REQUIRED input, not a tuning knob, so it is up here with source/target rather
+        // than in Advanced: the Swap button stays disabled without one (see its `enabled`
+        // below), because syncing a clip to the audio it already has has nothing to fix --
+        // upstream's lip syncer exists to dub a DIFFERENT voice on, and running it on the
+        // target's own track can only cost face quality with no corrective benefit.
+        // face_animator's driver: whose motion the photo takes on. Required while the
+        // animator is on, so it is up here with the other inputs, like the voice.
+        if (opts.faceAnimate && (!hasTarget || imageTarget)) PreviewPane(
+            label = stringResource(R.string.swap_pane_driver),
+            height = 64.dp,
+            bitmap = null,
+            placeholder = if (hasDriver) (driverName ?: stringResource(R.string.swap_driver_picked))
+                          else stringResource(R.string.swap_driver_add),
+            onClick = if (idle && !hasDriver) onPickDriver else null,
+            actionIcon = if (hasDriver) null else Icons.Default.Add,
+        ) {
+            if (hasDriver) {
+                IconButton(onPickDriver, enabled = idle, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Add, stringResource(R.string.swap_choose_another_driver),
+                         Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClearDriver, enabled = idle, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Delete, stringResource(R.string.swap_remove_driver),
+                         Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+
+        if (opts.lipSync) PreviewPane(
+            label = stringResource(R.string.swap_pane_voice),
+            height = 64.dp,
+            bitmap = null,
+            placeholder = if (hasVoice) (voiceName ?: stringResource(R.string.swap_voice_picked))
+                          else stringResource(R.string.swap_voice_add),
+            onClick = if (idle && !hasVoice && !recordingVoice) onPickVoice else null,
+            actionIcon = if (hasVoice) null else Icons.Default.Add,
+        ) {
+            // RECORD, beside the picker. The lip syncer needs a voice that is not the
+            // target's own audio, and until now the only way to give it one was to already
+            // have the file -- so the phone's own microphone, which every user has, was the
+            // one source the feature could not use.
+            IconButton(onToggleRecordVoice, enabled = idle, modifier = Modifier.size(36.dp)) {
+                Icon(painterResource(if (recordingVoice) R.drawable.ic_stop
+                                     else R.drawable.ic_mic),
+                     stringResource(if (recordingVoice) R.string.swap_voice_stop
+                                    else R.string.swap_voice_record),
+                     Modifier.size(20.dp),
+                     tint = if (recordingVoice) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (hasVoice) {
+                IconButton(onPickVoice, enabled = idle, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Add, stringResource(R.string.swap_choose_another_voice),
+                         Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClearVoice, enabled = idle, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Delete, stringResource(R.string.swap_remove_voice),
+                         Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------- voice: listen, trim
+        //
+        // A voice is invisible, so the only way to check what was picked is to hear it.
+        // Play previews exactly the trimmed selection -- it starts at the trim start and
+        // stops at the trim end -- while the seekbar can scrub anywhere in the file. The
+        // range slider below chooses the part that actually DRIVES the lips, and it is the
+        // same two-handle control the video gets, because it is the same decision: keep
+        // only the part that matters.
+        if (opts.lipSync && hasVoice && voiceDurationMs > 0) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onVoicePlayPause, enabled = idle, modifier = Modifier.size(36.dp)) {
+                    if (voicePlaying) {
+                        // Two bars, drawn rather than an icon: the icons artifact this app
+                        // carries (material3's transitive icons-core) has PlayArrow but no
+                        // Pause, and extended-icons is a heavy addition for one glyph.
+                        val pauseTint = MaterialTheme.colorScheme.onSurfaceVariant
+                        Canvas(Modifier.size(16.dp)) {
+                            val bar = 4.dp.toPx()
+                            val gap = 3.dp.toPx()
+                            val top = 0.dp.toPx()
+                            val bottom = size.height
+                            drawRoundRect(
+                                color = pauseTint,
+                                topLeft = Offset(0f, top),
+                                size = Size(bar, bottom - top),
+                                cornerRadius = CornerRadius(1.dp.toPx()),
+                            )
+                            drawRoundRect(
+                                color = pauseTint,
+                                topLeft = Offset(bar + gap, top),
+                                size = Size(bar, bottom - top),
+                                cornerRadius = CornerRadius(1.dp.toPx()),
+                            )
+                        }
+                    } else {
+                        Icon(Icons.Default.PlayArrow,
+                             stringResource(R.string.swap_voice_play),
+                             Modifier.size(20.dp),
+                             tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Slider(
+                    value = voicePosMs.coerceIn(0f, voiceDurationMs.toFloat()),
+                    onValueChange = onVoiceSeek,
+                    valueRange = 0f..voiceDurationMs.toFloat(),
+                    enabled = idle,
+                    modifier = Modifier.weight(1f),
+                )
+                Text("${fmt(voicePosMs)} / ${fmt(voiceDurationMs.toFloat())}",
+                     style = MaterialTheme.typography.bodySmall,
+                     fontFamily = FontFamily.Monospace,
+                     modifier = Modifier.padding(start = 8.dp))
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Caption(stringResource(R.string.swap_voice_trim), Modifier.weight(1f))
+                Text("${fmt(voiceTrimStartMs)} – ${fmt(voiceTrimEndMs)}",
+                     style = MaterialTheme.typography.bodySmall,
+                     fontFamily = FontFamily.Monospace)
+            }
+            RangeSlider(
+                value = voiceTrimStartMs..voiceTrimEndMs,
+                onValueChange = { r ->
+                    // The same minimum span as the video trim, for the same reason: the
+                    // mouth needs a mel window, the encoder needs a frame.
+                    onVoiceTrimChange(r.start, maxOf(r.endInclusive, r.start + 333f))
+                },
+                valueRange = 0f..voiceDurationMs.toFloat(),
+                enabled = idle,
+            )
+            Text(stringResource(R.string.swap_voice_trim_hint),
+                 style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        // ---------------------------------------------------------------- inputs
+        //
+        // The source is a PANE, the same size and shape as the target's. It used to be a
+        // 52 dp thumbnail beside a full-width button, which made the two inputs look like
+        // different kinds of thing -- one a picture, one a command -- when they are the
+        // same kind of thing: an image you choose by tapping its own frame.
+        // EMPTY it is a full-width drop target, the same size and shape as the target's,
+        // because an empty pane is a call to action and has to be easy to hit. FILLED it
+        // collapses -- but in HEIGHT ONLY. The source is one face that never changes during
+        // a run, and a full-height pane was spending a third of the screen restating a
+        // decision already made; that cost was always the vertical one.
+        //
+        // ⚠ It used to collapse in BOTH axes, to a 104 dp square, and the width was pure
+        // loss: the space to its right sat empty while the caption row inside it had to fit
+        // "SOURCE FACE" plus a camera and a delete button into 104 dp, so the label wrapped
+        // onto two lines. The image does not stretch -- PreviewPane draws it
+        // ContentScale.Fit, so a wider box is more room for the caption and more letterbox
+        // around the same picture, at the same aspect ratio.
+        val sourceBox = 104.dp
+        // Only while face_swapper runs: a source is what the swapper swaps IN, and with it
+        // off nothing reads one. Assign per person goes with it, being a choice of source.
+        if (opts.swapsFace) Box(Modifier.fillMaxWidth()) {
+            PreviewPane(
+                label = stringResource(R.string.swap_source_face),
+                height = if (hasSource) sourceBox else paneHeight,
+                bitmap = sourceThumb,
+                placeholder = stringResource(R.string.swap_source_pick),
+                onClick = if (idle) onPickSource else null,
+                actionIcon = if (hasSource) null else Icons.Default.Add,
+                // NOT the shared zoom. The source is a different image from the target, so
+                // panning them together would be a gesture with no meaning.
+                zoom = null,
+            ) {
+                // The kept-faces library, and a way to put this face in it. Left of the
+                // camera, and the library is reachable with NO source loaded -- restoring
+                // one is the whole point of it.
+                IconButton(onOpenFaces, Modifier.size(28.dp)) {
+                    Icon(painterResource(R.drawable.ic_faces),
+                         stringResource(R.string.faces_open), Modifier.size(16.dp))
+                }
+                if (hasSource && idle) {
+                    IconButton(onSaveSource, Modifier.size(28.dp)) {
+                        Icon(painterResource(if (sourceSaved) R.drawable.ic_saved_face
+                                             else R.drawable.ic_save_face),
+                             stringResource(if (sourceSaved) R.string.faces_unsave
+                                            else R.string.faces_save),
+                             Modifier.size(16.dp),
+                             tint = if (sourceSaved) MaterialTheme.colorScheme.primary
+                                    else LocalContentColor.current)
+                    }
+                }
+                // Shoot a face instead of finding one. Stills only: a source is an
+                // identity, and there is no video form of that.
+                if (idle) {
+                    IconButton(onCaptureSource, Modifier.size(28.dp)) {
+                        Icon(painterResource(R.drawable.ic_photo_camera),
+                             stringResource(R.string.swap_capture_source), Modifier.size(16.dp))
+                    }
+                }
+                // Removing the source is not destructive -- it drops a reference to a photo
+                // the user still has -- so unlike the output it does not confirm. With
+                // several sources it removes the one SHOWN, not the list: the pane shows
+                // one face and the button under it has to mean that face.
+                if (hasSource && idle) {
+                    IconButton(onClearSource, Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Delete,
+                             stringResource(R.string.swap_remove_source),
+                             Modifier.size(16.dp))
+                    }
+                }
+            }
+        }
+
+        // EVERY source, under the pane that shows the selected one. The same row Live
+        // draws, from the same list: picking a face on either screen makes it available
+        // on both, which is what one shared list means for the person using it.
+        if (opts.swapsFace) SourceRow(
+            thumbs = sourceThumbs,
+            active = activeSource,
+            keepOriginalBrush = keepOriginalBrush,
+            onSelect = onSelectSource,
+            onKeepOriginal = if (assignMode) onKeepOriginal else null,
+            enabled = idle,
+        )
+
+        // ---- ASSIGN PER PERSON. Video and stills alike: the preview pane swaps
+        // through the warm pipeline either way, and native assignments live on
+        // that pipeline -- so a still honours them exactly like a video frame
+        // does, and the pane IS the result the Save button writes.
+        if (opts.swapsFace && hasTarget && sourceThumbs.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(stringResource(R.string.live_assign_title),
+                         style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(if (assignMode) R.string.swap_assign_on
+                                        else R.string.swap_assign_off),
+                         style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (assignMode && personAssignments.isNotEmpty()) {
+                    TextButton(onClick = onClearAssignments, enabled = idle) {
+                        Text(stringResource(R.string.live_assign_clear))
+                    }
+                }
+                // One source plus "keep the original face" is already useful: it is how
+                // you swap everyone EXCEPT somebody.
+                Switch(checked = assignMode,
+                       onCheckedChange = { onToggleAssignMode() },
+                       enabled = idle)
+            }
+            if (assignMode) {
+                Text(stringResource(if (personThumbs.isEmpty())
+                                        R.string.swap_assign_no_people
+                                    else R.string.swap_assign_hint),
+                     style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    personThumbs.forEachIndexed { index, thumb ->
+                        val label = stringResource(R.string.swap_assign_person, index + 1)
+                        Column(
+                            Modifier.width(72.dp).clickable(enabled = idle) {
+                                onSelectPerson(index)
+                            },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Box {
+                                Image(
+                                    thumb.asImageBitmap(),
+                                    contentDescription = label,
+                                    modifier = Modifier
+                                        .size(62.dp)
+                                        .clip(CircleShape)
+                                        .border(
+                                            BorderStroke(
+                                                if (index == selectedPerson) 3.dp else 1.dp,
+                                                if (index == selectedPerson) FfRed
+                                                else MaterialTheme.colorScheme.outlineVariant,
+                                            ), CircleShape),
+                                    contentScale = ContentScale.Crop,
+                                )
+                                // ROUND faces, SQUARE sources, and a badge saying which
+                                // source each face got -- so the whole mapping is legible
+                                // without tapping anything to find out.
+                                personAssignments[index]?.let { slot ->
+                                    Text(
+                                        if (slot < 0)
+                                            stringResource(R.string.swap_assign_badge_keep)
+                                        else stringResource(
+                                            R.string.swap_assign_badge, slot + 1),
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .background(FfRed, CircleShape)
+                                            .padding(horizontal = 5.dp, vertical = 1.dp),
+                                    )
+                                }
+                            }
+                            Text(label, fontSize = 10.sp, maxLines = 1,
+                                 overflow = TextOverflow.Ellipsis,
+                                 color = if (index == selectedPerson)
+                                             MaterialTheme.colorScheme.onSurface
+                                         else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+        // ---------------------------------------------------------------- previews
+        //
+        // Read as a before/after of ONE frame, so the two are always the same size as each
+        // other. WHICH WAY they stack follows the footage: a portrait clip in two stacked
+        // full-width boxes is mostly empty grey, because ContentScale.Fit letterboxes a
+        // 9:16 image into a 16:9 box and throws away about two thirds of the width. Side by
+        // side, each pane is half as wide and the image fills it.
+        val portrait = targetAspect < 1f
+        val panes: @Composable (Modifier) -> Unit = { paneModifier ->
+            PreviewPane(
+                // "ORIGINAL" is the BEFORE half of a before/after, and there is no before
+                // until a target exists -- an empty box labelled "original" names something
+                // that is not there. So before a target it says TARGET instead, which is
+                // what the pane is ASKING for and the counterpart of SOURCE FACE above.
+                // (It was blank, which left the one pane on the screen with no name at all.)
+                // ⚠ The TIME is dropped when the panes are side by side. A portrait target
+                // puts them there, so each has half the width to fit a caption AND this
+                // pane's three buttons -- and "ORIGINAL AT 0:03" ellipsised to about six
+                // characters says less than "ORIGINAL" does. The time is still under the
+                // trim slider, which is where it is being set.
+                label = when {
+                    !hasTarget -> stringResource(R.string.swap_pane_target)
+                    portrait || preview.timeLabel.isEmpty() ->
+                        stringResource(R.string.swap_pane_original)
+                    else -> stringResource(R.string.swap_pane_original_at, preview.timeLabel)
+                },
+                height = paneHeight,
+                bitmap = preview.original,
+                placeholder = stringResource(when {
+                    run.preparing -> R.string.swap_reading_video
+                    hasTarget -> R.string.swap_seeking
+                    else -> R.string.swap_add_target
+                }),
+                modifier = paneModifier,
+                // ⚠ The pane is the picker ONLY WHILE IT IS EMPTY. Once a target is loaded
+                // the frame belongs to zoom and face selection, and a stray tap that threw
+                // away the clip you were working on -- to open a file browser you can reach
+                // with the + button beside the caption -- was the opposite of what the tap
+                // was for. Empty, it stays tappable: there is nothing else to do with it
+                // and it draws an Add icon saying so.
+                onClick = if (idle && !hasTarget) onPickTarget else null,
+                actionIcon = if (hasTarget) null else Icons.Default.Add,
+                zoom = zoom,
+                // Red candidate boxes only in lips pick mode: the rest of the
+                // time they are visual noise next to the green selection.
+                // Green (the selection itself) always draws when non-empty.
+                faceBoxes = if (lipPickMode) preview.faceBoxes else null,
+                lipReferenceBoxes = preview.lipReferenceBoxes,
+                // Face taps only exist for the lips target, and only while its
+                // pick mode is on: who gets swapped is Assign per person's job.
+                // Works whether or not assign mode is on -- the two selectors
+                // are independent (swapper vs lip syncer).
+                onPickFace = if (showFaceBoxes && idle && lipPickMode) onPickLipFace
+                             else null,
+                onPickMiss = if (showFaceBoxes && idle && lipPickMode) onPickLipMiss
+                             else null,
+            ) {
+                // CAMERA, beside the gallery pick, and shown while the pane is EMPTY --
+                // which is when someone deciding what to swap needs it. Two buttons because
+                // a still and a clip take different routes through the system camera, and
+                // one button that then asks which is a tap for a question the icons answer.
+                if (!hasTarget) {
+                    IconButton(onCapturePhoto, enabled = idle, modifier = Modifier.size(36.dp)) {
+                        Icon(painterResource(R.drawable.ic_photo_camera),
+                             stringResource(R.string.swap_capture_photo), Modifier.size(20.dp),
+                             tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    IconButton(onCaptureVideo, enabled = idle, modifier = Modifier.size(36.dp)) {
+                        Icon(painterResource(R.drawable.ic_videocam),
+                             stringResource(R.string.swap_capture_video), Modifier.size(20.dp),
+                             tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                if (hasTarget) {
+                    // LIPS. Picks who gets the lip sync. Toggles the pick mode;
+                    // a tap on a face adds it, a tap on a green one takes it
+                    // out. Green while on or while faces are listed. The button
+                    // carries the COUNT, so it stays explicit how many faces
+                    // are listed -- green boxes alone proved easy to miss.
+                    val lipCount = preview.lipReferenceBoxes.size
+                    Box {
+                        IconButton(onToggleLipPickMode, enabled = idle,
+                                   modifier = Modifier.size(36.dp)) {
+                            Icon(painterResource(R.drawable.ic_lips),
+                                 stringResource(R.string.swap_lips_pick), Modifier.size(20.dp),
+                                 tint = if (lipPickMode || lipCount > 0)
+                                     Color(0xFF22C55E)
+                                 else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (lipCount > 0) {
+                            Text(
+                                "$lipCount",
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .background(FfRed, CircleShape)
+                                    .padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
+                    }
+                    // Icons rather than the word "Change": two actions fit where one word
+                    // did, and the pane itself is already the picker, so the word was
+                    // saying a third time what the tap and the + icon already say.
+                    IconButton(onPickTarget, enabled = idle, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Add, stringResource(R.string.swap_choose_another_target),
+                             Modifier.size(20.dp),
+                             tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    IconButton(onClearTarget, enabled = idle, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Delete, stringResource(R.string.swap_remove_target),
+                             Modifier.size(20.dp),
+                             tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+
+            // Hidden until BOTH inputs exist. An empty output pane repeats the
+            // instruction the input panes already give, in the same words, and it takes
+            // the height of a whole pane to do it -- so before anything is picked the
+            // screen was two thirds placeholder text.
+            //
+            // `|| modelsMissing` because the download overlay lives on this pane -- it is
+            // the one that cannot draw without the models -- so hiding it unconditionally
+            // would leave a fresh install with no way to fetch them.
+            if ((sourceReady && hasTarget) || modelsMissing) PreviewPane(
+                label = stringResource(if (opts.swapsFace) R.string.swap_pane_swapped
+                                       else R.string.swap_pane_result),
+                height = paneHeight,
+                bitmap = preview.swapped,
+                placeholder = when {
+                    modelsMissing -> ""
+                    // Already a finished, localized sentence from the Activity -- notably
+                    // the content gate's refusal, which must not be rebuilt here.
+                    preview.note != null -> preview.note
+                    preview.busy && !preview.warm ->
+                        stringResource(R.string.swap_loading_models)
+                    preview.busy -> stringResource(R.string.swap_swapping_frame)
+                    !sourceReady -> stringResource(R.string.swap_pick_a_source)
+                    // No "tap refresh" any more: the preview warms itself as soon as both
+                    // inputs exist, so this is a transient state rather than an instruction.
+                    else -> stringResource(R.string.swap_preparing_preview)
+                },
+                modifier = paneModifier,
+                // The download lives here rather than in a bar of its own: this is the pane
+                // that cannot draw anything without the models, so it is where their absence
+                // is already visible.
+                overlay = if (modelsMissing) { { DownloadOverlay(onDownload, modelsMissingNote) } } else null,
+                zoom = zoom,
+            ) {
+                // Spinner WHILE working, save button when there is something to save. Never
+                // both: the fixed slot height in PreviewPane keeps either from moving the
+                // trim slider and the Swap button down the screen mid-interaction.
+                //
+                // The save writes the previewed frame straight out of the pane. The output
+                // pane has had a Save frame button since the video path existed, but it can
+                // only reach frames of a FINISHED run -- so pulling one still out of a clip
+                // meant swapping the whole clip first.
+                if (!preview.busy && preview.swapped != null) {
+                    IconButton(onClick = onSavePreviewFrame, enabled = idle) {
+                        Icon(
+                            IconDownload,
+                            stringResource(R.string.out_save_frame),
+                            Modifier.size(18.dp),
+                        )
+                    }
+                }
+                if (preview.busy) {
+                    CircularProgressIndicator(
+                        Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        if (portrait) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                panes(Modifier.weight(1f))
+            }
+        } else {
+            panes(Modifier)
+        }
+
+        // ---------------------------------------------------------------- trim
+        if (durationMs > 0) {
+            Column {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Caption(stringResource(R.string.swap_clip), Modifier.weight(1f))
+                    Text(
+                        "${fmt(trimStartMs)} – ${fmt(trimEndMs)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                RangeSlider(
+                    value = trimStartMs..trimEndMs,
+                    onValueChange = { r ->
+                        // Which handle moved: RangeSlider reports the whole range, so the
+                        // edge has to be inferred by comparing against what it was. The
+                        // previews then follow the handle under the finger rather than
+                        // always showing the start frame.
+                        val edge = if (r.start != trimStartMs) TrimEdge.Start else TrimEdge.End
+                        // Keep at least a third of a second, so the encoder always gets a frame.
+                        onTrimChange(r.start, maxOf(r.endInclusive, r.start + 333f), edge)
+                    },
+                    valueRange = 0f..durationMs.toFloat(),
+                    enabled = idle,
+                )
+                // The REAL rate, not a hardcoded 30. The estimate was wrong on every
+                // clip that was not 30 fps, and it is the number the ETA is read against.
+                val effFps = if (opts.outputFps in 1..inputFps) opts.outputFps else inputFps
+                val estFrames = ((trimEndMs - trimStartMs) / 1000f * effFps).roundToInt()
+                Text(
+                    stringResource(R.string.swap_clip_summary,
+                                   estFrames, fmt(durationMs.toFloat()), effFps),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                // OUTPUT SETTINGS, behind an accordion. Frame rate and output size are the
+                // same kind of decision -- both trade quality for time and size, both have
+                // a "leave it alone" default that most runs want, and neither is touched
+                // twice in a session. Two open controls between the trim slider and the
+                // Swap button pushed the button off the screen on a short phone for the
+                // sake of settings nobody was changing.
+                Spacer(Modifier.height(6.dp))
+                var outputOpen by rememberSaveable { mutableStateOf(false) }
+                // ⚠ The SOURCE option is named by its own number, not by the word "same".
+                // Sitting in a row that reads 480p / 720p / 1080p, "Same as source" was the
+                // one chip that did not say what it would produce -- and the clip's size is
+                // already on this screen, so there was nothing to look up. A clip whose
+                // short edge is not a familiar number ("606p") still reads honestly, and
+                // the hint underneath carries the full WxH either way.
+                val srcShort = minOf(targetW, targetH)
+                // "Same (960p)": the word says what the choice MEANS and the number says
+                // what it produces. The number alone made the source chip look like one
+                // more fixed size rather than the leave-it-alone option, which is what it
+                // is and what most runs want.
+                val srcName = if (srcShort > 0)
+                                  stringResource(R.string.swap_size_source_at, srcShort)
+                              else stringResource(R.string.swap_size_source)
+                val sizeLabel = if (opts.outputMaxShortEdge > 0)
+                                    opts.outputMaxShortEdge.toString() + "p"
+                                else srcName
+                val rateLabel = if (opts.outputFps in 1..inputFps) opts.outputFps.toString()
+                                else stringResource(R.string.swap_rate_same, inputFps)
+                Accordion(
+                    stringResource(R.string.swap_output_settings),
+                    stringResource(R.string.swap_output_summary, sizeLabel, rateLabel),
+                    outputOpen,
+                    { outputOpen = !outputOpen },
+                ) {
+                // OUTPUT SIZE, on the SHORT edge so the aspect ratio never changes and
+                // "480p" means what it means everywhere else. Only sizes BELOW the clip's
+                // own are offered, for the same reason the frame rate only offers lower
+                // rates: enlarging costs bitrate and adds nothing, because the swapper runs
+                // at 256 whatever the frame is.
+                //
+                // ⚠ It is applied at DECODE, so it makes the RUN faster too -- detector prep
+                // and paste-back scale with frame area, and 4K is ~9x the area of 1080p.
+                // What it cannot do is make a face sharper; that is pixel boost and the
+                // enhancer, and this control must not be mistaken for them.
+                val shortEdge = srcShort
+                val sizes = listOf(480, 720, 1080).filter { it < shortEdge }
+                                .map { it to (it.toString() + "p") } +
+                            listOf(0 to srcName)
+                if (sizes.size > 1) {
+                    OptionSteps(
+                        stringResource(R.string.swap_output_size),
+                        sizes,
+                        if (opts.outputMaxShortEdge in 1 until shortEdge)
+                            opts.outputMaxShortEdge else 0,
+                        { onOptsChange(opts.copy(outputMaxShortEdge = it)) },
+                        hint = if (opts.outputMaxShortEdge in 1 until shortEdge)
+                                   stringResource(R.string.swap_size_hint_smaller)
+                               else if (targetW > 0 && targetH > 0)
+                                   stringResource(R.string.swap_size_hint_source_dims,
+                                                  targetW, targetH)
+                               else stringResource(R.string.swap_size_hint_source),
+                        enabled = idle,
+                    )
+                }
+
+                // Frame rate. Only rates BELOW the input's are offered: a higher one would
+                // duplicate frames, and each duplicate costs a full swap to produce nothing
+                // new. Dropping frames is the only direction that saves anything.
+                //
+                // ⚠ The low stops are the point, and 24/30/60 alone were not enough to be
+                // useful. On a 30 fps clip the deepest cut available was 24 -- a 20% saving
+                // against the CPU backend, which is an order of magnitude slower than the
+                // NPU -- and on a 24 fps clip nothing qualified, so the control hid itself
+                // and offered no reduction at all. 5/10/15 are what make it worth having:
+                // 30 -> 10 is a third of the frames and close to a third of the time,
+                // because VideoSwapper decimates BEFORE the swap rather than after it.
+                //
+                // Ascending, with "same as source" last: the slider then runs from cheapest
+                // on the left to full quality on the right, which is the direction the
+                // trade-off reads in.
+                val rates = listOf(5, 10, 15, 24, 30, 60).filter { it < inputFps }
+                                .map { it to "$it" } +
+                            listOf(0 to stringResource(R.string.swap_rate_same, inputFps))
+                if (rates.size > 1) {
+                    Spacer(Modifier.height(6.dp))
+                    OptionSteps(
+                        stringResource(R.string.swap_frame_rate),
+                        rates,
+                        if (opts.outputFps in 1..inputFps) opts.outputFps else 0,
+                        { onOptsChange(opts.copy(outputFps = it)) },
+                        hint = if (opts.outputFps == 0 || opts.outputFps >= inputFps)
+                                   stringResource(R.string.swap_rate_hint_every)
+                               else stringResource(R.string.swap_rate_hint_drop),
+                        enabled = idle,
+                    )
+                }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------- run
+        // One button, two jobs: a separate Cancel would sit dead for the entire time the
+        // only thing you can do is start a swap.
+        //
+        // A still target has no button at all. The pane above IS the output, so a Swap
+        // button would offer to compute something the user is already looking at, and the
+        // Save button below is the only thing left to do.
+        if (!imageTarget || photoMakesVideo) Button(
+            onClick = if (run.busy) onCancel else onSwap,
+            enabled = run.busy || (idle && sourceReady && hasTarget && !modelsMissing &&
+                                    (!opts.lipSync || hasVoice) &&
+                                    (!(opts.faceAnimate && imageTarget) || hasDriver)),
+            modifier = Modifier.fillMaxWidth().height(52.dp)
+                .reportOnScreen { actionOnScreen = it },
+            // 14.dp everywhere: the stadium default made the two primary buttons the only
+            // fully-round things on a screen of 14.dp panes and cards.
+            shape = RoundedCornerShape(14.dp),
+        ) { Text(stringResource(
+                    if (run.busy) R.string.swap_cancel
+                    else if (batch.size > 1 && !photoMakesVideo) R.string.swap_action_batch
+                    else if (opts.swapsFace) R.string.swap_action
+                    else R.string.swap_action_run,
+                    batch.size),
+                 fontSize = 16.sp) }
+        if (photoMakesVideo && idle) Text(
+            stringResource(R.string.swap_photo_video_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // THE LIVE PLAYER: the target clip through the pipeline at whatever rate the phone
+        // manages, with its own sound, instead of waiting for a whole render. It sits under
+        // Swap because it is an ALTERNATIVE to pressing Swap -- same pipeline, same
+        // options, no output file.
+        //
+        // ⚠ It used to be behind `BuildConfig.DEV_BUILD`, and what took it off that flag is
+        // `MainActivity.startPlayer` growing a check of its own, NOT this condition. A
+        // button drawn or not drawn is an appearance; the guarantee is at the place the
+        // processing starts, which is where the seventh path was added.
+        //
+        // ⚠ A CONTAINER, not bare text. Both of these were TextButtons -- a word floating
+        // under the one real button, with no shape to say they could be pressed at all.
+        // They are TONAL rather than filled, and 46 dp against Swap's 52: there is one
+        // primary action on this screen and these are the two alternatives to it, so they
+        // have to read as buttons without reading as the same button. The theme is
+        // monochrome on purpose, so the weight comes from the secondaryContainer fill and
+        // the 14 dp shape, never from a second accent colour.
+        if (opts.swapsFace && hasSource && hasTarget && !imageTarget && idle &&
+            !modelsMissing) {
+            // ⚠ DISABLED once a QUEUE exists. The player runs the one visible clip, and
+            // Swap next to it would run all of them -- so with a queue built the two
+            // buttons stop being alternatives and the player silently becomes "preview the
+            // first one". Left DRAWN rather than hidden: a control that vanishes when you
+            // add a clip reads as a bug, and the caption says which it is.
+            val queued = batch.size > 1
+            FilledTonalButton(
+                onLivePlay,
+                enabled = !queued,
+                modifier = Modifier.fillMaxWidth().height(46.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.player_action))
+            }
+            if (queued) Text(
+                stringResource(R.string.player_batch_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // HOW THE QUEUE IS FOUND. Picking several files at once still builds it, but that
+        // needs a long-press in the system picker and is invisible to anyone who does not
+        // already know -- which is exactly what the first field report said. One text
+        // button, under the Swap button, only while a video target is loaded.
+        if (hasTarget && !imageTarget && idle) {
+            FilledTonalButton(
+                onAddToBatch,
+                modifier = Modifier.fillMaxWidth().height(46.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(if (batch.size > 1) R.string.swap_batch_add_more
+                                    else R.string.swap_batch_add))
+            }
+        }
+
+        // THE QUEUE, whenever one exists -- down to a single row.
+        //
+        // ⚠ It used to draw only at size > 1, which paired with a runner that collapsed the
+        // list at one item to make deleting from a two-clip queue look like a button that
+        // wiped everything. A queue is only ever non-empty because the user built one, so a
+        // one-row card is not furniture: it is the last clip they queued, still there.
+        if (batch.isNotEmpty()) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    // AUTO-SAVE, at the top of the queue rather than in a settings screen:
+                    // it is a decision about THIS run, taken while looking at the list it
+                    // applies to. Remembered, because a batch is unattended by nature and
+                    // re-ticking it every time defeats the point of leaving one running.
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = idle) { onBatchAutoSave(!batchAutoSave) }
+                            .padding(start = 6.dp, end = 14.dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(batchAutoSave, { onBatchAutoSave(it) }, enabled = idle)
+                        Text(stringResource(R.string.batch_autosave),
+                             style = MaterialTheme.typography.bodySmall)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    batch.forEachIndexed { i, item ->
+                        if (i > 0) HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant)
+                        Row(
+                            Modifier.fillMaxWidth()
+                                // A finished row IS the way back to its clip. Only when
+                                // there is something to open: a waiting row that reacted to
+                                // a tap by doing nothing would read as broken.
+                                .clickable(enabled = idle && item.output != null) {
+                                    onOpenBatchOutput(i)
+                                }
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // The thumbnail is the row's identity: twelve filenames from one
+                            // camera roll look alike, and one frame of the swapped result
+                            // says both WHICH clip this is and what came out of it.
+                            if (item.thumb != null) {
+                                Image(
+                                    item.thumb!!.asImageBitmap(), null,
+                                    Modifier
+                                        .size(44.dp, 30.dp)
+                                        .clip(RoundedCornerShape(4.dp)),
+                                    contentScale = ContentScale.Crop,
+                                )
+                                Spacer(Modifier.width(10.dp))
+                            }
+                            Column(Modifier.weight(1f)) {
+                                Text(item.name, style = MaterialTheme.typography.bodySmall,
+                                     maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                // A refusal says so in the gate's own words. It is not an
+                                // error and must not read like one -- see BatchState.
+                                if (item.detail != null) Text(
+                                    item.detail!!,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 10.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (item.state == BatchState.Refused)
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            else MaterialTheme.colorScheme.error,
+                                )
+                            }
+                            Text(
+                                stringResource(when (item.state) {
+                                    BatchState.Waiting -> R.string.batch_waiting
+                                    BatchState.Running -> R.string.batch_running
+                                    BatchState.Done -> R.string.batch_done
+                                    BatchState.Refused -> R.string.batch_refused
+                                    BatchState.Failed -> R.string.batch_failed
+                                    BatchState.Skipped -> R.string.batch_skipped
+                                }),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = when (item.state) {
+                                    BatchState.Done -> FfRed
+                                    BatchState.Failed -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                            // EVERY row, in every state. Restricting the bin to
+                            // `Waiting` meant that once a batch had run, nothing in the
+                            // list could be removed at all -- the rows are all Done by
+                            // then, which is exactly when a user wants to clear them out.
+                            if (idle) {
+                                IconButton({ onRemoveFromBatch(i) },
+                                           modifier = Modifier.size(32.dp)) {
+                                    Icon(Icons.Default.Delete,
+                                         stringResource(R.string.batch_remove),
+                                         Modifier.size(16.dp),
+                                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (run.busy || run.progress > 0f) {
+            LinearProgressIndicator(
+                progress = { run.progress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (run.framesTotal > 0) {
+                val fps = if (run.elapsedS > 0) run.framesDone / run.elapsedS else 0.0
+                val eta = if (fps > 0) (run.framesTotal - run.framesDone) / fps else 0.0
+                Text(
+                    stringResource(R.string.swap_progress, run.framesDone, run.framesTotal,
+                                   "%.1f".format(fps), eta.toInt()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        // Only when there is something to report. It used to carry a standing
+        // instruction, which the two empty preview panes above already give.
+        if (status.isNotEmpty()) {
+            Text(status, style = MaterialTheme.typography.bodyMedium)
+            // Only on a failure. A crash leaves no in-app log at all, which is why
+            // BugReport also persists uncaught exceptions for the next launch.
+            if (statusIsError) {
+                TextButton(onShareLog) { Text(stringResource(R.string.swap_share_bug_report)) }
+            }
+        }
+
+        // ---------------------------------------------------------------- output
+        //
+        // The result was previously invisible in the app: Save and Share, and no way to see
+        // what you were about to save. A video gets a player with a scrub bar; an image
+        // result is a still, which is all there is to show.
+        if (outputFile != null) {
+            // SWIPE BETWEEN BATCH RESULTS. The indices of everything finished, and where
+            // the pane currently sits in that list.
+            val doneIx = batch.indices.filter { batch[it].output != null }
+            val cur = doneIx.indexOfFirst { batch[it].output == outputFile }
+            var drag by remember(outputFile) { mutableStateOf(0f) }
+            Box(
+                Modifier.pointerInput(doneIx.size, cur) {
+                    if (doneIx.size < 2 || cur < 0) return@pointerInput
+                    // ⚠ HORIZONTAL only, and accumulated to a threshold rather than acted
+                    // on per event. detectHorizontalDragGestures ignores a vertical-dominant
+                    // drag, so the page still scrolls with a finger on the video -- which
+                    // matters, because this pane is most of the screen.
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            val step = if (drag < -60f) 1 else if (drag > 60f) -1 else 0
+                            drag = 0f
+                            if (step != 0)
+                                doneIx.getOrNull(cur + step)?.let(onOpenBatchOutput)
+                        },
+                        onDragCancel = { drag = 0f },
+                    ) { change, amount -> drag += amount; change.consume() }
+                }
+            ) {
+                OutputPane(
+                    file = outputFile,
+                    height = paneHeight,
+                    onSaveFrame = onSaveFrame,
+                    partial = outputPartial,
+                    enabled = idle,
+                )
+            }
+            // Says the swipe exists. A gesture with nothing on screen to suggest it is a
+            // gesture only its author knows about -- which is what the batch queue itself
+            // had just been.
+            if (doneIx.size > 1 && cur >= 0) {
+                Text(
+                    stringResource(R.string.batch_output_of, cur + 1, doneIx.size),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+
+        if (hasOutput) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // Auto-save already put this clip in the gallery, so there is nothing to
+                // offer -- just a line saying where it went. Share stays: sending it
+                // somewhere is a different action from keeping it.
+                if (outputAutoSaved) {
+                    Text(
+                        stringResource(R.string.swap_autosaved_to_gallery),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                } else {
+                    Button(onSave, enabled = idle, modifier = Modifier.weight(1f),
+                           shape = RoundedCornerShape(14.dp)) {
+                        Text(stringResource(if (saved) R.string.swap_saved_to_gallery
+                                            else R.string.swap_save_to_gallery))
+                    }
+                }
+                OutlinedButton(onShare, enabled = idle,
+                               shape = RoundedCornerShape(14.dp)) {
+                        Text(stringResource(R.string.swap_share))
+                    }
+                // Deleting a render IS destructive -- minutes of NPU time, and the file is
+                // gone from the phone -- so this one asks, unlike the source and target
+                // buttons, which only drop a reference to a file the user still has.
+                //
+                // ⚠ VIDEO ONLY, and that is not an oversight. A still has no output file:
+                // its result is the swapped PANE, regenerated from the source and target
+                // whenever both are present. The button was shown for stills too and did
+                // nothing at all -- discardOutput() deletes outputFile, which is null on
+                // that path -- so it confirmed and then visibly ignored the answer.
+                //
+                // Clearing the pane instead would be worse, not better: the autowarm effect
+                // would redraw it within the same second. The way to get rid of a still's
+                // result is to remove the target, which has its own button on its own pane.
+                if (outputFile != null) {
+                    OutlinedButton({ confirmDeleteOutput = true }, enabled = idle,
+                                   shape = RoundedCornerShape(14.dp)) {
+                        Icon(Icons.Default.Delete, stringResource(R.string.out_delete),
+                             Modifier.size(18.dp))
+                    }
+                }
+            }
+            if (savedPath != null)
+                Text(
+                    savedPath,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+        }
+
+        // ---------------------------------------------------------------- log
+        //
+        // Collapsible, kept from #3. Open by default: the log is how a failing run explains
+        // itself, and a bug report carries it -- so it costs a tap to hide, not a tap to
+        // find. rememberSaveable like the other foldables, so a rotation does not reopen a
+        // box the user just shut.
+        var logOpen by rememberSaveable { mutableStateOf(true) }
+        if (log.isNotEmpty()) LogBox(log, logOpen, { logOpen = !logOpen })
+
+        Spacer(Modifier.height(8.dp))
+    }
+
+        // The pinned copy. Same handler, same enablement, same words -- a second button
+        // that could disagree with the first would be worse than no second button.
+        if ((!imageTarget || photoMakesVideo) && !actionOnScreen) Surface(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
+            tonalElevation = 3.dp,
+            shadowElevation = 8.dp,
+        ) {
+            Button(
+                onClick = if (run.busy) onCancel else onSwap,
+                enabled = run.busy || (idle && sourceReady && hasTarget && !modelsMissing &&
+                                        (!opts.lipSync || hasVoice) &&
+                                        (!(opts.faceAnimate && imageTarget) || hasDriver)),
+                modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text(stringResource(
+                        if (run.busy) R.string.swap_cancel
+                        else if (batch.size > 1 && !photoMakesVideo) R.string.swap_action_batch
+                        else if (opts.swapsFace) R.string.swap_action
+                        else R.string.swap_action_run,
+                        batch.size),
+                     fontSize = 16.sp) }
+        }
+    }
+
+    if (confirmDeleteOutput) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteOutput = false },
+            title = { Text(stringResource(R.string.out_delete_title)) },
+            text = { Text(stringResource(R.string.out_delete_body)) },
+            confirmButton = {
+                TextButton({ confirmDeleteOutput = false; onDeleteOutput() }) {
+                    Text(stringResource(R.string.common_delete))
+                }
+            },
+            dismissButton = {
+                TextButton({ confirmDeleteOutput = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            },
+        )
+    }
+
+    // ---------------------------------------------------------------- settings sheets
+    //
+    // What used to be the Advanced accordion, split by the processor each group belongs to
+    // and hung off that processor's own gear. Advanced sat below the trim slider and the
+    // Swap button, so reaching a mask blur meant scrolling PAST the control that starts the
+    // run -- and every group in it was reached the same way regardless of which stage it
+    // configured.
+    //
+    // ⚠ Face Masker and Face Detector are NOT the swapper's own settings: the masker is
+    // shared with the lip syncer (one BoxMaskCache serves both, see Pipeline::Impl) and the
+    // detector feeds every stage. They live behind the swapper's gear because face_swapper
+    // is the one processor that is always on, so its gear is the one that can always be
+    // reached -- not because they belong to it. Anything added here that a second stage
+    // also reads deserves the same note.
+    val sheet = settingsFor
+    if (sheet != null) {
+        AlertDialog(
+            onDismissRequest = { settingsFor = null },
+            confirmButton = {
+                TextButton({ settingsFor = null }) { Text(stringResource(R.string.swap_close)) }
+            },
+            title = {
+                Text(stringResource(when (sheet) {
+                    "enhancer" -> R.string.swap_proc_enhancer
+                    "lipsync"  -> R.string.swap_proc_lip_syncer
+                    "editor"   -> R.string.swap_proc_face_editor
+                    else       -> R.string.swap_proc_swapper
+                }))
+            },
+            text = {
+                // Scrollable: the swapper sheet holds three expandable cards, and all three
+                // open at once is taller than a phone in landscape.
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    when (sheet) {
+                        "enhancer" -> {
+                            OptionSlider(
+                                stringResource(R.string.opt_blend), opts.enhanceBlend,
+                                { onOptsChange(opts.copy(enhanceBlend = it)) },
+                                hint = when {
+                                    opts.enhanceBlend >= 0.95f ->
+                                        stringResource(R.string.opt_blend_hint_full)
+                                    opts.enhanceBlend <= 0.05f ->
+                                        stringResource(R.string.opt_blend_hint_none)
+                                    else -> stringResource(R.string.opt_blend_hint_mixed)
+                                },
+                            )
+                            // It runs on the swapper's own crop: gpen_bfr_256 and
+                            // hyperswap_1a_256 declare the same template and size, so no
+                            // second alignment is involved.
+                            Text(stringResource(R.string.opt_enhancer_note, opts.pixelBoostLabel),
+                                 style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
+                        }
+                        "editor" -> FaceEditorSliders(opts, onOptsChange)
+                        "lipsync" -> {
+                            OptionSlider(
+                                stringResource(R.string.opt_weight), opts.lipSyncWeight,
+                                { onOptsChange(opts.copy(lipSyncWeight = it)) },
+                                hint = stringResource(R.string.opt_lip_sync_weight_hint),
+                            )
+                            // The Voice picker deliberately stays on the main screen: it is
+                            // a REQUIRED input that gates the Swap button, not a knob, and
+                            // a required input behind a gear is a required input nobody
+                            // finds.
+                        }
+                        else -> {
+                            FaceSwapperCard(opts, onOptsChange, openCard == "swapper",
+                                            { onToggleCard("swapper") },
+                                            hyperswap1bAvailable = hasHyperswap1b,
+                                            hyperswap1cAvailable = hasHyperswap1c)
+                            FaceMaskerCard(opts, onOptsChange, openCard == "masker",
+                                           { onToggleCard("masker") })
+                            FaceDetectorCard(opts, onOptsChange, openCard == "detector",
+                                             { onToggleCard("detector") })
+                            if (opts != SwapOptions()) {
+                                TextButton(
+                                    onClick = { onOptsChange(SwapOptions()) },
+                                    modifier = Modifier.align(Alignment.End),
+                                ) { Text(stringResource(R.string.swap_reset_defaults)) }
+                            }
+                        }
+                    }
+                }
+            },
+        )
+    }
+}
+
+/**
+ * The model download, drawn over a preview pane.
+ *
+ * Only ever composed when the files are actually missing, so there is no button sitting
+ * around inviting a 275 MB transfer nobody needs.
+ *
+ * Shared with [LiveScreen] rather than private to this file: Live is a tab, so it can be
+ * the first screen a fresh install sees, and it needs the same offer. It briefly had a
+ * plain Button of its own instead -- same onDownload, but none of the progress, the byte
+ * counter, the error or the retry, so the two screens disagreed about what a download
+ * looks like for no reason beyond where the composable happened to live.
+ */
+@Composable
+fun DownloadOverlay(onDownload: () -> Unit, note: String? = null) {
+    Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
+        Column(
+            Modifier.fillMaxSize().padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            when {
+                ModelDownload.running -> {
+                    Text(ModelDownload.currentName,
+                         style = MaterialTheme.typography.bodyMedium,
+                         fontFamily = FontFamily.Monospace)
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { ModelDownload.progress },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        stringResource(R.string.dl_progress,
+                            ModelDownload.doneBytes / 1048576,
+                            ModelDownload.totalBytes / 1048576,
+                            ModelDownload.fileIndex, ModelDownload.fileCount,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                else -> {
+                    Text(stringResource(R.string.dl_models_required),
+                         style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        ModelDownload.error ?: note ?: stringResource(R.string.dl_not_on_device),
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        color = if (ModelDownload.error != null)
+                            MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(onDownload, shape = RoundedCornerShape(14.dp)) {
+                        Text(stringResource(if (ModelDownload.error != null) R.string.dl_retry
+                                            else R.string.dl_download))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * face_editor's 14 sliders, grouped as upstream's UI groups them. Each writes one entry of
+ * [SwapOptions.editor] by its upstream name, so the order here is presentation only and the
+ * native side's order lives in exactly one place ([SwapOptions.EDITOR_SLIDERS]).
+ */
+@Composable
+private fun FaceEditorSliders(opts: SwapOptions, onOptsChange: (SwapOptions) -> Unit) {
+    val groups = listOf(
+        R.string.opt_edit_group_eyes to listOf(
+            "eyebrow_direction" to R.string.opt_edit_eyebrow_direction,
+            "eye_gaze_horizontal" to R.string.opt_edit_eye_gaze_horizontal,
+            "eye_gaze_vertical" to R.string.opt_edit_eye_gaze_vertical,
+            "eye_open_ratio" to R.string.opt_edit_eye_open_ratio,
+        ),
+        R.string.opt_edit_group_mouth to listOf(
+            "mouth_smile" to R.string.opt_edit_mouth_smile,
+            "lip_open_ratio" to R.string.opt_edit_lip_open_ratio,
+            "mouth_grim" to R.string.opt_edit_mouth_grim,
+            "mouth_pout" to R.string.opt_edit_mouth_pout,
+            "mouth_purse" to R.string.opt_edit_mouth_purse,
+            "mouth_position_horizontal" to R.string.opt_edit_mouth_position_horizontal,
+            "mouth_position_vertical" to R.string.opt_edit_mouth_position_vertical,
+        ),
+        R.string.opt_edit_group_head to listOf(
+            "head_pitch" to R.string.opt_edit_head_pitch,
+            "head_yaw" to R.string.opt_edit_head_yaw,
+            "head_roll" to R.string.opt_edit_head_roll,
+        ),
+    )
+    for ((title, sliders) in groups) {
+        Text(stringResource(title), style = MaterialTheme.typography.titleSmall,
+             modifier = Modifier.padding(top = 4.dp))
+        // The lip syncer runs AFTER the editor and redraws the mouth, so a mouth edit would
+        // be painted over: greyed, and said why, rather than silently lost.
+        val mouth = title == R.string.opt_edit_group_mouth
+        if (mouth && opts.lipSync)
+            Text(stringResource(R.string.opt_edit_mouth_lipsync),
+                 style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
+        for ((key, label) in sliders) {
+            val i = SwapOptions.EDITOR_SLIDERS.indexOf(key)
+            OptionSlider(
+                stringResource(label), opts.editor[i],
+                { v -> onOptsChange(opts.copy(editor = opts.editor.toMutableList().also { it[i] = v })) },
+                range = -1f..1f,
+                format = { "%+.2f".format(it) },
+                enabled = !(mouth && opts.lipSync),
+            )
+        }
+    }
+    Text(stringResource(R.string.opt_edit_note),
+         style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
+    if (opts.editor.any { it != 0f }) {
+        TextButton(onClick = { onOptsChange(opts.copy(editor = SwapOptions().editor)) }) {
+            Text(stringResource(R.string.opt_edit_reset))
+        }
+    }
+}

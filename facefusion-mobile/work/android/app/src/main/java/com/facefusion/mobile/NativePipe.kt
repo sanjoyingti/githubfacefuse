@@ -1,0 +1,593 @@
+package com.facefusion.mobile
+
+/**
+ * JNI surface onto libffnative.so.
+ *
+ * The native side is the same ffqnn + ffcv + ffpipe code the headless CLI links
+ * (work/native/ffswap_main.cpp), so a swap verified over adb is the same computation the
+ * app performs.  Colour conversion is native because it is per-pixel work on every frame.
+ */
+object NativePipe {
+
+    @Volatile private var loaded = false
+
+    fun ensureLoaded() {
+        if (!loaded) { System.loadLibrary("ffnative"); loaded = true }
+    }
+
+    /**
+     * libDir holds libQnnHtp.so/libQnnSystem.so; skelDir the hexagon skel.
+     *
+     * Prefer [init], which takes a [SwapOptions] instead of eleven positional arguments.
+     * Every numeric argument is re-clamped natively -- they come from sliders, and a bad
+     * `pixelBoost` would cost its square in graph invocations per face.
+     */
+    @JvmStatic external fun initEx(
+        libDir: String, skelDir: String, modelDir: String, swapper: String,
+        weight: Float, maskBlur: Float, maskPadding: IntArray,
+        detectorScore: Float, landmarkerScore: Float,
+        pixelBoost: Int, largestOnly: Boolean,
+        faceEnhance: Boolean, enhanceBlend: Float,
+        lipSyncWeight: Float, referenceDistance: Float,
+    ): Boolean
+
+    /** Load the pipeline with [opts] applied. */
+    fun init(libDir: String, skelDir: String, modelDir: String,
+             opts: SwapOptions = SwapOptions()): Boolean {
+        pushFaceEditor(opts)
+        pushQuality(opts)
+        return initEx(libDir, skelDir, modelDir, opts.swapper,
+                      opts.weight, opts.maskBlur, opts.maskPadding.toIntArray(),
+                      opts.detectorScore, opts.landmarkerScore,
+                      opts.pixelBoost, opts.largestOnly,
+                      opts.faceEnhance, opts.enhanceBlend, opts.lipSyncWeight,
+                      opts.referenceDistance)
+    }
+
+    /**
+     * The face editor's switch and sliders, PUSHED: native keeps them and applies them to
+     * every pipeline it builds, the reference face's pattern. [init] and [setOptions] call
+     * this, so every path that loads or retunes a pipeline carries the editor with it.
+     */
+    @JvmStatic external fun setFaceEditor(enabled: Boolean, sliders: FloatArray)
+
+    private fun pushFaceEditor(opts: SwapOptions) =
+        setFaceEditor(opts.faceEdit, opts.editor.toFloatArray())
+
+    /**
+     * Whether the face editor (lp_feature, lp_motion, lp_gencut + lp_mlp) loaded AND ran
+     * at the last init. ⚠ A graph this chip refuses drops the EDITOR, not the tier, so this
+     * can be false on a device where everything else works; [faceEditorError] says why.
+     */
+    @JvmStatic external fun hasFaceEditor(): Boolean
+
+    /**
+     * face_animator's still, taken once: its largest face's crop, features and motion. False
+     * when it has no face or the LivePortrait set is not loaded. Starts a new clip, so the
+     * next driver frame becomes the one later motion is measured against.
+     */
+    @JvmStatic external fun setPortrait(bgr: ByteArray, w: Int, h: Int): Boolean
+
+    /**
+     * One frame of a video made from a still ([PortraitVideo]). [frame] holds the photo and
+     * receives the result; with [driver] the photo's face moves like the driver's, without
+     * one the still is used as it is (the talking photo). Then editor, lip sync (window
+     * [frameIndex], or -1 for none) and enhancer. Returns faces processed, or -1.
+     */
+    @JvmStatic external fun portraitFrame(driver: ByteArray?, dw: Int, dh: Int,
+                                          frame: ByteArray, w: Int, h: Int, frameIndex: Int): Int
+    @JvmStatic external fun faceEditorError(): String
+
+    /**
+     * Tiers to skip at the next [init], comma-separated; "" clears.
+     *
+     * ⚠ Pushed rather than passed for the same reason the content gate enumerates its
+     * paths: there are four callers of [init] and a per-call argument is a list something
+     * can be left out of. Set it once, from [ModelPaths.apply], and no future path can
+     * forget it.
+     */
+    /**
+     * Frames between real face detections; 0 detects every frame.
+     *
+     * ⚠ Video runs ONLY, and it must be cleared afterwards. [processFrame] is shared with
+     * the preview, whose consecutive calls are unrelated frames the user seeked to -- a
+     * left-over period there would reconstruct a box from a frame that has nothing to do
+     * with the one being drawn.
+     */
+    @JvmStatic external fun setTrackPeriod(frames: Int)
+
+    /**
+     * Occlusion / region masks, the head-turn fade and the motion options, PUSHED like the
+     * face editor: native keeps them and applies them to every pipeline it builds.
+     * See ffpipe::Config for what each one does.
+     */
+    @JvmStatic external fun setQuality(
+        occlusion: Boolean, region: Boolean, keepMouth: Boolean,
+        poseFadeStart: Float, smooth: Boolean, recover: Boolean, rotated: Boolean,
+    )
+
+    fun pushQuality(opts: SwapOptions) {
+        setQuality(opts.occlusionMask, opts.regionMask, opts.keepMouth,
+                   if (opts.poseFade) opts.poseFadeStart else 90f,
+                   opts.motionSmooth, opts.motionSmooth, opts.detectRotated)
+    }
+
+    /**
+     * True while the caller feeds CONSECUTIVE frames of one clip (a video run, the Live
+     * camera, the live player). Enables landmark smoothing and fast-motion recovery; must
+     * be false for single frames. Survives a pipeline reload.
+     */
+    @JvmStatic external fun setSequence(on: Boolean)
+
+    /** Where the bundled mask models (assets/masks) are read from. Once per process. */
+    @JvmStatic external fun setAuxAssets(assets: android.content.res.AssetManager)
+
+    /** Bit 0: occlusion model running, bit 1: face parser running. */
+    @JvmStatic external fun maskModelState(): Int
+
+    @JvmStatic external fun setSkipTiers(tiers: String)
+
+    /**
+     * Change the per-frame options on the ALREADY LOADED pipeline. False when none is.
+     *
+     * ⚠ Takes no swapper. Every value here is read once per frame inside the native
+     * pipeline and none is consumed at load time, so changing one never needed a model
+     * reloaded -- including the face enhancer, whose model is opened whether the switch is
+     * on or off, because the flag decides whether the STAGE RUNS. The swapper is the one
+     * option that genuinely selects a different file, and leaving it out of this signature
+     * is what stops it being changed here by accident.
+     */
+    @JvmStatic external fun setOptionsEx(
+        weight: Float, maskBlur: Float, maskPadding: IntArray,
+        detectorScore: Float, landmarkerScore: Float,
+        pixelBoost: Int, largestOnly: Boolean,
+        faceEnhance: Boolean, enhanceBlend: Float,
+        lipSyncWeight: Float, referenceDistance: Float,
+    ): Boolean
+
+    /** [setOptionsEx] from a [SwapOptions]. `swapper` and `outputFps` are not sent: the
+     *  first needs a reload, the second never reaches the pipeline at all. */
+    fun setOptions(opts: SwapOptions): Boolean {
+        pushFaceEditor(opts)
+        pushQuality(opts)
+        return setOptionsEx(opts.weight, opts.maskBlur, opts.maskPadding.toIntArray(),
+                            opts.detectorScore, opts.landmarkerScore,
+                            opts.pixelBoost, opts.largestOnly,
+                            opts.faceEnhance, opts.enhanceBlend, opts.lipSyncWeight,
+                            opts.referenceDistance)
+    }
+
+    /**
+     * The tier that LOADED and then would not execute, or "".
+     *
+     * Meaningful after any [init], failed OR successful: a device can reject its best tier
+     * and run on the next one, and that rejection is worth recording either way -- it is a
+     * property of the silicon, not of this run, and re-proving it costs a full context load
+     * on every launch.
+     *
+     * ⚠ Not the same as "init failed". A tier whose files are missing is a DOWNLOAD
+     * problem and never appears here; only a tier the chip refused to run does.
+     */
+    @JvmStatic external fun rejectedTier(): String
+
+    /**
+     * Why [rejectedTier] was refused: which model would not execute, and the backend's
+     * error. "" when nothing was rejected. Kept so a phone that fell back can still say
+     * why after a restart, when the run log that once held it is gone.
+     */
+    @JvmStatic external fun rejectedReason(): String
+    @JvmStatic external fun release()
+
+    /**
+     * Whether `gpen_<tier>.bin` was found when the pipeline last initialised.
+     *
+     * Only meaningful after a successful [init]; false before that, which is the safe
+     * direction -- the UI hides the enhancer switch rather than offering one that cannot
+     * work. Same rule the swapper choice follows.
+     */
+    @JvmStatic external fun hasEnhancer(): Boolean
+
+    /**
+     * Which context-binary tier this chip needs -- "v68" / "v73" / "v79".
+     *
+     * Measured off the HTP (arch, VTCM, soc_model) with no model loaded, so it can be
+     * asked before the binaries are even present.  Returns the most permissive tier when
+     * the probe fails, so an unrecognised device behaves like an old one rather than not
+     * at all.
+     */
+    @JvmStatic external fun probeTier(libDir: String, skelDir: String): String
+
+    /**
+     * Every tier this chip can load, best first, comma-joined -- "v81,v73,v68".
+     *
+     * [probeTier] names the tier the hardware DESERVES; this names the ones it can
+     * actually use. They differ exactly when the app has learned about an arch whose
+     * context binaries are not hosted yet, which is the normal state of affairs for a
+     * day or two after a new tier lands. The downloader walks this and takes the first
+     * tier the manifest carries; ffpipe walks it and takes the first present on disk.
+     *
+     * ⚠ Not simply "every older tier": the v79 build is pinned to soc_model 69, so it is
+     * absent from a v81 chain. Do not reconstruct this list in Kotlin.
+     */
+    @JvmStatic external fun probeTierChain(libDir: String, skelDir: String): String
+
+    /**
+     * Whether this chip accepts the fp16 stamp every QAIRT 2.49 context carries.
+     *
+     * "yes" | "no" | "unknown".  ⚠ "unknown" means the CONTROL canary failed -- the probe
+     * is broken and the chip has said nothing.  It must never be treated as "no": that
+     * verdict pushes a working device onto the slower compatibility build.
+     *
+     * @param canaryDir holds canary_249.bin and canary_228.bin, unpacked from assets.
+     */
+    @JvmStatic external fun probeFp16(libDir: String, skelDir: String,
+                                      canaryDir: String): String
+
+    /**
+     * What the HTP reports about itself, as `key=value;` pairs:
+     * `ok`, `arch`, `vtcm`, `soc`, `signedPd`, `dlbc`, `tier`.
+     *
+     * ⚠ `ok=0` means the PROBE failed and every other field is absent. It does not mean the
+     * chip is unsupported -- the same distinction [probeTier] makes when it falls back.
+     */
+    /**
+     * Which runtime this device will use: "qnn", "ncnn", or "none" when neither starts.
+     *
+     * Decides which MODEL SET to download, so it is asked before any file exists. It is
+     * answered by TRYING rather than probing -- the HTP cannot be interrogated until QNN is
+     * running, so an "ask first" version reports no-NPU on every device.
+     */
+    @JvmStatic external fun probeBackend(libDir: String, skelDir: String): String
+
+    /**
+     * Pin the runtime for the rest of this process: "qnn", "ncnn", or "" for automatic.
+     *
+     * Auto tries QNN first and QNN wins on any Qualcomm part, so without this the
+     * non-Qualcomm path could only be exercised on a phone with no Hexagon -- which is not
+     * the bench, and an untestable path is an unverified one. It is the same `FFBACKEND`
+     * the headless CLI reads; the app sets it on itself because an Android process has no
+     * environment anyone outside can set.
+     *
+     * ⚠ Call [release] FIRST, and clear [ModelPaths]'s caches after: the cached backend and
+     * tier chain are answers from the runtime this replaces.
+     */
+    @JvmStatic external fun setForcedBackend(name: String)
+
+    /**
+     * Whether the ncnn backend is compiled into THIS build.
+     *
+     * Not "is there a GPU", and not "which backend is running": whether the code is in the
+     * binary at all. `FF_NCNN` is off unless `work/android/ncnn/` was staged, so a QNN-only
+     * APK is a normal build -- and offering to switch to a runtime that is not linked is a
+     * control that silently does nothing.
+     */
+    @JvmStatic external fun hasNcnnBackend(): Boolean
+
+    /**
+     * Whether the ncnn backend may use the GPU: `"auto"`, `"gpu"` or `"cpu"`.
+     *
+     * `"auto"` ships, and means the backend runs the detector on BOTH units over one fixed
+     * frame before it places anything on the GPU -- see `verifyGpu` in ffnn_ncnn.cpp. The
+     * per-model placement table was measured on one Adreno, and ncnn's Vulkan is a different
+     * implementation on every vendor's driver: reported from the field as a detector that
+     * "finds a lot and none of them is a face".
+     *
+     * The two overrides exist because the check is a heuristic on hardware this project does
+     * not own. `"cpu"` is for a device that passes it and is still wrong; `"gpu"` for one
+     * that fails it and is fine.
+     *
+     * ⚠ Call [release] FIRST. A model already open keeps the unit it was opened on, so this
+     * changes nothing about a live pipeline.
+     */
+    @JvmStatic external fun setNcnnGpu(mode: String)
+
+    /**
+     * ncnn without Winograd: about half the memory, ~3.5x the time on the 3x3-heavy graphs,
+     * and slightly MORE accurate in fp16. For phones the full set gets killed on.
+     *
+     * ⚠ Call [release] FIRST, as for [setNcnnGpu]: an open model keeps how it was built.
+     */
+    @JvmStatic external fun setNcnnLowMemory(on: Boolean)
+
+    /**
+     * One line naming the runtime that is actually running, for the log and the bug report.
+     *
+     * The only place the GPU verdict surfaces: "Vulkan checked against the CPU" and
+     * "CPU only -- the detector disagrees with the CPU" are the two answers a report from a
+     * non-Qualcomm phone has to be able to tell apart.
+     */
+    @JvmStatic external fun runtimeNote(): String
+
+    @JvmStatic external fun probeDeviceInfo(libDir: String, skelDir: String): String
+
+    /**
+     * Upstream's content-gate statistic for one BGR frame: `logit[0] - logit[1]`, flagged
+     * above [ContentGate.THRESHOLD].  Returns **NaN** when the graph did not run.
+     *
+     * ⚠ NaN, not `false`: an error that read as "allow" would open the gate exactly when
+     * it broke.  Every comparison against a threshold is false for NaN, so callers must
+     * test `isNaN()` explicitly -- see [ContentGate].
+     */
+    @JvmStatic external fun contentScore(bgr: ByteArray, w: Int, h: Int): Float
+
+    /**
+     * The faces in one BGR frame, as boxes: **five floats each** -- x0, y0, x1, y1, score,
+     * in the frame's own pixel coordinates.
+     *
+     * Detector only. No landmarks and no embeddings, so this answers "what is on screen"
+     * and nothing about identity; it costs one yoloface pass rather than that plus 3.55 ms
+     * per face. It touches no tracker state either, so calling it while a run is warm
+     * cannot move what the run depends on.
+     *
+     * Empty when there is no pipeline or the frame is the wrong size -- never null.
+     */
+    /**
+     * Resample a BGR frame, for the output-size cap.
+     *
+     * The same `resizeLinear` the pipeline uses elsewhere, so a capped run differs from an
+     * uncapped one only in the size of the picture. Null on a bad size.
+     */
+    @JvmStatic external fun resizeBgr(bgr: ByteArray, w: Int, h: Int,
+                                      dw: Int, dh: Int): ByteArray?
+
+    @JvmStatic external fun detectFaces(bgr: ByteArray, w: Int, h: Int): FloatArray
+
+    /**
+     * Remember the face at (x, y) -- in the frame's OWN pixel coordinates -- as the one to
+     * swap. Upstream's `face_selector_mode = reference`.
+     *
+     * Returns that face's box as four floats, or an EMPTY array when the point was inside
+     * no detected face. The box is how the UI shows which face was taken: "picked the
+     * wrong neighbour" and "picked nothing" look identical without it.
+     *
+     * Costs a full analyse, embeddings included -- once per tap, not per frame.
+     */
+    @JvmStatic external fun setReferenceFaceAt(bgr: ByteArray, w: Int, h: Int,
+                                               x: Float, y: Float): FloatArray
+
+    /** Forget the reference face: back to every face, or the largest if that is set. */
+    @JvmStatic external fun clearReferenceFace()
+
+    /** Whether a reference face is set. Survives an options change; init clears it. */
+    @JvmStatic external fun hasReferenceFace(): Boolean
+
+    /**
+     * Remember the face at (x, y) as one that gets the LIP SYNC. Tapping faces
+     * adds them; tapping one again (same person) reports its existing index so
+     * the caller removes it instead of doubling.
+     *
+     * Returns FIVE floats -- x0, y0, x1, y1 and the index in the lips list --
+     * or an EMPTY array when the tap hit no face. Unset (empty list) = every
+     * face is synced.
+     */
+    @JvmStatic external fun addLipReferenceFaceAt(bgr: ByteArray, w: Int, h: Int,
+                                                  x: Float, y: Float): FloatArray
+
+    /** Drop the [index]-th lips identity. */
+    @JvmStatic external fun removeLipReferenceAt(index: Int): Boolean
+
+    /** Forget every lips identity: back to syncing every face. */
+    @JvmStatic external fun clearLipReferenceFace()
+
+    /** Whether any lips identity is set. */
+    @JvmStatic external fun hasLipReferenceFace(): Boolean
+
+    /**
+     * The [index]-th lips identity (512 floats) for the caller to keep across
+     * inits -- the same pattern as [restoreFaceAssignment]. EMPTY when out of
+     * range.
+     */
+    @JvmStatic external fun lipReferenceEmbedding(index: Int): FloatArray
+
+    /**
+     * Replace the whole lips list from [flat] (n identities of 512 floats).
+     *
+     * Exact-sync after every init the app owns: the pipeline ends up holding
+     * exactly these, in order. n = 0 clears back to syncing every face.
+     */
+    @JvmStatic external fun setLipReferences(flat: FloatArray, n: Int): Boolean
+
+    /** True when this tier had no fp32 gate context; see [ContentGate.QUANTISED_BIAS]. */
+    @JvmStatic external fun contentGateIsQuantised(): Boolean
+
+    @JvmStatic external fun setSource(bgr: ByteArray, w: Int, h: Int): Boolean
+    @JvmStatic external fun addSource(bgr: ByteArray, w: Int, h: Int): Int
+    @JvmStatic external fun setActiveSource(index: Int)
+    @JvmStatic external fun setSwapEnabled(enabled: Boolean)
+
+    /**
+     * The `one`-face selector (largest detected face) at runtime. The native side reads
+     * it per frame, so flipping it does NOT restart the pipeline -- a restart would tear
+     * down the pipeline and with it every face assignment of the live session.
+     */
+    @JvmStatic external fun setSwapLargestOnly(enabled: Boolean)
+
+    /**
+     * Live's per-person assignment mode. OFF is the default behaviour (active slot for
+     * every face); ON lets a face the user assigned keep its own source.
+     */
+    @JvmStatic external fun setFaceAssignEnabled(enabled: Boolean)
+
+    /**
+     * Re-brush the person currently SELECTED in Live, with no second tap.
+     *
+     * The counterpart of [setActiveSource]'s own re-apply. Both brushes -- a source slot
+     * and "keep the original face" -- have to reach an already-selected person straight
+     * away, or one of them is the odd one out that needs the face tapped twice.
+     */
+    @JvmStatic external fun setSelectedFaceKeepOriginal(keep: Boolean)
+
+    /**
+     * Assign the face at (x, y) of [bgr] to [source] -- or, with [keepOriginal], to
+     * nothing, which leaves that person exactly as they were filmed.
+     *
+     * The SWAP screen's assignment. It has no tracker to lean on (a preview frame and an
+     * output frame are not a sequence), so what comes back is the person's IDENTITY:
+     * 512 floats, or an EMPTY array when the tap hit no face or the pipeline is cold.
+     *
+     * ⚠ Keep what it returns. Pressing Swap builds a fresh pipeline and every assignment
+     * on the old one goes with it; [restoreFaceAssignment] is how they come back.
+     */
+    @JvmStatic external fun assignFaceAt(bgr: ByteArray, w: Int, h: Int,
+                                         x: Float, y: Float, source: Int,
+                                         keepOriginal: Boolean): FloatArray
+
+    /** Put one identity from [assignFaceAt] back onto a pipeline that was just built. */
+    @JvmStatic external fun restoreFaceAssignment(embedding: FloatArray, source: Int,
+                                                  keepOriginal: Boolean): Boolean
+
+    /**
+     * Queue a tap (DISPLAY bitmap coordinates -- the frame [LiveScreen] draws) for the
+     * next [liveFrame] to resolve against the PRE-SWAP detections: the embedding stored
+     * is the real person's, not the swapped frame on the display. The source chip
+     * selected at tap time is the one assigned.
+     */
+    @JvmStatic external fun requestFaceAssignment(x: Float, y: Float, source: Int,
+                                                  keepOriginal: Boolean)
+
+    /**
+     * The result of the last consumed request: FIVE floats -- x0, y0, x1, y1 and the
+     * source index -- in DISPLAY bitmap coordinates, so the overlay can draw it as-is;
+     * ONE float [-1] when the tap was consumed but landed on no face; EMPTY when nothing
+     * was consumed since the last read (a slow frame can keep a request in flight past
+     * any timeout, so "miss" is never guessed). Each result is returned exactly once.
+     */
+    @JvmStatic external fun takeAssignmentResult(): FloatArray
+
+    /** Forget every assignment of the current pipeline. */
+    @JvmStatic external fun clearFaceSourceAssignments()
+
+    /**
+     * The SELECTED person (assign mode): the last one tapped, who follows the source
+     * chip until an empty tap deselects them. FIVE floats -- x0, y0, x1, y1 and their
+     * current source -- in DISPLAY bitmap coordinates (moved from RAW by the scale the
+     * native side records per frame), or EMPTY when nobody is selected. A pure query,
+     * safe to poll every shot: it does not consume anything.
+     */
+    @JvmStatic external fun takeSelectionBox(): FloatArray
+    /** Swaps every face in place; returns the face count, or -1 on error. */
+    @JvmStatic external fun processFrame(bgr: ByteArray, w: Int, h: Int): Int
+
+    /** True when edtalk_<tier>.bin was on the device at init. Gates the UI switch. */
+    @JvmStatic external fun hasLipSyncer(): Boolean
+
+    /**
+     * Hand the whole clip's PCM over once, before the frame loop.
+     *
+     * [pcm] is interleaved as [AudioDecoder] produced it; the resample to 16 kHz, the mix
+     * to mono and upstream's normalise all happen natively, so there is one implementation
+     * of that arithmetic and it is the one work/native/test_ffaudio.py measures.
+     *
+     * [fps] is the OUTPUT rate, not the source's: a rate-reduced run writes fewer frames
+     * than it decodes, and window k belongs to output frame k.
+     */
+    @JvmStatic external fun setAudio(pcm: ShortArray, channels: Int, sampleRate: Int,
+                                     fps: Double): Boolean
+
+    /** How many mel windows [setAudio] produced. */
+    @JvmStatic external fun melWindowTotal(): Int
+
+    /**
+     * Swap, then lip sync, one frame in place; returns the face count, or -1.
+     *
+     * A negative [frameIndex], no lip syncer on the device, or audio that was never set
+     * all fall back to a plain swap, so this is safe to call unconditionally.
+     */
+    @JvmStatic external fun processFrameAt(bgr: ByteArray, w: Int, h: Int,
+                                           frameIndex: Int): Int
+
+    /**
+     * Per-stage ms/frame for the run so far, as one line for the log.
+     *
+     * The counters behind it are as old as the pipeline and were never surfaced, which
+     * is why the lip syncer's cost was known as one number for a whole session. Every
+     * later question about where a frame goes is answered here rather than by a build.
+     */
+    @JvmStatic external fun stageMillis(): String
+
+    /** Zero those counters. Call before a run, or it reports the previous one too. */
+    @JvmStatic external fun resetStats()
+
+    @JvmStatic external fun argbToBgr(argb: IntArray, w: Int, h: Int): ByteArray
+    @JvmStatic external fun yuvToBgr(
+        y: ByteArray, yRow: Int,
+        u: ByteArray, uRow: Int, uPix: Int,
+        v: ByteArray, vRow: Int, vPix: Int,
+        w: Int, h: Int,
+    ): ByteArray
+    /**
+     * Rotate a packed BGR frame clockwise by 0/90/180/270.
+     *
+     * For the container's rotation flag, which MediaCodec does NOT apply. 90 and 270 swap
+     * the dimensions -- the caller sizes the encoder and everything downstream to match.
+     */
+    @JvmStatic external fun rotateBgr(bgr: ByteArray, w: Int, h: Int, degrees: Int): ByteArray
+
+    @JvmStatic external fun bgrToI420(bgr: ByteArray, w: Int, h: Int): ByteArray
+    /**
+     * Write a BGR frame into the encoder's own input planes, honouring its strides.
+     * COLOR_FormatYUV420Flexible is NOT necessarily I420 -- this device's AVC encoder is
+     * semi-planar -- so the layout is taken from the Image rather than assumed.
+     */
+    @JvmStatic external fun bgrToImagePlanes(
+        bgr: ByteArray, w: Int, h: Int,
+        y: java.nio.ByteBuffer, yRow: Int, yPix: Int,
+        u: java.nio.ByteBuffer, uRow: Int, uPix: Int,
+        v: java.nio.ByteBuffer, vRow: Int, vPix: Int,
+    ): Boolean
+    /** Box-downsampled ARGB_8888 for the live preview; scaling natively avoids a
+     *  full-resolution Bitmap allocation per frame. */
+    @JvmStatic external fun bgrToArgb(bgr: ByteArray, w: Int, h: Int,
+                                      dstW: Int, dstH: Int): IntArray
+
+    /**
+     * The whole live pump in one call: camera planes in, swapped preview in [bmp] out.
+     *
+     * Replaces yuvToBgr + processFrame + bgrToArgb + Bitmap.setPixels, which moved ~21 MB
+     * per frame across JNI to compute nothing. The planes are read where CameraX put them
+     * (they must be DIRECT buffers), the pipeline runs against one reusable native frame,
+     * and the downsampled result is written into [bmp]'s own pixels.
+     *
+     * ⚠ [bmp] must be ARGB_8888, exactly [dstW] x [dstH], and NOT the bitmap currently on
+     * screen -- it is written in place. [LiveEngine] alternates two.
+     *
+     * ⚠ Single-pump: the native frame buffer is a static. One caller at a time, which is
+     * what STRATEGY_KEEP_ONLY_LATEST already guarantees.
+     *
+     * [originalBgrOut] is optional and receives the PRE-SWAP camera frame for a one-shot
+     * assignment thumbnail. [faceBoxesOut] is optional and receives the current boxes in
+     * display-bitmap coordinates, five floats per face: x0, y0, x1, y1, score.
+     *
+     * [gateThreshold] runs the content gate on the CAMERA frame, before anything swaps it,
+     * and refuses above that score. NaN skips the check -- NOT a negative number, since gate
+     * scores are themselves often negative -- which is how a caller says
+     * "this frame is not a sample": both the sampling rate and the threshold itself are
+     * policy, and policy lives in Kotlin -- nothing about the gate is compiled into the
+     * native side but the comparison.
+     *
+     * @return faces swapped; -1 with [lastError] set on a fault, **-2 when the gate
+     *         refused this frame**, **-3 when the gate could not be measured** -- which is
+     *         also a refusal, never a pass.
+     */
+    @JvmStatic external fun liveFrame(
+        y: java.nio.ByteBuffer, yRow: Int,
+        u: java.nio.ByteBuffer, uRow: Int, uPix: Int,
+        v: java.nio.ByteBuffer, vRow: Int, vPix: Int,
+        w: Int, h: Int,
+        bmp: android.graphics.Bitmap, dstW: Int, dstH: Int,
+        gateThreshold: Float,
+        mirrorRecording: Boolean,
+        /**
+         * Where to copy the FULL-RESOLUTION swapped frame as BGR, or null.
+         *
+         * Non-null only while a recording is running (roadmap 13b). It must be exactly
+         * w*h*3 bytes; a wrong size is ignored rather than partly filled, because half a
+         * frame would be recorded as a torn picture instead of reported as a bug.
+        */
+        bgrOut: ByteArray?,
+        originalBgrOut: ByteArray?,
+        faceBoxesOut: FloatArray?,
+    ): Int
+
+    @JvmStatic external fun lastError(): String
+}

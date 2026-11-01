@@ -1,0 +1,801 @@
+package com.facefusion.mobile
+
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaExtractor
+import android.media.MediaMetadataRetriever
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+
+/**
+ * Decode -> swap -> encode, with the original audio copied through and an optional trim.
+ *
+ * Deliberately ByteBuffer-based rather than Surface/GL: a Surface pipeline never exposes the
+ * pixels to the CPU, and every frame has to reach the NPU as packed BGR anyway.  The
+ * decoder's YUV_420_888 output carries arbitrary row/pixel strides (semi-planar chroma shows
+ * up as pixelStride 2), so both strides are honoured in yuvToBgr -- assuming tightly packed
+ * I420 gives a green-and-magenta image.
+ *
+ * Trimming seeks to the sync frame at or before trimStartUs and decodes forward, discarding
+ * output frames before the mark: seeking straight to an arbitrary timestamp would land on a
+ * non-keyframe and decode garbage until the next IDR.  Output timestamps are rebased to zero
+ * so the result starts where the trim does.
+ */
+class VideoSwapper(
+    /**
+     * Frames per second to WRITE. 0 keeps the input's rate.
+     *
+     * Lowering it drops frames rather than re-timing them: the encoder is told the new rate
+     * and each decoded frame is kept only if it lands in a slot that is still empty. That
+     * makes a 30 -> 24 conversion cost 20% LESS NPU time, which is most of the point --
+     * a swap is ~19 ms of NPU per frame, so the frames not kept are the frames not swapped.
+     */
+    private val outputFps: Int = 0,
+    /**
+     * Cap the output's SHORT EDGE in pixels. 0 keeps the source's size.
+     *
+     * Applied at DECODE, so it is a SPEED knob as much as a size one: detector prep and
+     * paste-back both scale with frame AREA, and 4K is ~9x the area of 1080p. It never
+     * enlarges -- a clip already under the cap is passed through untouched.
+     */
+    private val outputMaxShortEdge: Int = 0,
+    private val trimStartUs: Long = 0L,
+    private val trimEndUs: Long = Long.MAX_VALUE,
+    private val onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+    private val onFrame: (bgr: ByteArray, w: Int, h: Int) -> Unit = { _, _, _ -> },
+    private val onLog: (String) -> Unit = {},
+    /**
+     * Asked once per decoded frame. Returning true abandons the run.
+     *
+     * A flag rather than coroutine cancellation: the loop below is blocking codec work, so
+     * nothing here would ever reach a suspension point for the coroutine to cancel at.
+     */
+    private val isCancelled: () -> Boolean = { false },
+    /**
+     * Frames between real face detections. 0 detects every frame, as upstream does.
+     *
+     * This is the only knob here that trades output for speed, and it is set from THIS
+     * class rather than by whoever configured the pipeline, because the preview shares
+     * `Pipeline::analyse` and must never inherit it. It is cleared again when the run ends,
+     * including when it is cancelled.
+     */
+    private val trackPeriod: Int = 0,
+    /**
+     * Run the lip syncer after the swap.
+     *
+     * Off unless the caller asks AND the model is on the device: this is a separate
+     * download like the enhancer, and a clip with no audio track cannot be synced at all.
+     * Both are checked below rather than trusted from here.
+     */
+    private val lipSync: Boolean = false,
+    /**
+     * The DRIVING audio, from a file separate from [inputPath] -- an audio recording, a
+     * dub, or any video whose voice track should replace the target's own performance.
+     *
+     * Null means "use the target's own audio" (the only mode this ever had before this
+     * parameter existed): syncing a clip's mouth to the audio it was already filmed with
+     * asks the model to reproduce motion that was already correct, which a generated frame
+     * can only match or lose to, never improve. That is still a valid thing to ask for
+     * (benchmarking, the CLI, the API), so it stays the default -- but the main app's UI
+     * requires a real [voicePath] before it will enable Lip Sync at all, because upstream's
+     * own reason for this feature is dubbing onto a DIFFERENT voice, not re-deriving the
+     * one already there.
+     *
+     * Decoded on ITS OWN timeline, never the target's [trimStartUs] -- the two clips are
+     * unrelated recordings and the target's trim has no meaning against a file that was
+     * never trimmed alongside it. The voice's own trim (below) is the only range applied
+     * to it.
+     */
+    private val voicePath: String? = null,
+    /**
+     * The part of the VOICE the user kept, in its own timeline -- the audio equivalent of
+     * [trimStartUs]/[trimEndUs] on the target. Applied to both uses of the voice: the PCM
+     * that drives the mouth and the track copied into the output, so the viewer hears
+     * exactly the segment that was chosen, starting at 0 (see the copy loop's rebase).
+     * Defaults keep the whole file.
+     */
+    private val voiceTrimStartUs: Long = 0L,
+    private val voiceTrimEndUs: Long = Long.MAX_VALUE,
+) {
+
+    private var encTrack = -1
+
+    fun swap(inputPath: String, outputPath: String): Result<String> = runCatching {
+        // Shadows the constructor property for the rest of this function: `voicePath` means
+        // NOTHING when `lipSync` is off, but a caller that toggled Lip Sync off without also
+        // clearing its own remembered voice file would otherwise still redirect the OUTPUT's
+        // audio track to a file the run never even looked at for the mouth -- reported from
+        // the real app, where the main UI keeps `voiceFile` around across the toggle on
+        // purpose (re-enabling Lip Sync should not force re-picking one). The invariant
+        // belongs HERE, not in every caller: a voice with nothing to drive is not a voice.
+        val voicePath = if (lipSync) voicePath else null
+        val extractor = MediaExtractor().apply { setDataSource(inputPath) }
+        var videoTrack = -1
+        var audioTrack = -1
+        var format: MediaFormat? = null
+        for (i in 0 until extractor.trackCount) {
+            val f = extractor.getTrackFormat(i)
+            val mime = f.getString(MediaFormat.KEY_MIME) ?: continue
+            if (mime.startsWith("video/") && videoTrack < 0) { videoTrack = i; format = f }
+            else if (mime.startsWith("audio/") && audioTrack < 0) audioTrack = i
+        }
+        val vf = format ?: error("no video track in $inputPath")
+
+        // The OUTPUT's audio track, separately from the target's own: when a driving
+        // [voicePath] was given, the viewer should hear the same performance that drove the
+        // mouth, not the target's original track underneath a face now saying something
+        // else. A different MediaExtractor because it may be a wholly different container
+        // (an audio file has no video track at all, so it cannot share `extractor`).
+        var audioExtractor = extractor
+        if (voicePath != null) {
+            val ve = MediaExtractor().apply { setDataSource(voicePath) }
+            var vTrack = -1
+            for (i in 0 until ve.trackCount) {
+                if (ve.getTrackFormat(i).getString(MediaFormat.KEY_MIME)
+                        ?.startsWith("audio/") == true) { vTrack = i; break }
+            }
+            if (vTrack >= 0) { audioTrack = vTrack; audioExtractor = ve } else ve.release()
+        }
+        // STORED dimensions. For a portrait clip these are landscape, with the upright
+        // orientation carried separately as a rotation flag.
+        val width = vf.getInteger(MediaFormat.KEY_WIDTH)
+        val height = vf.getInteger(MediaFormat.KEY_HEIGHT)
+
+        /*
+         * The container's rotation, which MediaCodec does NOT apply.
+         *
+         * A phone records portrait as LANDSCAPE frames plus a 90-degree flag. Before this,
+         * nothing read the flag: frames reached yoloface on their side, which does not
+         * detect a rotated face (the same failure as the EXIF bug on the source path), and
+         * the output was written landscape with no flag either, so it also PLAYED sideways.
+         *
+         * It was invisible in the preview because MediaMetadataRetriever applies the flag
+         * and MediaCodec does not -- the preview looked upright and only the result was
+         * wrong, which is the worst way for this to present.
+         *
+         * The frames are rotated upright BEFORE detection rather than tagging the output
+         * with an orientation hint, because a hint would fix playback and leave the
+         * detection failure -- and detection is the part that makes the feature not work.
+         *
+         * KEY_ROTATION is not always present on an extractor track format; MMR's metadata
+         * is the more reliable source, so it is the fallback.
+         */
+        val rotation = when {
+            vf.containsKey(MediaFormat.KEY_ROTATION) -> vf.getInteger(MediaFormat.KEY_ROTATION)
+            else -> runCatching {
+                val r = MediaMetadataRetriever().apply { setDataSource(inputPath) }
+                val d = r.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+                r.release()
+                d
+            }.getOrDefault(0)
+        }.let { ((it % 360) + 360) % 360 }
+
+        // The upright frame, before any cap: 90 and 270 swap the axes.
+        val uprightW = if (rotation == 90 || rotation == 270) height else width
+        val uprightH = if (rotation == 90 || rotation == 270) width else height
+
+        val inFps = if (vf.containsKey(MediaFormat.KEY_FRAME_RATE))
+            vf.getInteger(MediaFormat.KEY_FRAME_RATE) else 30
+        // Never above the input: duplicating frames would cost a full swap each and add
+        // nothing. 0 (or anything silly) means "keep the input rate".
+        val fps = if (outputFps in 1..inFps) outputFps else inFps
+        val spanUs = (if (trimEndUs == Long.MAX_VALUE) durationUs(vf) else trimEndUs) - trimStartUs
+        val expected = ((spanUs / 1_000_000.0) * fps).toInt().coerceAtLeast(1)
+
+        /*
+         * THE OUTPUT SIZE, on the SHORT edge, so the aspect ratio is untouched and "720p"
+         * means the same thing for a portrait clip as for a landscape one.
+         *
+         * TWO things cap it, and they are resolved TOGETHER: what the user asked for, and
+         * what this device's AVC encoder will actually accept. The encoder used to be asked
+         * only AFTER the size was already chosen, and only about its ALIGNMENT and its
+         * MINIMUM -- so a frame that was too BIG went to `encoder.start()` unchecked, and
+         * came back as a CodecException with an EMPTY message: a bug report whose whole
+         * status line read "Failed: ". Reported on a 1440x2560 clip.
+         *
+         * The ceiling is not one number, which is why it is asked per candidate size rather
+         * than compared against `supportedHeights` once. That range is the tallest frame
+         * this encoder does at ANY width; a part that takes 2560 as a WIDTH can refuse it as
+         * a HEIGHT, and a macroblock-RATE limit couples the size to the frame rate on top of
+         * that. `areSizeAndRateSupported` is the question that has all three in it.
+         *
+         * ⚠ Both axes are rounded to EVEN. 4:2:0 chroma is half-size in both directions and
+         * an odd edge has nowhere to put the last row -- the same rule upstream's
+         * normalize_resolution applies, and the same one the encoder alignment is about.
+         */
+        val shortEdge = minOf(uprightW, uprightH)
+        // Created and released HERE rather than held until the encode below: the audio
+        // decode in between can throw, and a MediaCodec leaked on that path is one the next
+        // run may not get back. Its capabilities are a plain value and outlive it.
+        val vcaps = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).let {
+            try {
+                it.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                    .videoCapabilities
+            } finally { it.release() }
+        }
+        // The frame at a given short edge, aspect preserved. This is the size the whole
+        // pipeline works at -- decode, detect, swap, paste -- so it is only ever even.
+        fun outAt(s: Int): Pair<Int, Int> =
+            if (s >= shortEdge) uprightW to uprightH
+            else ((uprightW.toLong() * s / shortEdge).toInt() and 1.inv()) to
+                 ((uprightH.toLong() * s / shortEdge).toInt() and 1.inv())
+        /*
+         * And the size the ENCODER is handed, which is that aligned DOWN and the frame
+         * cropped to match: rounding up would need padding, and a black seam on two edges of
+         * every frame is worse than losing up to 15 px.
+         *
+         * The dimensions a hardware encoder takes are a property of the silicon, so they are
+         * asked for instead of assumed -- a 196x112 clip once threw here because 196 is not
+         * a multiple of 16 and this device's AVC encoder aligns width to 16. It is 2 on some
+         * parts, and hardcoding either is how this breaks again on a different phone.
+         */
+        fun encAt(o: Pair<Int, Int>): Pair<Int, Int> =
+            (o.first / vcaps.widthAlignment * vcaps.widthAlignment) to
+            (o.second / vcaps.heightAlignment * vcaps.heightAlignment)
+        // runCatching, not a bare call: areSizeAndRateSupported THROWS rather than answering
+        // false once a dimension is outside the range it indexes by, which is exactly the
+        // oversize case being asked about.
+        fun takes(s: Int): Boolean {
+            val (w, h) = encAt(outAt(s))
+            return w >= vcaps.supportedWidths.lower && h >= vcaps.supportedHeights.lower &&
+                runCatching { vcaps.areSizeAndRateSupported(w, h, fps.toDouble()) }
+                    .getOrDefault(false)
+        }
+        val wanted = if (outputMaxShortEdge in 1 until shortEdge) outputMaxShortEdge
+                     else shortEdge
+        // One alignment step per try, so every iteration actually moves the aligned size.
+        val sizeStep = maxOf(vcaps.widthAlignment, vcaps.heightAlignment, 2)
+        var shortOut = wanted
+        while (shortOut >= sizeStep && !takes(shortOut)) shortOut -= sizeStep
+        if (shortOut < sizeStep)
+            // A clear sentence rather than a CodecException: nothing about the clip can be
+            // changed by retrying, and the numbers say exactly why.
+            error("this device's video encoder cannot take ${uprightW}x$uprightH at " +
+                  "${fps}fps -- it accepts ${vcaps.supportedWidths} by " +
+                  "${vcaps.supportedHeights}")
+        val capped = shortOut < shortEdge
+        val (outW, outH) = outAt(shortOut)
+        val (encW, encH) = encAt(outW to outH)
+        if (shortOut < wanted) {
+            val (wantW, wantH) = outAt(wanted)
+            onLog("encoder will not encode ${wantW}x$wantH: output is ${outW}x$outH")
+        } else if (capped) {
+            onLog("output capped to ${outW}x$outH from ${uprightW}x$uprightH")
+        }
+        if (encW != outW || encH != outH)
+            onLog("encoder wants multiples of ${vcaps.widthAlignment}x" +
+                  "${vcaps.heightAlignment}: cropping ${outW}x$outH to ${encW}x$encH")
+
+        // Sequential decode starts here, so the tracker may be armed. Cleared in the
+        // teardown below, on every exit path including cancellation -- a period left set
+        // would follow the pipeline into the next preview refresh.
+        NativePipe.setTrackPeriod(trackPeriod)
+        NativePipe.setSequence(true)
+        if (trackPeriod > 0)
+            onLog("fast video: re-detecting every $trackPeriod frames")
+        onLog("${width}x$height @ ${inFps}fps" +
+              (if (rotation != 0) " rot ${rotation} -> ${outW}x$outH" else "") +
+              (if (fps != inFps) " -> ${fps}fps" else "") + ", ~$expected frames")
+
+        // The lip syncer's audio, taken once for the whole clip, at the OUTPUT rate --
+        // window k belongs to output frame k, and a rate-reduced run writes fewer frames
+        // than it decodes. Done before the video loop so a clip that cannot be synced says
+        // so up front instead of half way through.
+        var syncing = false
+        if (lipSync && NativePipe.hasLipSyncer()) {
+            val pcm = if (voicePath != null)
+                          AudioDecoder.decode(voicePath, voiceTrimStartUs, voiceTrimEndUs)
+                      else AudioDecoder.decode(inputPath, trimStartUs, trimEndUs)
+            when {
+                pcm == null || pcm.frames == 0 ->
+                    onLog("lip sync: no audio track, skipping")
+                !NativePipe.setAudio(pcm.samples, pcm.channels, pcm.sampleRate, fps.toDouble()) ->
+                    onLog("lip sync: ${NativePipe.lastError()}, skipping")
+                else -> {
+                    syncing = true
+                    onLog("lip sync: %.1fs of audio at %d Hz, %d windows"
+                        .format(pcm.seconds, pcm.sampleRate, NativePipe.melWindowTotal()))
+                }
+            }
+        } else if (lipSync) {
+            onLog("lip sync: model not installed, skipping")
+        }
+
+        extractor.selectTrack(videoTrack)
+        if (trimStartUs > 0) extractor.seekTo(trimStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+
+        val decoder = MediaCodec.createDecoderByType(vf.getString(MediaFormat.KEY_MIME)!!)
+        vf.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+        decoder.configure(vf, null, null, 0)
+        decoder.start()
+
+        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+
+        // The encoder is sized to the UPRIGHT frame, so the output needs no orientation
+        // hint of its own -- the rotation is baked into the pixels.
+        //
+        // ⚠ The bitrate is CLAMPED to what this encoder advertises, for the same reason the
+        // size is: a value outside the range is refused at start(), in the same empty
+        // CodecException, and 0.25 bits per pixel of a big frame is a number some parts do
+        // not go up to. Long arithmetic -- width * height * fps overflows Int at 8K.
+        val bitrate = (encW.toLong() * encH * fps / 4L)
+            .coerceIn(64_000L, Int.MAX_VALUE.toLong()).toInt()
+            .coerceIn(vcaps.bitrateRange.lower, vcaps.bitrateRange.upper)
+        val encFormat = MediaFormat.createVideoFormat(
+                MediaFormat.MIMETYPE_VIDEO_AVC, encW, encH).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+        }
+        // Every knob above has been checked against this codec's own capabilities, so a
+        // refusal here means the capabilities did not describe it. Say what was asked for
+        // and what the component answered -- see [codecWhy]. Without this the bug report
+        // reads "Failed: " and there is nothing in it to act on.
+        runCatching {
+            encoder.configure(encFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            encoder.start()
+        }.onFailure { e ->
+            val name = runCatching { encoder.codecInfo.name }.getOrDefault("encoder")
+            encoder.release()
+            decoder.stop(); decoder.release()
+            error(codecWhy(e, "$name refused ${encW}x$encH @ ${fps}fps, " +
+                              "${bitrate / 1000} kbps"))
+        }
+
+        // Started after both codecs are up, so the fps below is the SWAP rate and not
+        // diluted by MediaCodec configuration -- which is what a like-for-like comparison
+        // between two settings of trackPeriod needs it to be.
+        val runStartMs = System.currentTimeMillis()
+
+        val muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var muxAudio = -1
+        var muxing = false
+        // A separate voice file has its OWN timeline, unrelated to the target's trim -- take
+        // the user's chosen [voiceTrimStartUs, voiceTrimEndUs] segment, capped at the
+        // video's post-trim LENGTH so a voice longer than the clip does not produce an
+        // audio track past where the video ends.  Hoisted out of the copy-through below
+        // because the transcode fallback has to agree with it: the two must not disagree
+        // about which span of audio the output carries.
+        val copyStartUs = if (voicePath != null) voiceTrimStartUs else trimStartUs
+        val copyEndUs = if (voicePath != null)
+            minOf(voiceTrimEndUs, voiceTrimStartUs + spanUs) else trimEndUs
+        // Non-null only when the pass-through was refused and a transcode replaced it.
+        var aacPackets: List<AacPacket>? = null
+        // Audio is PASS-THROUGH, and the MP4 muxer accepts a strictly narrower set of codecs
+        // than MediaExtractor will hand back: Opus, Vorbis, FLAC and raw PCM all extract
+        // fine and all make addTrack throw IllegalStateException("Failed to add the track
+        // to the muxer").  Reported on 0.1.0 by a OnePlus PJZ110 on an 854x476 clip -- the
+        // gate, the decoder and the encoder had all already run, and the whole swap was
+        // lost over a track we do nothing to but copy.
+        //
+        // So audio is best-effort.  On refusal muxAudio stays -1, the copy loop below skips
+        // itself, and the video is still written.  The VIDEO addTrack stays fatal: with no
+        // video track there is no output at all.
+        //
+        // addTrack leaves the muxer in its INITIALIZED state when it rejects a format -- it
+        // throws before touching mState -- so start() below is still valid after a refusal.
+        val addTracks: (MediaFormat) -> Int = { fmt ->
+            val v = muxer.addTrack(fmt)
+            if (audioTrack >= 0) {
+                val af = audioExtractor.getTrackFormat(audioTrack)
+                val amime = af.getString(MediaFormat.KEY_MIME) ?: "?"
+                muxAudio = runCatching { muxer.addTrack(af) }.getOrElse {
+                    // Refused. Dropping the soundtrack here is worst precisely when it
+                    // matters most: a VOICE file is usually a WAV, WAV extracts as
+                    // audio/raw, and audio/raw is one of the codecs MP4 will not take -- so
+                    // a lip-sync run would sync the mouth to a voice and then write the
+                    // result SILENT, losing the one thing the run was for.
+                    //
+                    // The bytes are recoverable, only the container is fussy, so decode and
+                    // re-encode to AAC rather than give up. Best-effort still: on any
+                    // failure this falls back to the old video-only behaviour rather than
+                    // costing the run.
+                    val t = runCatching {
+                        transcodeToAac(voicePath ?: inputPath, copyStartUs, copyEndUs)
+                    }.getOrNull()
+                    if (t == null) {
+                        onLog("audio: MP4 will not carry $amime and it would not " +
+                              "transcode, writing video only")
+                        -1
+                    } else {
+                        // addTrack with the ENCODER's output format, not a hand-built one:
+                        // MP4 needs AAC's csd-0, which only exists once the encoder has
+                        // produced it.  That is why the transcode runs to completion here,
+                        // before muxer.start(), rather than streaming alongside the copy.
+                        runCatching { muxer.addTrack(t.first) }.getOrElse {
+                            onLog("audio: $amime transcoded but the AAC track was " +
+                                  "refused too, writing video only")
+                            -1
+                        }.also { ix -> if (ix >= 0) {
+                            aacPackets = t.second
+                            onLog("audio: MP4 will not carry $amime -- transcoded to AAC")
+                        } }
+                    }
+                }
+            }
+            muxer.start()
+            v
+        }
+
+        val info = MediaCodec.BufferInfo()
+        var sawInputEOS = false
+        var sawDecodeEOS = false
+        var swapped = 0
+        // Zero the native counters so the line below is THIS run, not this run plus
+        // every earlier one -- they accumulate for the life of the pipeline.
+        NativePipe.resetStats()
+        var cancelled = false
+        // The last output slot already written, for rate conversion. -1 so slot 0 is free.
+        var lastSlot = -1L
+
+        while (!sawDecodeEOS) {
+            // Checked before the work, not after, so pressing Cancel stops the next frame
+            // rather than finishing it first.
+            if (isCancelled()) {
+                // KEEP what has already been swapped.
+                //
+                // This used to delete the output and throw, which threw away every frame
+                // the NPU had produced -- on a long clip that is minutes of work discarded
+                // because the user stopped a run that was already mostly useful.
+                //
+                // Instead, stop feeding the decoder and fall through to the SAME
+                // finalisation an ordinary run uses: signal EOS, drain the encoder, copy
+                // the audio, stop the muxer. The only thing cancelling changes is where the
+                // video ends.
+                onLog("cancelled after $swapped frames -- keeping them")
+                cancelled = true
+                signalEncoderEOS(encoder)
+                sawInputEOS = true
+                sawDecodeEOS = true
+                break
+            }
+            if (!sawInputEOS) {
+                val inIx = decoder.dequeueInputBuffer(10_000)
+                if (inIx >= 0) {
+                    val n = extractor.readSampleData(decoder.getInputBuffer(inIx)!!, 0)
+                    val pts = extractor.sampleTime
+                    if (n < 0 || pts > trimEndUs) {
+                        decoder.queueInputBuffer(inIx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        sawInputEOS = true
+                    } else {
+                        decoder.queueInputBuffer(inIx, 0, n, pts, 0)
+                        extractor.advance()
+                    }
+                }
+            }
+            val outIx = decoder.dequeueOutputBuffer(info, 10_000)
+            if (outIx >= 0) {
+                val pts = info.presentationTimeUs
+                // frames between the sync point and the trim mark are decoded but dropped
+                var inRange = info.size > 0 && pts >= trimStartUs && pts <= trimEndUs
+                // Rate conversion, as decimation: which output slot would this frame fill?
+                // If that slot is taken, the frame is surplus and is dropped BEFORE the
+                // swap, so a lower rate genuinely costs less NPU time rather than just
+                // writing fewer frames.
+                if (inRange && fps != inFps) {
+                    val slot = ((pts - trimStartUs) * fps) / 1_000_000L
+                    if (slot <= lastSlot) inRange = false else lastSlot = slot
+                }
+                if (inRange) {
+                    val image = decoder.getOutputImage(outIx)
+                    if (image != null) {
+                        // Upright FIRST: everything after this -- detection, the swap, the
+                        // preview, the encoder -- works on the frame the viewer will see.
+                        val decoded = imageToBgr(image, width, height)
+                        image.close()
+                        val upright = if (rotation == 0) decoded
+                                      else NativePipe.rotateBgr(decoded, width, height, rotation)
+                        // Downscale BEFORE anything looks at the frame, so the detector,
+                        // the swap and the paste all work at the smaller size. Resizing at
+                        // encode time instead would shrink the file and save nothing else.
+                        val bgr = if (!capped) upright
+                                  else NativePipe.resizeBgr(upright, uprightW, uprightH,
+                                                            outW, outH)
+                                      ?: error("resize to ${outW}x$outH failed")
+                        // `swapped` is the OUTPUT frame index: it counts frames written,
+                        // so it already accounts for the ones decimation dropped.
+                        val faces = NativePipe.processFrameAt(bgr, outW, outH,
+                                                              if (syncing) swapped else -1)
+                        if (faces < 0) error("native: ${NativePipe.lastError()}")
+                        onFrame(bgr, outW, outH)
+                        feedEncoder(encoder, cropBgr(bgr, outW, outH, encW, encH),
+                                    encW, encH, pts - trimStartUs)
+                        swapped++
+                        onProgress(swapped, expected)
+                    }
+                }
+                val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                decoder.releaseOutputBuffer(outIx, false)
+                if (eos) { sawDecodeEOS = true; signalEncoderEOS(encoder) }
+            }
+            muxing = drainEncoder(encoder, muxer, muxing, addTracks = addTracks)
+        }
+        var flushed = false
+        while (!flushed) {
+            muxing = drainEncoder(encoder, muxer, muxing, addTracks = addTracks) { flushed = true }
+        }
+
+        // Cancelled before a single frame reached the encoder: the muxer never had a track
+        // added, and an MP4 with no tracks is not a file anything can open. That is the one
+        // case where there is genuinely nothing to keep.
+        if (!muxing) {
+            decoder.stop(); decoder.release()
+            encoder.stop(); encoder.release()
+            extractor.release()
+            if (audioExtractor !== extractor) audioExtractor.release()
+            muxer.release()
+            File(outputPath).delete()
+            error(if (cancelled) "cancelled before any frame was written" else "no frames encoded")
+        }
+
+        // Same principle as addTracks above, one stage later: by this point every frame has
+        // been swapped and encoded, so a throw in the copy-through would discard the entire
+        // run's NPU work for a soundtrack.  A partial audio track is still a valid MP4 --
+        // writeSampleData has already committed whatever it accepted.
+        val pending = aacPackets
+        if (audioTrack >= 0 && muxAudio >= 0 && pending != null) runCatching {
+            // Already decoded, already trimmed, already timed from zero by the transcode --
+            // so this is a straight write, with none of the extractor's seek-and-skip.
+            val ai = MediaCodec.BufferInfo()
+            for (p in pending) {
+                ai.offset = 0
+                ai.size = p.bytes.size
+                ai.presentationTimeUs = p.ptsUs
+                // Every AAC frame is independently decodable, so all of them are sync
+                // samples -- unlike video, where only the IDRs are.
+                ai.flags = MediaCodec.BUFFER_FLAG_KEY_FRAME
+                muxer.writeSampleData(muxAudio, ByteBuffer.wrap(p.bytes), ai)
+            }
+            onLog("audio: ${pending.size} AAC packets written" +
+                  (if (voicePath != null) " (from the voice track)" else ""))
+        }.onFailure { onLog("audio: writing the transcode failed " +
+                            "(${it.javaClass.simpleName}), video kept") }
+        else if (audioTrack >= 0 && muxAudio >= 0) runCatching {
+            val ae = MediaExtractor().apply {
+                setDataSource(voicePath ?: inputPath); selectTrack(audioTrack)
+            }
+            try {
+                if (copyStartUs > 0) ae.seekTo(copyStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                val buf = ByteBuffer.allocate(512 * 1024)
+                val ai = MediaCodec.BufferInfo()
+                var copied = 0
+                while (true) {
+                    val n = ae.readSampleData(buf, 0)
+                    val pts = ae.sampleTime
+                    if (n < 0 || pts > copyEndUs) break
+                    if (pts >= copyStartUs) {
+                        ai.offset = 0; ai.size = n
+                        ai.presentationTimeUs = pts - copyStartUs
+                        ai.flags = if (ae.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0)
+                            MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+                        muxer.writeSampleData(muxAudio, buf, ai)
+                        copied++
+                    }
+                    ae.advance()
+                }
+                onLog("audio: $copied packets copied" +
+                      (if (voicePath != null) " (from the voice track)" else ""))
+            } finally {
+                // finally, not a trailing call: on a throw the extractor would otherwise
+                // leak a codec handle for the life of the process.
+                ae.release()
+            }
+        }.onFailure { onLog("audio: copy-through failed (${it.javaClass.simpleName}), video kept") }
+
+        decoder.stop(); decoder.release()
+        encoder.stop(); encoder.release()
+        muxer.stop(); muxer.release()
+        extractor.release()
+        if (audioExtractor !== extractor) audioExtractor.release()
+        NativePipe.setTrackPeriod(0)
+        NativePipe.setSequence(false)
+        onLog((if (cancelled) "partial: " else "") +
+              "wrote ${File(outputPath).length() / 1024} KB, $swapped frames")
+        // The headline number, spelled out rather than left to be divided out of the stage
+        // list: this is what a report says when someone is asked how fast it ran.
+        val elapsedMs = System.currentTimeMillis() - runStartMs
+        if (swapped > 0 && elapsedMs > 0)
+            onLog("%.1f fps  (%.1f ms/frame, %d frames in %.1fs)"
+                .format(swapped * 1000.0 / elapsedMs, elapsedMs.toDouble() / swapped,
+                        swapped, elapsedMs / 1000.0))
+        NativePipe.stageMillis().takeIf { it.isNotEmpty() }?.let(onLog)
+        outputPath
+    }
+
+    /** One encoded AAC frame, held until the muxer has a track to take it. */
+    internal class AacPacket(val bytes: ByteArray, val ptsUs: Long)
+
+    /**
+     * Decode [path]'s audio and re-encode it as AAC, for the codecs MP4 will not carry.
+     *
+     * Returns the ENCODER's output format -- which carries the csd-0 the muxer needs and a
+     * hand-built MediaFormat does not -- together with every packet, or null if the audio
+     * could not be decoded or no AAC encoder would take it.
+     *
+     * ⚠ This runs to completion and buffers the result, rather than streaming into the muxer
+     * alongside the video.  It has to: MediaMuxer takes no tracks after start(), and the AAC
+     * format only exists once the encoder has produced its first output.  The cost is
+     * bounded -- 128 kbps is under 1 MB per minute, against the hundreds of MB of frames
+     * this class already moves -- and it only happens on the refusal path.
+     *
+     * The decode is deliberately a SECOND one, not shared with the lip syncer's PCM: that
+     * one exists only when lipSync is on, and this bug bites any PCM source, swap alone.
+     */
+    internal fun transcodeToAac(path: String, startUs: Long, endUs: Long):
+            Pair<MediaFormat, List<AacPacket>>? {
+        val pcm = AudioDecoder.decode(path, startUs, endUs) ?: return null
+        if (pcm.samples.isEmpty() || pcm.channels < 1) return null
+
+        val fmt = MediaFormat.createAudioFormat(
+            MediaFormat.MIMETYPE_AUDIO_AAC, pcm.sampleRate, pcm.channels).apply {
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
+        }
+        val enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+        try {
+            enc.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            enc.start()
+
+            val packets = ArrayList<AacPacket>()
+            var outFormat: MediaFormat? = null
+            val info = MediaCodec.BufferInfo()
+            var ix = 0                      // next sample (not frame) to feed
+            var fed = false                 // has end-of-stream been queued
+            while (true) {
+                if (!fed) {
+                    val inIx = enc.dequeueInputBuffer(10_000)
+                    if (inIx >= 0) {
+                        val ib = enc.getInputBuffer(inIx)!!
+                        ib.clear()
+                        // PCM 16-bit in NATIVE order -- an encoder fed big-endian samples
+                        // on a little-endian device encodes loud noise, not silence, so a
+                        // wrong guess here is audible rather than absent.
+                        ib.order(ByteOrder.nativeOrder())
+                        val room = ib.capacity() / 2
+                        val n = minOf(room, pcm.samples.size - ix)
+                        // Frames, not samples: the timestamp advances per sample-frame, so
+                        // a stereo buffer covers half as much time as its length suggests.
+                        val ptsUs = ix.toLong() * 1_000_000L / (pcm.sampleRate.toLong() *
+                                                                pcm.channels)
+                        if (n <= 0) {
+                            enc.queueInputBuffer(inIx, 0, 0, ptsUs,
+                                                 MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            fed = true
+                        } else {
+                            ib.asShortBuffer().put(pcm.samples, ix, n)
+                            enc.queueInputBuffer(inIx, 0, n * 2, ptsUs, 0)
+                            ix += n
+                        }
+                    }
+                }
+                val oIx = enc.dequeueOutputBuffer(info, 10_000)
+                if (oIx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    outFormat = enc.outputFormat
+                } else if (oIx >= 0) {
+                    // CODEC_CONFIG is the csd, which reaches the muxer through the output
+                    // FORMAT above; writing it as a sample too would corrupt the track.
+                    if (info.size > 0 &&
+                        info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
+                        val ob = enc.getOutputBuffer(oIx)!!
+                        val arr = ByteArray(info.size)
+                        ob.position(info.offset)
+                        ob.get(arr)
+                        packets.add(AacPacket(arr, info.presentationTimeUs))
+                    }
+                    val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                    enc.releaseOutputBuffer(oIx, false)
+                    if (eos) break
+                }
+            }
+            val f = outFormat
+            return if (f != null && packets.isNotEmpty()) f to packets else null
+        } catch (t: Throwable) {
+            return null
+        } finally {
+            runCatching { enc.stop() }
+            enc.release()
+        }
+    }
+
+    private fun drainEncoder(
+        encoder: MediaCodec, muxer: MediaMuxer, started: Boolean,
+        addTracks: (MediaFormat) -> Int,
+        onEOS: (() -> Unit)? = null,
+    ): Boolean {
+        var muxing = started
+        val info = MediaCodec.BufferInfo()
+        while (true) {
+            val ix = encoder.dequeueOutputBuffer(info, 0)
+            when {
+                ix == MediaCodec.INFO_TRY_AGAIN_LATER -> return muxing
+                ix == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    encTrack = addTracks(encoder.outputFormat)
+                    muxing = true
+                }
+                ix >= 0 -> {
+                    val out = encoder.getOutputBuffer(ix)!!
+                    if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) info.size = 0
+                    if (info.size > 0 && muxing) {
+                        out.position(info.offset)
+                        out.limit(info.offset + info.size)
+                        muxer.writeSampleData(encTrack, out, info)
+                    }
+                    val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                    encoder.releaseOutputBuffer(ix, false)
+                    if (eos) { onEOS?.invoke(); return muxing }
+                }
+            }
+        }
+    }
+
+    /**
+     * Hand a BGR frame to the encoder. The layout work is in [queueBgrFrame], shared with
+     * [LiveRecorder]; this is the run's half of it -- when to give up on a frame, and what
+     * to say when the component refuses one.
+     *
+     * ⚠ The refusal used to propagate as whatever MediaCodec threw, which is a stack with
+     * `native_queueInputBuffer` at the top and, for a CodecException, an EMPTY message. The
+     * same failure at `encoder.start()` was given [codecWhy] in 0.9.12 for exactly this
+     * reason and the per-frame path was left as it was; a field report then arrived as four
+     * lines of stack with no number in them.
+     */
+    private fun feedEncoder(encoder: MediaCodec, bgr: ByteArray, w: Int, h: Int, ptsUs: Long) {
+        val ix = encoder.dequeueInputBuffer(100_000)
+        if (ix < 0) {
+            // Dropped, and SAID so. Silence here makes a short output look like a decode
+            // problem, and on the ncnn path -- where a frame costs a third of a second --
+            // this is the one place a stalled encoder would be invisible.
+            onLog("encoder took no input for 100 ms: one frame dropped")
+            return
+        }
+        runCatching { queueBgrFrame(encoder, ix, bgr, w, h, ptsUs, onLog) }.onFailure { e ->
+            val name = runCatching { encoder.codecInfo.name }.getOrDefault("encoder")
+            error(codecWhy(e, "$name would not take a ${w}x$h frame at " +
+                              "${ptsUs / 1000} ms"))
+        }
+    }
+
+    /**
+     * Centre-crop a BGR frame to what the encoder accepts.
+     *
+     * Returns the input untouched in the common case, which is every clip whose dimensions
+     * already fit. The offsets are forced even so the chroma plane still lines up with the
+     * luma when this is subsampled on the way in.
+     */
+    private fun cropBgr(src: ByteArray, w: Int, h: Int, dw: Int, dh: Int): ByteArray {
+        if (dw == w && dh == h) return src
+        val x0 = ((w - dw) / 2) and 1.inv()
+        val y0 = ((h - dh) / 2) and 1.inv()
+        val out = ByteArray(dw * dh * 3)
+        for (y in 0 until dh)
+            System.arraycopy(src, ((y0 + y) * w + x0) * 3, out, y * dw * 3, dw * 3)
+        return out
+    }
+
+    private fun signalEncoderEOS(encoder: MediaCodec) {
+        val ix = encoder.dequeueInputBuffer(100_000)
+        if (ix >= 0) encoder.queueInputBuffer(ix, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+    }
+
+    private fun imageToBgr(image: android.media.Image, w: Int, h: Int): ByteArray {
+        val p = image.planes
+        fun bytes(b: ByteBuffer): ByteArray { val a = ByteArray(b.remaining()); b.get(a); return a }
+        return NativePipe.yuvToBgr(
+            bytes(p[0].buffer), p[0].rowStride,
+            bytes(p[1].buffer), p[1].rowStride, p[1].pixelStride,
+            bytes(p[2].buffer), p[2].rowStride, p[2].pixelStride,
+            w, h,
+        )
+    }
+
+    private fun durationUs(f: MediaFormat) =
+        if (f.containsKey(MediaFormat.KEY_DURATION)) f.getLong(MediaFormat.KEY_DURATION) else 0L
+}

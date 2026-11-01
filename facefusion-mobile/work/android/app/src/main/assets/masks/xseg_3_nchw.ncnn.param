@@ -1,0 +1,626 @@
+7767517
+624 702
+Input                    in0                      0 1 in0
+Convolution              conv_42                  1 1 in0 1 0=32 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=864
+BinaryOp                 mul_0                    1 1 1 2 0=2 1=1 2=0.0625
+Split                    splitncnn_0              1 3 2 3 4 5
+BinaryOp                 mul_1                    2 1 3 4 6 0=2
+Pooling                  gap_0                    1 1 6 7 0=1 4=1
+MemoryData               Reshape_31:0             0 1 8 0=1 1=1 2=32
+MemoryData               const_fold_opt__1405     0 1 9 0=1 1=1 2=32
+MemoryData               const_fold_opt__1414     0 1 10 0=1 1=1 2=32
+Reshape                  reshape_82               1 1 7 11 12=0 13=0 6="1,1,//(32,0n),0n"
+BinaryOp                 add_2                    1 1 11 12 0=0 1=1 2=4.88137128e-4
+UnaryOp                  sqrt_3                   1 1 12 13 0=5
+UnaryOp                  reciprocal_4             1 1 13 14 0=15
+BinaryOp                 mul_5                    2 1 8 14 15 0=2
+BinaryOp                 mul_6                    2 1 5 15 16 0=2
+BinaryOp                 add_7                    2 1 16 9 17 0=0
+BinaryOp                 max_8                    2 1 17 10 18 0=4
+Convolution              conv_43                  1 1 18 19 0=32 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=9216
+BinaryOp                 mul_9                    1 1 19 20 0=2 1=1 2=0.0625
+Split                    splitncnn_1              1 3 20 21 22 23
+BinaryOp                 mul_10                   2 1 21 22 24 0=2
+Pooling                  gap_1                    1 1 24 25 0=1 4=1
+MemoryData               Reshape_35:0             0 1 26 0=1 1=1 2=32
+MemoryData               const_fold_opt__1466     0 1 27 0=1 1=1 2=32
+MemoryData               const_fold_opt__1343     0 1 28 0=1 1=1 2=32
+Reshape                  reshape_83               1 1 25 29 12=0 13=0 6="1,1,//(32,0n),0n"
+BinaryOp                 add_11                   1 1 29 30 0=0 1=1 2=1.86030176e-2
+UnaryOp                  sqrt_12                  1 1 30 31 0=5
+UnaryOp                  reciprocal_13            1 1 31 32 0=15
+BinaryOp                 mul_14                   2 1 26 32 33 0=2
+BinaryOp                 mul_15                   2 1 23 33 34 0=2
+BinaryOp                 add_16                   2 1 34 27 35 0=0
+BinaryOp                 max_17                   2 1 35 28 36 0=4
+Split                    splitncnn_2              1 2 36 37 38
+ConvolutionDepthWise     padconvdw_0              1 1 38 39 0=32 1=4 11=4 12=1 13=2 14=1 15=2 16=2 2=1 3=2 4=1 5=0 6=512 7=32
+Convolution              conv_44                  1 1 39 40 0=64 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=18432
+BinaryOp                 mul_18                   1 1 40 41 0=2 1=1 2=0.0625
+Split                    splitncnn_3              1 3 41 42 43 44
+BinaryOp                 mul_19                   2 1 42 43 45 0=2
+Pooling                  gap_2                    1 1 45 46 0=1 4=1
+MemoryData               Reshape_39:0             0 1 47 0=1 1=1 2=64
+MemoryData               const_fold_opt__1361     0 1 48 0=1 1=1 2=64
+MemoryData               const_fold_opt__1427     0 1 49 0=1 1=1 2=64
+Reshape                  reshape_84               1 1 46 50 12=0 13=0 6="1,1,//(64,0n),0n"
+BinaryOp                 add_20                   1 1 50 51 0=0 1=1 2=2.46561714e-4
+UnaryOp                  sqrt_21                  1 1 51 52 0=5
+UnaryOp                  reciprocal_22            1 1 52 53 0=15
+BinaryOp                 mul_23                   2 1 47 53 54 0=2
+BinaryOp                 mul_24                   2 1 44 54 55 0=2
+BinaryOp                 add_25                   2 1 55 48 56 0=0
+BinaryOp                 max_26                   2 1 56 49 57 0=4
+Convolution              conv_45                  1 1 57 58 0=64 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=36864
+BinaryOp                 mul_27                   1 1 58 59 0=2 1=1 2=0.0625
+Split                    splitncnn_4              1 3 59 60 61 62
+BinaryOp                 mul_28                   2 1 60 61 63 0=2
+Pooling                  gap_3                    1 1 63 64 0=1 4=1
+MemoryData               Reshape_43:0             0 1 65 0=1 1=1 2=64
+MemoryData               const_fold_opt__1432     0 1 66 0=1 1=1 2=64
+MemoryData               const_fold_opt__1417     0 1 67 0=1 1=1 2=64
+Reshape                  reshape_85               1 1 64 68 12=0 13=0 6="1,1,//(64,0n),0n"
+BinaryOp                 add_29                   1 1 68 69 0=0 1=1 2=1.40327141e-2
+UnaryOp                  sqrt_30                  1 1 69 70 0=5
+UnaryOp                  reciprocal_31            1 1 70 71 0=15
+BinaryOp                 mul_32                   2 1 65 71 72 0=2
+BinaryOp                 mul_33                   2 1 62 72 73 0=2
+BinaryOp                 add_34                   2 1 73 66 74 0=0
+BinaryOp                 max_35                   2 1 74 67 75 0=4
+Split                    splitncnn_5              1 2 75 76 77
+ConvolutionDepthWise     convdw_122               1 1 77 78 0=64 1=3 11=3 12=1 13=2 14=1 2=1 3=2 4=1 5=0 6=576 7=64
+Convolution              conv_46                  1 1 78 79 0=128 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=73728
+BinaryOp                 mul_36                   1 1 79 80 0=2 1=1 2=0.0625
+Split                    splitncnn_6              1 3 80 81 82 83
+BinaryOp                 mul_37                   2 1 81 82 84 0=2
+Pooling                  gap_4                    1 1 84 85 0=1 4=1
+MemoryData               Reshape_47:0             0 1 86 0=1 1=1 2=128
+MemoryData               const_fold_opt__1387     0 1 87 0=1 1=1 2=128
+MemoryData               const_fold_opt__1412     0 1 88 0=1 1=1 2=128
+Reshape                  reshape_86               1 1 85 89 12=0 13=0 6="1,1,//(128,0n),0n"
+BinaryOp                 add_38                   1 1 89 90 0=0 1=1 2=1.10467225e-2
+UnaryOp                  sqrt_39                  1 1 90 91 0=5
+UnaryOp                  reciprocal_40            1 1 91 92 0=15
+BinaryOp                 mul_41                   2 1 86 92 93 0=2
+BinaryOp                 mul_42                   2 1 83 93 94 0=2
+BinaryOp                 add_43                   2 1 94 87 95 0=0
+BinaryOp                 max_44                   2 1 95 88 96 0=4
+Convolution              conv_47                  1 1 96 97 0=128 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=147456
+BinaryOp                 mul_45                   1 1 97 98 0=2 1=1 2=0.0625
+Split                    splitncnn_7              1 3 98 99 100 101
+BinaryOp                 mul_46                   2 1 99 100 102 0=2
+Pooling                  gap_5                    1 1 102 103 0=1 4=1
+MemoryData               Reshape_51:0             0 1 104 0=1 1=1 2=128
+MemoryData               const_fold_opt__1467     0 1 105 0=1 1=1 2=128
+MemoryData               const_fold_opt__1358     0 1 106 0=1 1=1 2=128
+Reshape                  reshape_87               1 1 103 107 12=0 13=0 6="1,1,//(128,0n),0n"
+BinaryOp                 add_47                   1 1 107 108 0=0 1=1 2=1.86794326e-2
+UnaryOp                  sqrt_48                  1 1 108 109 0=5
+UnaryOp                  reciprocal_49            1 1 109 110 0=15
+BinaryOp                 mul_50                   2 1 104 110 111 0=2
+BinaryOp                 mul_51                   2 1 101 111 112 0=2
+BinaryOp                 add_52                   2 1 112 105 113 0=0
+BinaryOp                 max_53                   2 1 113 106 114 0=4
+Split                    splitncnn_8              1 2 114 115 116
+ConvolutionDepthWise     padconvdw_1              1 1 116 117 0=128 1=2 11=2 12=1 13=2 14=0 15=1 16=1 2=1 3=2 4=0 5=0 6=512 7=128
+Convolution              conv_48                  1 1 117 118 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=294912
+BinaryOp                 mul_54                   1 1 118 119 0=2 1=1 2=0.0625
+Split                    splitncnn_9              1 3 119 120 121 122
+BinaryOp                 mul_55                   2 1 120 121 123 0=2
+Pooling                  gap_6                    1 1 123 124 0=1 4=1
+MemoryData               Reshape_55:0             0 1 125 0=1 1=1 2=256
+MemoryData               const_fold_opt__1395     0 1 126 0=1 1=1 2=256
+MemoryData               const_fold_opt__1390     0 1 127 0=1 1=1 2=256
+Reshape                  reshape_88               1 1 124 128 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_56                   1 1 128 129 0=0 1=1 2=0.02446514
+UnaryOp                  sqrt_57                  1 1 129 130 0=5
+UnaryOp                  reciprocal_58            1 1 130 131 0=15
+BinaryOp                 mul_59                   2 1 125 131 132 0=2
+BinaryOp                 mul_60                   2 1 122 132 133 0=2
+BinaryOp                 add_61                   2 1 133 126 134 0=0
+BinaryOp                 max_62                   2 1 134 127 135 0=4
+Convolution              conv_49                  1 1 135 136 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_63                   1 1 136 137 0=2 1=1 2=0.0625
+Split                    splitncnn_10             1 3 137 138 139 140
+BinaryOp                 mul_64                   2 1 138 139 141 0=2
+Pooling                  gap_7                    1 1 141 142 0=1 4=1
+MemoryData               Reshape_59:0             0 1 143 0=1 1=1 2=256
+MemoryData               const_fold_opt__1406     0 1 144 0=1 1=1 2=256
+MemoryData               const_fold_opt__1394     0 1 145 0=1 1=1 2=256
+Reshape                  reshape_89               1 1 142 146 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_65                   1 1 146 147 0=0 1=1 2=2.48676185e-2
+UnaryOp                  sqrt_66                  1 1 147 148 0=5
+UnaryOp                  reciprocal_67            1 1 148 149 0=15
+BinaryOp                 mul_68                   2 1 143 149 150 0=2
+BinaryOp                 mul_69                   2 1 140 150 151 0=2
+BinaryOp                 add_70                   2 1 151 144 152 0=0
+BinaryOp                 max_71                   2 1 152 145 153 0=4
+Convolution              conv_50                  1 1 153 154 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_72                   1 1 154 155 0=2 1=1 2=0.0625
+Split                    splitncnn_11             1 3 155 156 157 158
+BinaryOp                 mul_73                   2 1 156 157 159 0=2
+Pooling                  gap_8                    1 1 159 160 0=1 4=1
+MemoryData               Reshape_63:0             0 1 161 0=1 1=1 2=256
+MemoryData               const_fold_opt__1362     0 1 162 0=1 1=1 2=256
+MemoryData               const_fold_opt__1430     0 1 163 0=1 1=1 2=256
+Reshape                  reshape_90               1 1 160 164 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_74                   1 1 164 165 0=0 1=1 2=0.01140696
+UnaryOp                  sqrt_75                  1 1 165 166 0=5
+UnaryOp                  reciprocal_76            1 1 166 167 0=15
+BinaryOp                 mul_77                   2 1 161 167 168 0=2
+BinaryOp                 mul_78                   2 1 158 168 169 0=2
+BinaryOp                 add_79                   2 1 169 162 170 0=0
+BinaryOp                 max_80                   2 1 170 163 171 0=4
+Split                    splitncnn_12             1 2 171 172 173
+ConvolutionDepthWise     padconvdw_2              1 1 173 174 0=256 1=2 11=2 12=1 13=2 14=0 15=1 16=1 2=1 3=2 4=0 5=0 6=1024 7=256
+Convolution              conv_51                  1 1 174 175 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_81                   1 1 175 176 0=2 1=1 2=0.0625
+Split                    splitncnn_13             1 3 176 177 178 179
+BinaryOp                 mul_82                   2 1 177 178 180 0=2
+Pooling                  gap_9                    1 1 180 181 0=1 4=1
+MemoryData               Reshape_67:0             0 1 182 0=1 1=1 2=256
+MemoryData               const_fold_opt__1477     0 1 183 0=1 1=1 2=256
+MemoryData               const_fold_opt__1346     0 1 184 0=1 1=1 2=256
+Reshape                  reshape_91               1 1 181 185 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_83                   1 1 185 186 0=0 1=1 2=2.55009849e-2
+UnaryOp                  sqrt_84                  1 1 186 187 0=5
+UnaryOp                  reciprocal_85            1 1 187 188 0=15
+BinaryOp                 mul_86                   2 1 182 188 189 0=2
+BinaryOp                 mul_87                   2 1 179 189 190 0=2
+BinaryOp                 add_88                   2 1 190 183 191 0=0
+BinaryOp                 max_89                   2 1 191 184 192 0=4
+Convolution              conv_52                  1 1 192 193 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_90                   1 1 193 194 0=2 1=1 2=0.0625
+Split                    splitncnn_14             1 3 194 195 196 197
+BinaryOp                 mul_91                   2 1 195 196 198 0=2
+Pooling                  gap_10                   1 1 198 199 0=1 4=1
+MemoryData               Reshape_71:0             0 1 200 0=1 1=1 2=256
+MemoryData               const_fold_opt__1376     0 1 201 0=1 1=1 2=256
+MemoryData               const_fold_opt__1402     0 1 202 0=1 1=1 2=256
+Reshape                  reshape_92               1 1 199 203 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_92                   1 1 203 204 0=0 1=1 2=3.03301439e-2
+UnaryOp                  sqrt_93                  1 1 204 205 0=5
+UnaryOp                  reciprocal_94            1 1 205 206 0=15
+BinaryOp                 mul_95                   2 1 200 206 207 0=2
+BinaryOp                 mul_96                   2 1 197 207 208 0=2
+BinaryOp                 add_97                   2 1 208 201 209 0=0
+BinaryOp                 max_98                   2 1 209 202 210 0=4
+Convolution              conv_53                  1 1 210 211 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_99                   1 1 211 212 0=2 1=1 2=0.0625
+Split                    splitncnn_15             1 3 212 213 214 215
+BinaryOp                 mul_100                  2 1 213 214 216 0=2
+Pooling                  gap_11                   1 1 216 217 0=1 4=1
+MemoryData               Reshape_75:0             0 1 218 0=1 1=1 2=256
+MemoryData               const_fold_opt__1434     0 1 219 0=1 1=1 2=256
+MemoryData               const_fold_opt__1354     0 1 220 0=1 1=1 2=256
+Reshape                  reshape_93               1 1 217 221 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_101                  1 1 221 222 0=0 1=1 2=1.13821104e-2
+UnaryOp                  sqrt_102                 1 1 222 223 0=5
+UnaryOp                  reciprocal_103           1 1 223 224 0=15
+BinaryOp                 mul_104                  2 1 218 224 225 0=2
+BinaryOp                 mul_105                  2 1 215 225 226 0=2
+BinaryOp                 add_106                  2 1 226 219 227 0=0
+BinaryOp                 max_107                  2 1 227 220 228 0=4
+Split                    splitncnn_16             1 2 228 229 230
+ConvolutionDepthWise     padconvdw_3              1 1 230 231 0=256 1=2 11=2 12=1 13=2 14=0 15=1 16=1 2=1 3=2 4=0 5=0 6=1024 7=256
+Convolution              conv_54                  1 1 231 232 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_108                  1 1 232 233 0=2 1=1 2=0.0625
+Split                    splitncnn_17             1 3 233 234 235 236
+BinaryOp                 mul_109                  2 1 234 235 237 0=2
+Pooling                  gap_12                   1 1 237 238 0=1 4=1
+MemoryData               Reshape_79:0             0 1 239 0=1 1=1 2=256
+MemoryData               const_fold_opt__1339     0 1 240 0=1 1=1 2=256
+MemoryData               const_fold_opt__1375     0 1 241 0=1 1=1 2=256
+Reshape                  reshape_94               1 1 238 242 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_110                  1 1 242 243 0=0 1=1 2=0.026820248
+UnaryOp                  sqrt_111                 1 1 243 244 0=5
+UnaryOp                  reciprocal_112           1 1 244 245 0=15
+BinaryOp                 mul_113                  2 1 239 245 246 0=2
+BinaryOp                 mul_114                  2 1 236 246 247 0=2
+BinaryOp                 add_115                  2 1 247 240 248 0=0
+BinaryOp                 max_116                  2 1 248 241 249 0=4
+Convolution              conv_55                  1 1 249 250 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_117                  1 1 250 251 0=2 1=1 2=0.0625
+Split                    splitncnn_18             1 3 251 252 253 254
+BinaryOp                 mul_118                  2 1 252 253 255 0=2
+Pooling                  gap_13                   1 1 255 256 0=1 4=1
+MemoryData               Reshape_83:0             0 1 257 0=1 1=1 2=256
+MemoryData               const_fold_opt__1460     0 1 258 0=1 1=1 2=256
+MemoryData               const_fold_opt__1338     0 1 259 0=1 1=1 2=256
+Reshape                  reshape_95               1 1 256 260 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_119                  1 1 260 261 0=0 1=1 2=2.46261433e-2
+UnaryOp                  sqrt_120                 1 1 261 262 0=5
+UnaryOp                  reciprocal_121           1 1 262 263 0=15
+BinaryOp                 mul_122                  2 1 257 263 264 0=2
+BinaryOp                 mul_123                  2 1 254 264 265 0=2
+BinaryOp                 add_124                  2 1 265 258 266 0=0
+BinaryOp                 max_125                  2 1 266 259 267 0=4
+Convolution              conv_56                  1 1 267 268 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_126                  1 1 268 269 0=2 1=1 2=0.0625
+Split                    splitncnn_19             1 3 269 270 271 272
+BinaryOp                 mul_127                  2 1 270 271 273 0=2
+Pooling                  gap_14                   1 1 273 274 0=1 4=1
+MemoryData               Reshape_87:0             0 1 275 0=1 1=1 2=256
+MemoryData               const_fold_opt__1335     0 1 276 0=1 1=1 2=256
+MemoryData               const_fold_opt__1333     0 1 277 0=1 1=1 2=256
+Reshape                  reshape_96               1 1 274 278 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_128                  1 1 278 279 0=0 1=1 2=4.72641690e-3
+UnaryOp                  sqrt_129                 1 1 279 280 0=5
+UnaryOp                  reciprocal_130           1 1 280 281 0=15
+BinaryOp                 mul_131                  2 1 275 281 282 0=2
+BinaryOp                 mul_132                  2 1 272 282 283 0=2
+BinaryOp                 add_133                  2 1 283 276 284 0=0
+BinaryOp                 max_134                  2 1 284 277 285 0=4
+Split                    splitncnn_20             1 2 285 286 287
+ConvolutionDepthWise     padconvdw_4              1 1 287 288 0=256 1=2 11=2 12=1 13=2 14=0 15=1 16=1 2=1 3=2 4=0 5=0 6=1024 7=256
+Reshape                  reshape_97               1 1 288 289 0=4096
+InnerProduct             linear_79                1 1 289 290 0=512 1=0 2=2097152
+MemoryData               Reshape_91:0             0 1 291 0=512
+BinaryOp                 add_135                  2 1 290 291 292 0=0
+InnerProduct             linear_80                1 1 292 293 0=4096 1=0 2=2097152
+MemoryData               Reshape_92:0             0 1 294 0=4096
+BinaryOp                 add_136                  2 1 293 294 295 0=0
+Reshape                  reshape_98               1 1 295 296 0=4 1=4 2=256
+Deconvolution            deconv_73                1 1 296 297 0=128 1=3 11=3 12=1 13=2 14=0 18=0 19=0 2=1 3=2 4=0 5=0 6=294912
+Crop                     slice_0                  1 1 297 298 -23310=2,-1,-1 -23311=2,1,2 -23309=2,0,0
+MemoryData               const_fold_opt__1456     0 1 299 0=1 1=1 2=128
+BinaryOp                 add_137                  2 1 298 299 300 0=0
+BinaryOp                 mul_138                  1 1 300 301 0=2 1=1 2=0.0625
+Split                    splitncnn_21             1 3 301 302 303 304
+BinaryOp                 mul_139                  2 1 302 303 305 0=2
+Pooling                  gap_15                   1 1 305 306 0=1 4=1
+MemoryData               Reshape_95:0             0 1 307 0=1 1=1 2=128
+MemoryData               const_fold_opt__1397     0 1 308 0=1 1=1 2=128
+MemoryData               const_fold_opt__1457     0 1 309 0=1 1=1 2=128
+Reshape                  reshape_99               1 1 306 310 12=0 13=0 6="1,1,//(128,0n),0n"
+BinaryOp                 add_140                  1 1 310 311 0=0 1=1 2=0.007697728
+UnaryOp                  sqrt_141                 1 1 311 312 0=5
+UnaryOp                  reciprocal_142           1 1 312 313 0=15
+BinaryOp                 mul_143                  2 1 307 313 314 0=2
+BinaryOp                 mul_144                  2 1 304 314 315 0=2
+BinaryOp                 add_145                  2 1 315 308 316 0=0
+BinaryOp                 max_146                  2 1 316 309 317 0=4
+Concat                   cat_0                    2 1 317 286 318 0=0
+Convolution              conv_57                  1 1 318 319 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=884736
+BinaryOp                 mul_147                  1 1 319 320 0=2 1=1 2=0.0625
+Split                    splitncnn_22             1 3 320 321 322 323
+BinaryOp                 mul_148                  2 1 321 322 324 0=2
+Pooling                  gap_16                   1 1 324 325 0=1 4=1
+MemoryData               Reshape_99:0             0 1 326 0=1 1=1 2=256
+MemoryData               const_fold_opt__1365     0 1 327 0=1 1=1 2=256
+MemoryData               const_fold_opt__1399     0 1 328 0=1 1=1 2=256
+Reshape                  reshape_100              1 1 325 329 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_149                  1 1 329 330 0=0 1=1 2=2.289524e-5
+UnaryOp                  sqrt_150                 1 1 330 331 0=5
+UnaryOp                  reciprocal_151           1 1 331 332 0=15
+BinaryOp                 mul_152                  2 1 326 332 333 0=2
+BinaryOp                 mul_153                  2 1 323 333 334 0=2
+BinaryOp                 add_154                  2 1 334 327 335 0=0
+BinaryOp                 max_155                  2 1 335 328 336 0=4
+Convolution              conv_58                  1 1 336 337 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_156                  1 1 337 338 0=2 1=1 2=0.0625
+Split                    splitncnn_23             1 3 338 339 340 341
+BinaryOp                 mul_157                  2 1 339 340 342 0=2
+Pooling                  gap_17                   1 1 342 343 0=1 4=1
+MemoryData               Reshape_103:0            0 1 344 0=1 1=1 2=256
+MemoryData               const_fold_opt__1379     0 1 345 0=1 1=1 2=256
+MemoryData               const_fold_opt__1356     0 1 346 0=1 1=1 2=256
+Reshape                  reshape_101              1 1 343 347 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_158                  1 1 347 348 0=0 1=1 2=1.10357132e-6
+UnaryOp                  sqrt_159                 1 1 348 349 0=5
+UnaryOp                  reciprocal_160           1 1 349 350 0=15
+BinaryOp                 mul_161                  2 1 344 350 351 0=2
+BinaryOp                 mul_162                  2 1 341 351 352 0=2
+BinaryOp                 add_163                  2 1 352 345 353 0=0
+BinaryOp                 max_164                  2 1 353 346 354 0=4
+Convolution              conv_59                  1 1 354 355 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_165                  1 1 355 356 0=2 1=1 2=0.0625
+Split                    splitncnn_24             1 3 356 357 358 359
+BinaryOp                 mul_166                  2 1 357 358 360 0=2
+Pooling                  gap_18                   1 1 360 361 0=1 4=1
+MemoryData               Reshape_107:0            0 1 362 0=1 1=1 2=256
+MemoryData               const_fold_opt__1413     0 1 363 0=1 1=1 2=256
+MemoryData               const_fold_opt__1369     0 1 364 0=1 1=1 2=256
+Reshape                  reshape_102              1 1 361 365 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_167                  1 1 365 366 0=0 1=1 2=1.713134e-5
+UnaryOp                  sqrt_168                 1 1 366 367 0=5
+UnaryOp                  reciprocal_169           1 1 367 368 0=15
+BinaryOp                 mul_170                  2 1 362 368 369 0=2
+BinaryOp                 mul_171                  2 1 359 369 370 0=2
+BinaryOp                 add_172                  2 1 370 363 371 0=0
+BinaryOp                 max_173                  2 1 371 364 372 0=4
+Deconvolution            deconv_74                1 1 372 373 0=128 1=3 11=3 12=1 13=2 14=0 18=0 19=0 2=1 3=2 4=0 5=0 6=294912
+Crop                     slice_1                  1 1 373 374 -23310=2,-1,-1 -23311=2,1,2 -23309=2,0,0
+MemoryData               const_fold_opt__1447     0 1 375 0=1 1=1 2=128
+BinaryOp                 add_174                  2 1 374 375 376 0=0
+BinaryOp                 mul_175                  1 1 376 377 0=2 1=1 2=0.0625
+Split                    splitncnn_25             1 3 377 378 379 380
+BinaryOp                 mul_176                  2 1 378 379 381 0=2
+Pooling                  gap_19                   1 1 381 382 0=1 4=1
+MemoryData               Reshape_111:0            0 1 383 0=1 1=1 2=128
+MemoryData               const_fold_opt__1400     0 1 384 0=1 1=1 2=128
+MemoryData               const_fold_opt__1436     0 1 385 0=1 1=1 2=128
+Reshape                  reshape_103              1 1 382 386 12=0 13=0 6="1,1,//(128,0n),0n"
+BinaryOp                 add_177                  1 1 386 387 0=0 1=1 2=1.66954451e-5
+UnaryOp                  sqrt_178                 1 1 387 388 0=5
+UnaryOp                  reciprocal_179           1 1 388 389 0=15
+BinaryOp                 mul_180                  2 1 383 389 390 0=2
+BinaryOp                 mul_181                  2 1 380 390 391 0=2
+BinaryOp                 add_182                  2 1 391 384 392 0=0
+BinaryOp                 max_183                  2 1 392 385 393 0=4
+Concat                   cat_1                    2 1 393 229 394 0=0
+Convolution              conv_60                  1 1 394 395 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=884736
+BinaryOp                 mul_184                  1 1 395 396 0=2 1=1 2=0.0625
+Split                    splitncnn_26             1 3 396 397 398 399
+BinaryOp                 mul_185                  2 1 397 398 400 0=2
+Pooling                  gap_20                   1 1 400 401 0=1 4=1
+MemoryData               Reshape_115:0            0 1 402 0=1 1=1 2=256
+MemoryData               const_fold_opt__1345     0 1 403 0=1 1=1 2=256
+MemoryData               const_fold_opt__1341     0 1 404 0=1 1=1 2=256
+Reshape                  reshape_104              1 1 401 405 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_186                  1 1 405 406 0=0 1=1 2=2.93605626e-6
+UnaryOp                  sqrt_187                 1 1 406 407 0=5
+UnaryOp                  reciprocal_188           1 1 407 408 0=15
+BinaryOp                 mul_189                  2 1 402 408 409 0=2
+BinaryOp                 mul_190                  2 1 399 409 410 0=2
+BinaryOp                 add_191                  2 1 410 403 411 0=0
+BinaryOp                 max_192                  2 1 411 404 412 0=4
+Convolution              conv_61                  1 1 412 413 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_193                  1 1 413 414 0=2 1=1 2=0.0625
+Split                    splitncnn_27             1 3 414 415 416 417
+BinaryOp                 mul_194                  2 1 415 416 418 0=2
+Pooling                  gap_21                   1 1 418 419 0=1 4=1
+MemoryData               Reshape_119:0            0 1 420 0=1 1=1 2=256
+MemoryData               const_fold_opt__1454     0 1 421 0=1 1=1 2=256
+MemoryData               const_fold_opt__1423     0 1 422 0=1 1=1 2=256
+Reshape                  reshape_105              1 1 419 423 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_195                  1 1 423 424 0=0 1=1 2=8.48734453e-6
+UnaryOp                  sqrt_196                 1 1 424 425 0=5
+UnaryOp                  reciprocal_197           1 1 425 426 0=15
+BinaryOp                 mul_198                  2 1 420 426 427 0=2
+BinaryOp                 mul_199                  2 1 417 427 428 0=2
+BinaryOp                 add_200                  2 1 428 421 429 0=0
+BinaryOp                 max_201                  2 1 429 422 430 0=4
+Convolution              conv_62                  1 1 430 431 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_202                  1 1 431 432 0=2 1=1 2=0.0625
+Split                    splitncnn_28             1 3 432 433 434 435
+BinaryOp                 mul_203                  2 1 433 434 436 0=2
+Pooling                  gap_22                   1 1 436 437 0=1 4=1
+MemoryData               Reshape_123:0            0 1 438 0=1 1=1 2=256
+MemoryData               const_fold_opt__1435     0 1 439 0=1 1=1 2=256
+MemoryData               const_fold_opt__1433     0 1 440 0=1 1=1 2=256
+Reshape                  reshape_106              1 1 437 441 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_204                  1 1 441 442 0=0 1=1 2=4.803917e-6
+UnaryOp                  sqrt_205                 1 1 442 443 0=5
+UnaryOp                  reciprocal_206           1 1 443 444 0=15
+BinaryOp                 mul_207                  2 1 438 444 445 0=2
+BinaryOp                 mul_208                  2 1 435 445 446 0=2
+BinaryOp                 add_209                  2 1 446 439 447 0=0
+BinaryOp                 max_210                  2 1 447 440 448 0=4
+Deconvolution            deconv_75                1 1 448 449 0=128 1=3 11=3 12=1 13=2 14=0 18=0 19=0 2=1 3=2 4=0 5=0 6=294912
+Crop                     slice_2                  1 1 449 450 -23310=2,-1,-1 -23311=2,1,2 -23309=2,0,0
+MemoryData               const_fold_opt__1353     0 1 451 0=1 1=1 2=128
+BinaryOp                 add_211                  2 1 450 451 452 0=0
+BinaryOp                 mul_212                  1 1 452 453 0=2 1=1 2=0.0625
+Split                    splitncnn_29             1 3 453 454 455 456
+BinaryOp                 mul_213                  2 1 454 455 457 0=2
+Pooling                  gap_23                   1 1 457 458 0=1 4=1
+MemoryData               Reshape_127:0            0 1 459 0=1 1=1 2=128
+MemoryData               const_fold_opt__1340     0 1 460 0=1 1=1 2=128
+MemoryData               const_fold_opt__1393     0 1 461 0=1 1=1 2=128
+Reshape                  reshape_107              1 1 458 462 12=0 13=0 6="1,1,//(128,0n),0n"
+BinaryOp                 add_214                  1 1 462 463 0=0 1=1 2=8.396845e-6
+UnaryOp                  sqrt_215                 1 1 463 464 0=5
+UnaryOp                  reciprocal_216           1 1 464 465 0=15
+BinaryOp                 mul_217                  2 1 459 465 466 0=2
+BinaryOp                 mul_218                  2 1 456 466 467 0=2
+BinaryOp                 add_219                  2 1 467 460 468 0=0
+BinaryOp                 max_220                  2 1 468 461 469 0=4
+Concat                   cat_2                    2 1 469 172 470 0=0
+Convolution              conv_63                  1 1 470 471 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=884736
+BinaryOp                 mul_221                  1 1 471 472 0=2 1=1 2=0.0625
+Split                    splitncnn_30             1 3 472 473 474 475
+BinaryOp                 mul_222                  2 1 473 474 476 0=2
+Pooling                  gap_24                   1 1 476 477 0=1 4=1
+MemoryData               Reshape_131:0            0 1 478 0=1 1=1 2=256
+MemoryData               const_fold_opt__1465     0 1 479 0=1 1=1 2=256
+MemoryData               const_fold_opt__1420     0 1 480 0=1 1=1 2=256
+Reshape                  reshape_108              1 1 477 481 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_223                  1 1 481 482 0=0 1=1 2=4.186715e-6
+UnaryOp                  sqrt_224                 1 1 482 483 0=5
+UnaryOp                  reciprocal_225           1 1 483 484 0=15
+BinaryOp                 mul_226                  2 1 478 484 485 0=2
+BinaryOp                 mul_227                  2 1 475 485 486 0=2
+BinaryOp                 add_228                  2 1 486 479 487 0=0
+BinaryOp                 max_229                  2 1 487 480 488 0=4
+Convolution              conv_64                  1 1 488 489 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_230                  1 1 489 490 0=2 1=1 2=0.0625
+Split                    splitncnn_31             1 3 490 491 492 493
+BinaryOp                 mul_231                  2 1 491 492 494 0=2
+Pooling                  gap_25                   1 1 494 495 0=1 4=1
+MemoryData               Reshape_135:0            0 1 496 0=1 1=1 2=256
+MemoryData               const_fold_opt__1428     0 1 497 0=1 1=1 2=256
+MemoryData               const_fold_opt__1363     0 1 498 0=1 1=1 2=256
+Reshape                  reshape_109              1 1 495 499 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_232                  1 1 499 500 0=0 1=1 2=3.05858612e-6
+UnaryOp                  sqrt_233                 1 1 500 501 0=5
+UnaryOp                  reciprocal_234           1 1 501 502 0=15
+BinaryOp                 mul_235                  2 1 496 502 503 0=2
+BinaryOp                 mul_236                  2 1 493 503 504 0=2
+BinaryOp                 add_237                  2 1 504 497 505 0=0
+BinaryOp                 max_238                  2 1 505 498 506 0=4
+Convolution              conv_65                  1 1 506 507 0=256 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=589824
+BinaryOp                 mul_239                  1 1 507 508 0=2 1=1 2=0.0625
+Split                    splitncnn_32             1 3 508 509 510 511
+BinaryOp                 mul_240                  2 1 509 510 512 0=2
+Pooling                  gap_26                   1 1 512 513 0=1 4=1
+MemoryData               Reshape_139:0            0 1 514 0=1 1=1 2=256
+MemoryData               const_fold_opt__1449     0 1 515 0=1 1=1 2=256
+MemoryData               const_fold_opt__1485     0 1 516 0=1 1=1 2=256
+Reshape                  reshape_110              1 1 513 517 12=0 13=0 6="1,1,//(256,0n),0n"
+BinaryOp                 add_241                  1 1 517 518 0=0 1=1 2=1.59979024e-7
+UnaryOp                  sqrt_242                 1 1 518 519 0=5
+UnaryOp                  reciprocal_243           1 1 519 520 0=15
+BinaryOp                 mul_244                  2 1 514 520 521 0=2
+BinaryOp                 mul_245                  2 1 511 521 522 0=2
+BinaryOp                 add_246                  2 1 522 515 523 0=0
+BinaryOp                 max_247                  2 1 523 516 524 0=4
+Deconvolution            deconv_76                1 1 524 525 0=128 1=3 11=3 12=1 13=2 14=0 18=0 19=0 2=1 3=2 4=0 5=0 6=294912
+Crop                     slice_3                  1 1 525 526 -23310=2,-1,-1 -23311=2,1,2 -23309=2,0,0
+MemoryData               const_fold_opt__1452     0 1 527 0=1 1=1 2=128
+BinaryOp                 add_248                  2 1 526 527 528 0=0
+BinaryOp                 mul_249                  1 1 528 529 0=2 1=1 2=0.0625
+Split                    splitncnn_33             1 3 529 530 531 532
+BinaryOp                 mul_250                  2 1 530 531 533 0=2
+Pooling                  gap_27                   1 1 533 534 0=1 4=1
+MemoryData               Reshape_143:0            0 1 535 0=1 1=1 2=128
+MemoryData               const_fold_opt__1418     0 1 536 0=1 1=1 2=128
+MemoryData               const_fold_opt__1348     0 1 537 0=1 1=1 2=128
+Reshape                  reshape_111              1 1 534 538 12=0 13=0 6="1,1,//(128,0n),0n"
+BinaryOp                 add_251                  1 1 538 539 0=0 1=1 2=1.21187613e-5
+UnaryOp                  sqrt_252                 1 1 539 540 0=5
+UnaryOp                  reciprocal_253           1 1 540 541 0=15
+BinaryOp                 mul_254                  2 1 535 541 542 0=2
+BinaryOp                 mul_255                  2 1 532 542 543 0=2
+BinaryOp                 add_256                  2 1 543 536 544 0=0
+BinaryOp                 max_257                  2 1 544 537 545 0=4
+Concat                   cat_3                    2 1 545 115 546 0=0
+Convolution              conv_66                  1 1 546 547 0=128 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=294912
+BinaryOp                 mul_258                  1 1 547 548 0=2 1=1 2=0.0625
+Split                    splitncnn_34             1 3 548 549 550 551
+BinaryOp                 mul_259                  2 1 549 550 552 0=2
+Pooling                  gap_28                   1 1 552 553 0=1 4=1
+MemoryData               Reshape_147:0            0 1 554 0=1 1=1 2=128
+MemoryData               const_fold_opt__1398     0 1 555 0=1 1=1 2=128
+MemoryData               const_fold_opt__1426     0 1 556 0=1 1=1 2=128
+Reshape                  reshape_112              1 1 553 557 12=0 13=0 6="1,1,//(128,0n),0n"
+BinaryOp                 add_260                  1 1 557 558 0=0 1=1 2=2.15040654e-6
+UnaryOp                  sqrt_261                 1 1 558 559 0=5
+UnaryOp                  reciprocal_262           1 1 559 560 0=15
+BinaryOp                 mul_263                  2 1 554 560 561 0=2
+BinaryOp                 mul_264                  2 1 551 561 562 0=2
+BinaryOp                 add_265                  2 1 562 555 563 0=0
+BinaryOp                 max_266                  2 1 563 556 564 0=4
+Convolution              conv_67                  1 1 564 565 0=128 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=147456
+BinaryOp                 mul_267                  1 1 565 566 0=2 1=1 2=0.0625
+Split                    splitncnn_35             1 3 566 567 568 569
+BinaryOp                 mul_268                  2 1 567 568 570 0=2
+Pooling                  gap_29                   1 1 570 571 0=1 4=1
+MemoryData               Reshape_151:0            0 1 572 0=1 1=1 2=128
+MemoryData               const_fold_opt__1441     0 1 573 0=1 1=1 2=128
+MemoryData               const_fold_opt__1349     0 1 574 0=1 1=1 2=128
+Reshape                  reshape_113              1 1 571 575 12=0 13=0 6="1,1,//(128,0n),0n"
+BinaryOp                 add_269                  1 1 575 576 0=0 1=1 2=2.18166620e-3
+UnaryOp                  sqrt_270                 1 1 576 577 0=5
+UnaryOp                  reciprocal_271           1 1 577 578 0=15
+BinaryOp                 mul_272                  2 1 572 578 579 0=2
+BinaryOp                 mul_273                  2 1 569 579 580 0=2
+BinaryOp                 add_274                  2 1 580 573 581 0=0
+BinaryOp                 max_275                  2 1 581 574 582 0=4
+Deconvolution            deconv_77                1 1 582 583 0=64 1=3 11=3 12=1 13=2 14=0 18=0 19=0 2=1 3=2 4=0 5=0 6=73728
+Crop                     slice_4                  1 1 583 584 -23310=2,-1,-1 -23311=2,1,2 -23309=2,0,0
+MemoryData               const_fold_opt__1384     0 1 585 0=1 1=1 2=64
+BinaryOp                 add_276                  2 1 584 585 586 0=0
+BinaryOp                 mul_277                  1 1 586 587 0=2 1=1 2=0.0625
+Split                    splitncnn_36             1 3 587 588 589 590
+BinaryOp                 mul_278                  2 1 588 589 591 0=2
+Pooling                  gap_30                   1 1 591 592 0=1 4=1
+MemoryData               Reshape_155:0            0 1 593 0=1 1=1 2=64
+MemoryData               const_fold_opt__1355     0 1 594 0=1 1=1 2=64
+MemoryData               const_fold_opt__1364     0 1 595 0=1 1=1 2=64
+Reshape                  reshape_114              1 1 592 596 12=0 13=0 6="1,1,//(64,0n),0n"
+BinaryOp                 add_279                  1 1 596 597 0=0 1=1 2=7.456807e-6
+UnaryOp                  sqrt_280                 1 1 597 598 0=5
+UnaryOp                  reciprocal_281           1 1 598 599 0=15
+BinaryOp                 mul_282                  2 1 593 599 600 0=2
+BinaryOp                 mul_283                  2 1 590 600 601 0=2
+BinaryOp                 add_284                  2 1 601 594 602 0=0
+BinaryOp                 max_285                  2 1 602 595 603 0=4
+Concat                   cat_4                    2 1 603 76 604 0=0
+Convolution              conv_68                  1 1 604 605 0=64 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=73728
+BinaryOp                 mul_286                  1 1 605 606 0=2 1=1 2=0.0625
+Split                    splitncnn_37             1 3 606 607 608 609
+BinaryOp                 mul_287                  2 1 607 608 610 0=2
+Pooling                  gap_31                   1 1 610 611 0=1 4=1
+MemoryData               Reshape_159:0            0 1 612 0=1 1=1 2=64
+MemoryData               const_fold_opt__1425     0 1 613 0=1 1=1 2=64
+MemoryData               const_fold_opt__1404     0 1 614 0=1 1=1 2=64
+Reshape                  reshape_115              1 1 611 615 12=0 13=0 6="1,1,//(64,0n),0n"
+BinaryOp                 add_288                  1 1 615 616 0=0 1=1 2=5.58871652e-5
+UnaryOp                  sqrt_289                 1 1 616 617 0=5
+UnaryOp                  reciprocal_290           1 1 617 618 0=15
+BinaryOp                 mul_291                  2 1 612 618 619 0=2
+BinaryOp                 mul_292                  2 1 609 619 620 0=2
+BinaryOp                 add_293                  2 1 620 613 621 0=0
+BinaryOp                 max_294                  2 1 621 614 622 0=4
+Convolution              conv_69                  1 1 622 623 0=64 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=36864
+BinaryOp                 mul_295                  1 1 623 624 0=2 1=1 2=0.0625
+Split                    splitncnn_38             1 3 624 625 626 627
+BinaryOp                 mul_296                  2 1 625 626 628 0=2
+Pooling                  gap_32                   1 1 628 629 0=1 4=1
+MemoryData               Reshape_163:0            0 1 630 0=1 1=1 2=64
+MemoryData               const_fold_opt__1424     0 1 631 0=1 1=1 2=64
+MemoryData               const_fold_opt__1352     0 1 632 0=1 1=1 2=64
+Reshape                  reshape_116              1 1 629 633 12=0 13=0 6="1,1,//(64,0n),0n"
+BinaryOp                 add_297                  1 1 633 634 0=0 1=1 2=2.14266165e-5
+UnaryOp                  sqrt_298                 1 1 634 635 0=5
+UnaryOp                  reciprocal_299           1 1 635 636 0=15
+BinaryOp                 mul_300                  2 1 630 636 637 0=2
+BinaryOp                 mul_301                  2 1 627 637 638 0=2
+BinaryOp                 add_302                  2 1 638 631 639 0=0
+BinaryOp                 max_303                  2 1 639 632 640 0=4
+Deconvolution            deconv_78                1 1 640 641 0=32 1=3 11=3 12=1 13=2 14=0 18=0 19=0 2=1 3=2 4=0 5=0 6=18432
+Crop                     slice_5                  1 1 641 642 -23310=2,-1,-1 -23311=2,1,2 -23309=2,0,0
+MemoryData               const_fold_opt__1388     0 1 643 0=1 1=1 2=32
+BinaryOp                 add_304                  2 1 642 643 644 0=0
+BinaryOp                 mul_305                  1 1 644 645 0=2 1=1 2=0.0625
+Split                    splitncnn_39             1 3 645 646 647 648
+BinaryOp                 mul_306                  2 1 646 647 649 0=2
+Pooling                  gap_33                   1 1 649 650 0=1 4=1
+MemoryData               Reshape_167:0            0 1 651 0=1 1=1 2=32
+MemoryData               const_fold_opt__1444     0 1 652 0=1 1=1 2=32
+MemoryData               const_fold_opt__1360     0 1 653 0=1 1=1 2=32
+Reshape                  reshape_117              1 1 650 654 12=0 13=0 6="1,1,//(32,0n),0n"
+BinaryOp                 add_307                  1 1 654 655 0=0 1=1 2=1.87849832e-6
+UnaryOp                  sqrt_308                 1 1 655 656 0=5
+UnaryOp                  reciprocal_309           1 1 656 657 0=15
+BinaryOp                 mul_310                  2 1 651 657 658 0=2
+BinaryOp                 mul_311                  2 1 648 658 659 0=2
+BinaryOp                 add_312                  2 1 659 652 660 0=0
+BinaryOp                 max_313                  2 1 660 653 661 0=4
+Concat                   cat_5                    2 1 661 37 662 0=0
+Convolution              conv_70                  1 1 662 663 0=32 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=18432
+BinaryOp                 mul_314                  1 1 663 664 0=2 1=1 2=0.0625
+Split                    splitncnn_40             1 3 664 665 666 667
+BinaryOp                 mul_315                  2 1 665 666 668 0=2
+Pooling                  gap_34                   1 1 668 669 0=1 4=1
+MemoryData               Reshape_171:0            0 1 670 0=1 1=1 2=32
+MemoryData               const_fold_opt__1429     0 1 671 0=1 1=1 2=32
+MemoryData               const_fold_opt__1347     0 1 672 0=1 1=1 2=32
+Reshape                  reshape_118              1 1 669 673 12=0 13=0 6="1,1,//(32,0n),0n"
+BinaryOp                 add_316                  1 1 673 674 0=0 1=1 2=5.37900951e-6
+UnaryOp                  sqrt_317                 1 1 674 675 0=5
+UnaryOp                  reciprocal_318           1 1 675 676 0=15
+BinaryOp                 mul_319                  2 1 670 676 677 0=2
+BinaryOp                 mul_320                  2 1 667 677 678 0=2
+BinaryOp                 add_321                  2 1 678 671 679 0=0
+BinaryOp                 max_322                  2 1 679 672 680 0=4
+Convolution              conv_71                  1 1 680 681 0=32 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=9216
+BinaryOp                 mul_323                  1 1 681 682 0=2 1=1 2=0.0625
+Split                    splitncnn_41             1 3 682 683 684 685
+BinaryOp                 mul_324                  2 1 683 684 686 0=2
+Pooling                  gap_35                   1 1 686 687 0=1 4=1
+MemoryData               Reshape_175:0            0 1 688 0=1 1=1 2=32
+MemoryData               const_fold_opt__1421     0 1 689 0=1 1=1 2=32
+MemoryData               const_fold_opt__1389     0 1 690 0=1 1=1 2=32
+Reshape                  reshape_119              1 1 687 691 12=0 13=0 6="1,1,//(32,0n),0n"
+BinaryOp                 add_325                  1 1 691 692 0=0 1=1 2=2.17249850e-4
+UnaryOp                  sqrt_326                 1 1 692 693 0=5
+UnaryOp                  reciprocal_327           1 1 693 694 0=15
+BinaryOp                 mul_328                  2 1 688 694 695 0=2
+BinaryOp                 mul_329                  2 1 685 695 696 0=2
+BinaryOp                 add_330                  2 1 696 689 697 0=0
+BinaryOp                 max_331                  2 1 697 690 698 0=4
+Convolution              convsigmoid_0            1 1 698 699 0=1 1=3 11=3 12=1 13=1 14=1 2=1 3=1 4=1 5=1 6=288 9=4
+Reshape                  reshape_120              1 1 699 700 0=1 1=256 2=256
+Permute                  permute_81               1 1 700 out0 0=4
