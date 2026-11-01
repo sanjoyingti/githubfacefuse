@@ -48,7 +48,7 @@ object BugReport {
 
     fun hasCrash(context: Context) = crashFile(context).canRead()
 
-    fun clearCrash(context: Context) { crashFile(context).delete() }
+    fun clearCrash(context: Context) { crashFile(context).safeDelete() }
 
     private fun stamp() =
         SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())

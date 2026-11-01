@@ -545,7 +545,7 @@ class VideoSwapper(
             extractor.release()
             if (audioExtractor !== extractor) audioExtractor.release()
             muxer.release()
-            File(outputPath).delete()
+            File(outputPath).safeDelete()
             error(if (cancelled) "cancelled before any frame was written" else "no frames encoded")
         }
 

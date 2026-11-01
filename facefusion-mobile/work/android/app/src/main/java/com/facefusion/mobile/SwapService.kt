@@ -37,6 +37,7 @@ class SwapService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        SafeFiles.init(this)
         if (intent?.action == ACTION_CANCEL) {
             SwapStatus.cancelRequested = true
             return START_NOT_STICKY
@@ -48,7 +49,7 @@ class SwapService : Service() {
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "facefusion:swap").apply {
                     setReferenceCounted(false)
                     // A ceiling, not the expected length: released as soon as the run ends.
-                    acquire(4 * 60 * 60 * 1000L)
+                    acquire(12 * 60 * 60 * 1000L)
                 }
         }
         Thread({
@@ -63,6 +64,16 @@ class SwapService : Service() {
             stopSelf()
         }, "swap-notify").start()
         return START_NOT_STICKY
+    }
+
+    /**
+     * Android 15+ caps a dataSync foreground service at 6 hours a day and then calls this.
+     * The service must stop within seconds or the system kills the app. Only the keep-alive
+     * ends here; the run itself carries on in the app while it stays open.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        stopSelf()
     }
 
     override fun onDestroy() {

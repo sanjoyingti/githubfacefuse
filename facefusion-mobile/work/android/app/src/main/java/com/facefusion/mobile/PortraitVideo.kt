@@ -252,7 +252,7 @@ class PortraitVideo(
         if (ei >= 0) encoder.queueInputBuffer(ei, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
         drain(true)
         if (!muxing) {
-            encoder.stop(); encoder.release(); muxer.release(); File(outputPath).delete()
+            encoder.stop(); encoder.release(); muxer.release(); File(outputPath).safeDelete()
             error(if (cancelled) "cancelled before any frame was written" else "no frames encoded")
         }
         // The soundtrack, cut to the video's length.

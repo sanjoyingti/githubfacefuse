@@ -323,7 +323,7 @@ object ModelDownload {
         val already = doneBytes
 
         // A .part longer than the target is from a different revision of the file.
-        if (part.exists() && part.length() > e.bytes) part.delete()
+        if (part.exists() && part.length() > e.bytes) part.safeDelete()
 
         var conn: HttpURLConnection? = null
         try {
@@ -342,7 +342,7 @@ object ModelDownload {
             if (from > 0 && code != HttpURLConnection.HTTP_PARTIAL) {
                 // The server ignored the Range, so the bytes coming back start at zero.
                 // Appending them to the .part would silently corrupt it.
-                part.delete()
+                part.safeDelete()
                 from = 0
             }
             if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_PARTIAL)
@@ -378,7 +378,7 @@ object ModelDownload {
 
     private fun verifyAndCommit(part: File, dest: File, e: Entry): String? {
         if (part.length() != e.bytes) {
-            part.delete()
+            part.safeDelete()
             return "${e.name}: expected ${e.bytes} bytes, got ${part.length()}"
         }
         val md = MessageDigest.getInstance("SHA-256")
@@ -393,14 +393,14 @@ object ModelDownload {
         val got = md.digest().joinToString("") { "%02x".format(it) }
         if (!got.equals(e.sha256, ignoreCase = true)) {
             // Not resumable: a hash mismatch means the bytes we have are wrong, not short.
-            part.delete()
+            part.safeDelete()
             return "${e.name}: checksum mismatch"
         }
         if (e.name.startsWith("nsfw") && !got.equals(PINNED[e.name], ignoreCase = true)) {
-            part.delete()
+            part.safeDelete()
             return "${e.name}: not a file this app accepts"
         }
-        dest.delete()
+        dest.safeDelete()
         return if (part.renameTo(dest)) null else "${e.name}: could not be saved"
     }
 }

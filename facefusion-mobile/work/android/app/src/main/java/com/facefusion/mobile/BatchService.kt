@@ -68,6 +68,16 @@ class BatchService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * Android 15+ caps a dataSync foreground service at 6 hours a day and then calls this.
+     * The service must stop within seconds or the system kills the app. Only the keep-alive
+     * ends here; the run itself carries on in the app while it stays open.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        stopSelf()
+    }
+
     override fun onDestroy() {
         runCatching { wake?.takeIf { it.isHeld }?.release() }
         wake = null
@@ -75,6 +85,7 @@ class BatchService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        SafeFiles.init(this)
         if (intent?.action == ACTION_CANCEL) {
             BatchStatus.cancelled = true
             return START_NOT_STICKY

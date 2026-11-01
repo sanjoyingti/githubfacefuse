@@ -697,7 +697,7 @@ class MainActivity : ComponentActivity() {
         if (dst.exists()) {
             confirm(R.string.faces_unsave_title, R.string.faces_unsave_body,
                     R.string.faces_unsave_ok, destructive = true) {
-                runCatching { dst.delete() }
+                runCatching { dst.safeDelete() }
                 refreshSavedFaces()
                 status = getString(R.string.faces_unsaved_toast)
             }
@@ -751,7 +751,7 @@ class MainActivity : ComponentActivity() {
     private fun deleteSavedFace(uri: Uri) {
         confirm(R.string.faces_delete_title, R.string.faces_delete_body,
                 R.string.common_delete, destructive = true) {
-            runCatching { uri.path?.let { File(it).delete() } }
+            runCatching { uri.path?.let { File(it).safeDelete() } }
             refreshSavedFaces()
         }
     }
@@ -812,7 +812,7 @@ class MainActivity : ComponentActivity() {
         runCatching {
             if (gone.scheme == "file") {
                 val f = File(gone.path!!)
-                if (f.parentFile == sourcesDir()) f.delete()
+                if (f.parentFile == sourcesDir()) f.safeDelete()
             }
         }
         sources = sources.filterIndexed { i, _ -> i != index }
@@ -1583,6 +1583,7 @@ class MainActivity : ComponentActivity() {
         intent?.getStringExtra("lowmem")?.let {
             if (it == "auto" || it == "on" || it == "off") ModelPaths.setLowMemory(this, it)
         }
+        SafeFiles.init(this)
         ModelPaths.apply(this)
         Thermal.init(this)
         reportLastExit()
@@ -2119,7 +2120,7 @@ class MainActivity : ComponentActivity() {
                                 onDeleteModel = { m ->
                                     // Every file of the row, not just the one it is named
                                     // after: an ncnn model is a param/bin pair.
-                                    m.files.forEach { File(modelDir(), it).delete() }
+                                    m.files.forEach { File(modelDir(), it).safeDelete() }
                                     modelsVersion++
                                     // Hard: the file behind the loaded pipeline just went
                                     // away, and the redraw is what reports which one.
@@ -3572,7 +3573,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun discardOutput() {
         val gone = outputFile
-        gone?.delete()
+        gone?.safeDelete()
         outputFile = null; outputPartial = false; savedUri = null; savedPathLabel = null
         // ⚠ A QUEUE ROW MAY BE POINTING AT WHAT WAS JUST DELETED. The row is the only way
         // back to a batch clip, so leaving it Done with a dead File means a thumbnail that
@@ -3602,7 +3603,7 @@ class MainActivity : ComponentActivity() {
     private fun sweepOrphanedOutputs() {
         val swept = outputDir().listFiles { f: File ->
             f.isFile && f.name.startsWith("swapped_") && f.name.endsWith(".mp4")
-        }?.count { it.delete() } ?: 0
+        }?.count { it.safeDelete() } ?: 0
         if (swept > 0) android.util.Log.i("ffmain", "swept $swept orphaned output(s)")
     }
 
@@ -3697,8 +3698,21 @@ class MainActivity : ComponentActivity() {
      * PipeGuard would stay HELD, so the next run anywhere in the app reports the NPU busy
      * with no way to clear it short of killing the process.
      */
+    /**
+     * Whether the screen is showing this app. A run in the background skips building the
+     * live preview picture of each frame -- nobody can see it, and it is CPU and battery
+     * spent for nothing. The swap itself is unaffected.
+     */
+    @Volatile private var appVisible = true
+
+    override fun onStart() {
+        super.onStart()
+        appVisible = true
+    }
+
     override fun onStop() {
         super.onStop()
+        appVisible = false
         if (liveRunning) stopLive()
     }
 
@@ -3736,7 +3750,7 @@ class MainActivity : ComponentActivity() {
             // Step the pane off it first: the player holds the file, and a pane pointing at
             // a deleted path shows a black rectangle with no way back.
             if (outputFile == f) { outputFile = null; savedUri = null; savedPathLabel = null }
-            runCatching { f.delete() }
+            runCatching { f.safeDelete() }
         }
 
         if (i == 0) {
@@ -4071,7 +4085,7 @@ class MainActivity : ComponentActivity() {
             val out = withContext(Dispatchers.IO) { rec.stop() }
             liveFinalizing = false
             if (discard) {
-                out?.delete()
+                out?.safeDelete()
                 return@launch
             }
             val err = rec.error
@@ -4645,7 +4659,7 @@ class MainActivity : ComponentActivity() {
                             // previewIntervalMs for why the number is derived and not a
                             // setting. Read once per run, not per frame.
                             val now = System.currentTimeMillis()
-                            if (now - lastPreview >= previewInterval) {
+                            if (appVisible && now - lastPreview >= previewInterval) {
                                 lastPreview = now
                                 val pw = 480
                                 val ph = (h.toLong() * pw / w).toInt().coerceAtLeast(1)
@@ -4791,7 +4805,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onFrame = { f, fw, fh ->
                             val now = System.currentTimeMillis()
-                            if (now - lastPreview >= previewInterval) {
+                            if (appVisible && now - lastPreview >= previewInterval) {
                                 lastPreview = now
                                 val pw = 480
                                 val ph = (fh.toLong() * pw / fw).toInt().coerceAtLeast(1)
@@ -4870,7 +4884,7 @@ class MainActivity : ComponentActivity() {
         // start, when onCreate's sweep found them. Anything auto-saved is already a
         // separate copy in the gallery and is unaffected.
         batchQueue = batchQueue.map {
-            it.output?.let { f -> runCatching { f.delete() } }
+            it.output?.let { f -> runCatching { f.safeDelete() } }
             it.copy(state = BatchState.Waiting, output = null, detail = null, thumb = null)
         }
 
@@ -5030,7 +5044,7 @@ class MainActivity : ComponentActivity() {
                             onFrame = { bgr, w, h ->
                                 // Same rule as the single-clip path above.
                                 val now = System.currentTimeMillis()
-                                if (now - lastPreview >= previewInterval) {
+                                if (appVisible && now - lastPreview >= previewInterval) {
                                     lastPreview = now
                                     val pw = 480
                                     val ph = (h.toLong() * pw / w).toInt().coerceAtLeast(1)
@@ -5050,7 +5064,7 @@ class MainActivity : ComponentActivity() {
                 }
                 // Whatever it got to is not a result. Deleting it here keeps a cancelled
                 // twelve-clip batch from leaving a trail of unplayable fragments.
-                if (r.isFailure) partial?.let { f -> runCatching { f.delete() } }
+                if (r.isFailure) partial?.let { f -> runCatching { f.safeDelete() } }
                 batchQueue = batchQueue.mapIndexed { j, it ->
                     if (j != i) it else r.fold(
                         { (f, th) ->
@@ -5083,7 +5097,7 @@ class MainActivity : ComponentActivity() {
                 // The COPY, not the output. A twelve-clip batch would otherwise leave
                 // twelve full-size videos in the cache behind the twelve it produced.
                 if (i > 0 && item.uri.scheme != "file")
-                    runCatching { File(cacheDir, "batch_" + (i + 1) + ".mp4").delete() }
+                    runCatching { File(cacheDir, "batch_" + (i + 1) + ".mp4").safeDelete() }
             }
 
             status = getString(R.string.status_batch_done, done, refused + failed)
