@@ -170,5 +170,13 @@ int main(int argc, char** argv) {
            pipe.hasOcclusionModel(), pipe.hasParserModel());
   }
   printf("%s\n", ffpipe::Pipeline::maskStatus().c_str());
+  {
+    // Thread count at the end: a leak per frame shows here.
+    FILE* st = fopen("/proc/self/status", "r");
+    char line[256];
+    while (st && fgets(line, sizeof(line), st))
+      if (strncmp(line, "Threads:", 8) == 0) printf("%s", line);
+    if (st) fclose(st);
+  }
   return 0;
 }

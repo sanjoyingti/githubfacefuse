@@ -1606,6 +1606,7 @@ class MainActivity : ComponentActivity() {
             if (it.swapper == "inswapper") it.copy(swapper = "hyperswap") else it
         }
         ApiService.restore(this)
+        if (crashedLastTime) enterSafeMode()
 
         // adb: ... --es selftest 1 --es enhance 1 --es lipsync 1   (or `0` to force OFF)
         //
@@ -3188,7 +3189,11 @@ class MainActivity : ComponentActivity() {
                 runCatching {
                     // MediaExtractor needs a real path; SAF only gives a stream.
                     val f = File(cacheDir, "target.mp4")
-                    contentResolver.openInputStream(uri).use { i ->
+                    // Restoring after a crash re-opens THIS file: copying it onto itself would
+                    // truncate it to nothing before the first byte is read.
+                    val same = uri.scheme == "file" &&
+                        uri.path?.let { File(it).canonicalPath == f.canonicalPath } == true
+                    if (!same) contentResolver.openInputStream(uri).use { i ->
                         f.outputStream().use { o -> i!!.copyTo(o) }
                     }
                     val mmr = MediaMetadataRetriever().apply { setDataSource(f.absolutePath) }
@@ -4466,7 +4471,29 @@ class MainActivity : ComponentActivity() {
                 (info.description?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: "")
             appendLog(msg)
             status = msg
+            crashedLastTime = true
         }
+    }
+
+    /** Set by [reportLastExit]; acted on by [enterSafeMode] once the options are loaded. */
+    private var crashedLastTime = false
+
+    /**
+     * After an abnormal exit: switch off the optional stages that cost the most memory and
+     * native work -- the expression restorer and 512 pixel boost -- so one crash cannot turn
+     * into a crash loop, say so, and bring back the target video the crash took off the
+     * screen (it is still in the app's cache, see [loadTarget]). The masks and everything
+     * else stay as they were.
+     */
+    private fun enterSafeMode() {
+        val safe = opts.copy(expressionRestore = false, pixelBoost = 1, detectRotated = false)
+        val changed = safe != opts
+        if (changed) { opts = safe; safe.save(this) }
+        val msg = getString(if (changed) R.string.status_safe_mode else R.string.status_safe_mode_same)
+        appendLog(msg)
+        status = if (status.isBlank()) msg else "$status\n$msg"
+        val last = File(cacheDir, "target.mp4")
+        if (last.isFile && last.length() > 0) loadTarget(Uri.fromFile(last))
     }
 
     private fun runSwap() {

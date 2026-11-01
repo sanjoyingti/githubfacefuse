@@ -6,10 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <future>
 #include <mutex>
 
 #include "ffnn.h"
@@ -244,7 +244,12 @@ struct Pipeline::Impl {
     int miss = 0;
   };
   struct Sequence {
-    bool on = false;
+    // Written by setSequence from ANY thread (the UI thread stops the live player), read by
+    // analyse on the pipeline thread. The face list itself is only touched by analyse: a
+    // reset is REQUESTED here and carried out at the start of the next analyse, so the UI
+    // thread never clears a vector the pipeline thread is iterating.
+    std::atomic<bool> on{false};
+    std::atomic<bool> resetPending{false};
     std::vector<SeqFace> faces;
     void reset() { faces.clear(); }
   };
@@ -810,6 +815,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   double t0 = 0;
 
   auto& tr = p_->track;
+  if (p_->seq.resetPending.exchange(false)) p_->seq.reset();
   const int trackPeriod =
       p_->trackPeriodOverride >= 0 ? p_->trackPeriodOverride : ffTrackPeriod();
   // ⚠ boxesOnly never tracks: reconstructing the box from the PREVIOUS frame is
@@ -1207,7 +1213,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
 void Pipeline::setSequence(bool on) {
   if (!p_) return;
   p_->seq.on = on;
-  p_->seq.reset();
+  p_->seq.resetPending = true;
 }
 
 bool Pipeline::hasOcclusionModel() const { return p_ && p_->n.occ != nullptr; }
@@ -2422,22 +2428,13 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // slot: "keep this person's own face" is not a swap with a different source.
     if (six == kNoSource) continue;
 
-    // The MASK MODELS read only the original crop, so they run on a worker thread WHILE the
-    // swapper runs: on a Qualcomm part that is the GPU (or CPU) beside the NPU, and the
-    // mask's cost mostly disappears behind the swap's. The future is joined before the
-    // paste; an early return still joins it (std::async's future blocks in its destructor),
-    // and everything the lambda reads is declared above it.
+    // The MASK MODELS run on THIS thread, before the paste. Build 7 ran them on a
+    // std::async thread per face to overlap the swapper; on device that path crashed
+    // inside swapAll (SEGV_MAPERR, and an abort), so it is gone. Sequential is what builds
+    // 4-6 shipped. The fp16 GPU arithmetic, which is where most of the speed came from,
+    // stays.
     const bool modelMasks = p_->wantsMaskModels();
     ffcv::MatF faceMask;
-    std::string maskErr;
-    std::future<bool> maskJob;
-    if (modelMasks) {
-      faceMask = mask;
-      Impl* impl = p_.get();
-      maskJob = std::async(std::launch::async, [impl, &crop, &faceMask, &maskErr] {
-        return impl->applyMaskModels(crop, faceMask, maskErr);
-      });
-    }
     const float* srcEmbNorm = p_->srcEmbeddingNorm;
     if (!p_->sourceSlots.empty() && six >= 0 && six < (int)p_->sourceSlots.size())
       srcEmbNorm = p_->sourceSlots[(size_t)six].data();
@@ -2508,12 +2505,9 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // scaled by the pose fade.
     const ffcv::MatF* useMask = &mask;
     if (modelMasks || f.poseFade < 0.999f) {
-      t0 = nowMs();   // only the WAIT is counted: the rest overlapped the swapper
-      if (modelMasks) {
-        if (!maskJob.get()) { err_ = maskErr; return false; }
-      } else {
-        faceMask = mask;
-      }
+      t0 = nowMs();
+      faceMask = mask;
+      if (modelMasks && !p_->applyMaskModels(crop, faceMask, err_)) return false;
       if (f.poseFade < 0.999f)
         for (float& v : faceMask.data) v *= f.poseFade;
       Impl::CachedMask cm;

@@ -17,6 +17,7 @@
 #include <cstdlib>   // setenv/unsetenv, for setForcedBackend
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,14 @@
 namespace {
 
 std::unique_ptr<ffpipe::Pipeline> g_pipe;
+// EVERY JNI entry point that touches g_pipe holds this for its whole length. The preview,
+// the run, the live camera and the UI all call in from different threads, and nothing else
+// serialised them: a reload or release() on one thread while another was inside swapAll
+// freed the pipeline under it (SEGV_MAPERR in swapAll, seen on device when a target video
+// was picked while a preview frame was running). Recursive, because a few entry points
+// call others.
+std::recursive_mutex g_pipeMu;
+#define FF_PIPE_LOCK std::lock_guard<std::recursive_mutex> ffPipeLock(g_pipeMu)
 std::string g_err;
 std::string g_rejectedTier;
 std::string g_rejectedWhy;
@@ -199,6 +208,7 @@ Java_com_facefusion_mobile_NativePipe_initEx(JNIEnv* env, jclass, jstring jLib, 
                                              jboolean faceEnhance, jfloat enhanceBlend,
                                              jfloat lipSyncWeight,
                                              jfloat referenceDistance) {
+  FF_PIPE_LOCK;
   g_pipe.reset(new ffpipe::Pipeline());
   ffpipe::Config cfg;
   std::string swapper = jstr(env, jSwapper);
@@ -259,6 +269,7 @@ Java_com_facefusion_mobile_NativePipe_setOptionsEx(JNIEnv* env, jclass,
                                                    jfloat enhanceBlend,
                                                    jfloat lipSyncWeight,
                                                    jfloat referenceDistance) {
+  FF_PIPE_LOCK;
   if (!g_pipe) return JNI_FALSE;
   ffpipe::Config cfg;
   tunables(env, cfg, weight, maskBlur, jPadding, detScore, lmkScore, pixelBoost,
@@ -276,6 +287,7 @@ Java_com_facefusion_mobile_NativePipe_setOptionsEx(JNIEnv* env, jclass,
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setFaceEditor(JNIEnv* env, jclass, jboolean enabled,
                                                     jfloatArray jSliders) {
+  FF_PIPE_LOCK;
   g_faceEdit = false;
   if (enabled == JNI_TRUE && jSliders && env->GetArrayLength(jSliders) == 14) {
     env->GetFloatArrayRegion(jSliders, 0, 14, g_faceEditor);
@@ -292,12 +304,14 @@ Java_com_facefusion_mobile_NativePipe_setFaceEditor(JNIEnv* env, jclass, jboolea
 // Whether the face editor's set loaded AND executed at init (Pipeline::hasFaceEditor).
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_hasFaceEditor(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   return (g_pipe && g_pipe->hasFaceEditor()) ? JNI_TRUE : JNI_FALSE;
 }
 
 // Why it did not, or "" -- "not installed", a missing MLP file, or a graph this HTP refused.
 JNIEXPORT jstring JNICALL
 Java_com_facefusion_mobile_NativePipe_faceEditorError(JNIEnv* env, jclass) {
+  FF_PIPE_LOCK;
   return env->NewStringUTF(g_pipe ? g_pipe->faceEditorError().c_str() : "");
 }
 
@@ -320,6 +334,7 @@ Java_com_facefusion_mobile_NativePipe_rejectedReason(JNIEnv* env, jclass) {
 // clears the period in its cleanup, which can run after release() on a cancelled job.
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setTrackPeriod(JNIEnv*, jclass, jint frames) {
+  FF_PIPE_LOCK;
   if (g_pipe) g_pipe->setTrackPeriod((int)frames);
 }
 
@@ -334,6 +349,7 @@ Java_com_facefusion_mobile_NativePipe_setQuality(JNIEnv*, jclass, jboolean occlu
                                                  jfloat colorMatch,
                                                  jboolean expressionRestore,
                                                  jfloat expressionFactor) {
+  FF_PIPE_LOCK;
   auto unit = [](float v, float dflt) {
     return std::isfinite(v) ? std::fmin(1.f, std::fmax(0.f, v)) : dflt;
   };
@@ -358,6 +374,7 @@ Java_com_facefusion_mobile_NativePipe_setQuality(JNIEnv*, jclass, jboolean occlu
 
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setSequence(JNIEnv*, jclass, jboolean on) {
+  FF_PIPE_LOCK;
   g_sequence = on == JNI_TRUE;
   if (g_pipe) g_pipe->setSequence(g_sequence);
 }
@@ -378,6 +395,7 @@ Java_com_facefusion_mobile_NativePipe_maskModelStatus(JNIEnv* env, jclass) {
 // the first frame that needs them, so this reads 0 before any swap has run.
 JNIEXPORT jint JNICALL
 Java_com_facefusion_mobile_NativePipe_maskModelState(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   if (!g_pipe) return 0;
   return (g_pipe->hasOcclusionModel() ? 1 : 0) | (g_pipe->hasParserModel() ? 2 : 0);
 }
@@ -405,6 +423,7 @@ Java_com_facefusion_mobile_NativePipe_requestFaceAssignment(JNIEnv*, jclass,
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setSelectedFaceKeepOriginal(JNIEnv*, jclass,
                                                                   jboolean keep) {
+  FF_PIPE_LOCK;
   if (g_pipe) g_pipe->setSelectedFaceKeepOriginal(keep == JNI_TRUE);
 }
 
@@ -421,6 +440,7 @@ Java_com_facefusion_mobile_NativePipe_assignFaceAt(JNIEnv* env, jclass,
                                                    jbyteArray jBgr, jint w, jint h,
                                                    jfloat x, jfloat y, jint source,
                                                    jboolean keepOriginal) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return env->NewFloatArray(0); }
   if (w <= 0 || h <= 0) { g_err = "assignFaceAt: bad frame size"; return env->NewFloatArray(0); }
   ffcv::Image img(w, h, 3);
@@ -446,6 +466,7 @@ Java_com_facefusion_mobile_NativePipe_restoreFaceAssignment(JNIEnv* env, jclass,
                                                             jfloatArray jEmbedding,
                                                             jint source,
                                                             jboolean keepOriginal) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return JNI_FALSE; }
   if (!jEmbedding || env->GetArrayLength(jEmbedding) != 512) {
     g_err = "restoreFaceAssignment: embedding is not 512 floats";
@@ -490,6 +511,7 @@ Java_com_facefusion_mobile_NativePipe_takeAssignmentResult(JNIEnv* env, jclass) 
 // exactly what the user asked for when they turn the feature off.
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setFaceAssignEnabled(JNIEnv*, jclass, jboolean enabled) {
+  FF_PIPE_LOCK;
   g_assignEnabled = enabled == JNI_TRUE;
   if (g_pipe) g_pipe->setFaceAssignEnabled(g_assignEnabled);
 }
@@ -501,6 +523,7 @@ Java_com_facefusion_mobile_NativePipe_setFaceAssignEnabled(JNIEnv*, jclass, jboo
 // EMPTY when nobody is selected. A pure query: it does not consume anything.
 JNIEXPORT jfloatArray JNICALL
 Java_com_facefusion_mobile_NativePipe_takeSelectionBox(JNIEnv* env, jclass) {
+  FF_PIPE_LOCK;
   if (!g_pipe) return env->NewFloatArray(0);
   float raw[4]; int source = -1;
   if (!g_pipe->selectedFaceBox(raw, &source)) return env->NewFloatArray(0);
@@ -515,6 +538,7 @@ Java_com_facefusion_mobile_NativePipe_takeSelectionBox(JNIEnv* env, jclass) {
 
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_clearFaceSourceAssignments(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   if (g_pipe) g_pipe->clearFaceSourceAssignments();
 }
 
@@ -536,7 +560,8 @@ Java_com_facefusion_mobile_NativePipe_setSkipTiers(JNIEnv* env, jclass, jstring 
 }
 
 JNIEXPORT void JNICALL
-Java_com_facefusion_mobile_NativePipe_release(JNIEnv*, jclass) { g_pipe.reset(); }
+Java_com_facefusion_mobile_NativePipe_release(JNIEnv*, jclass) {
+  FF_PIPE_LOCK; g_pipe.reset(); }
 
 // The content gate on one BGR frame.  Returns upstream's decision statistic,
 // `logit[0] - logit[1]`, or NaN if the graph did not run.
@@ -548,6 +573,7 @@ Java_com_facefusion_mobile_NativePipe_release(JNIEnv*, jclass) { g_pipe.reset();
 JNIEXPORT jfloat JNICALL
 Java_com_facefusion_mobile_NativePipe_contentScore(JNIEnv* env, jclass, jbyteArray jBgr,
                                                    jint w, jint h) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return NAN; }
   ffcv::Image img(w, h, 3);
   if ((size_t)env->GetArrayLength(jBgr) != img.data.size()) {
@@ -576,6 +602,7 @@ Java_com_facefusion_mobile_NativePipe_contentScore(JNIEnv* env, jclass, jbyteArr
 JNIEXPORT jfloatArray JNICALL
 Java_com_facefusion_mobile_NativePipe_detectFaces(JNIEnv* env, jclass, jbyteArray jBgr,
                                                   jint w, jint h) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return env->NewFloatArray(0); }
   ffcv::Image img(w, h, 3);
   if ((size_t)env->GetArrayLength(jBgr) != img.data.size()) {
@@ -612,6 +639,7 @@ JNIEXPORT jfloatArray JNICALL
 Java_com_facefusion_mobile_NativePipe_setReferenceFaceAt(JNIEnv* env, jclass,
                                                          jbyteArray jBgr, jint w, jint h,
                                                          jfloat x, jfloat y) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return env->NewFloatArray(0); }
   ffcv::Image img(w, h, 3);
   if ((size_t)env->GetArrayLength(jBgr) != img.data.size()) {
@@ -635,6 +663,7 @@ Java_com_facefusion_mobile_NativePipe_setReferenceFaceAt(JNIEnv* env, jclass,
 
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_clearReferenceFace(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   // BOTH copies. Clearing only the pipeline's would let the next init put it straight back.
   g_refEmbedding.clear();
   if (g_pipe) g_pipe->clearReferenceFace();
@@ -642,6 +671,7 @@ Java_com_facefusion_mobile_NativePipe_clearReferenceFace(JNIEnv*, jclass) {
 
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_hasReferenceFace(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   // The KEPT copy, not the pipeline's: this is asked while no pipeline is loaded (a target
   // change releases it), and answering "no" then would drop a selection that is still set.
   return (!g_refEmbedding.empty() || (g_pipe && g_pipe->hasReferenceFace()))
@@ -654,6 +684,7 @@ JNIEXPORT jfloatArray JNICALL
 Java_com_facefusion_mobile_NativePipe_addLipReferenceFaceAt(JNIEnv* env, jclass,
                                                             jbyteArray jBgr, jint w, jint h,
                                                             jfloat x, jfloat y) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return env->NewFloatArray(0); }
   ffcv::Image img(w, h, 3);
   if ((size_t)env->GetArrayLength(jBgr) != img.data.size()) {
@@ -692,6 +723,7 @@ Java_com_facefusion_mobile_NativePipe_addLipReferenceFaceAt(JNIEnv* env, jclass,
 
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_removeLipReferenceAt(JNIEnv*, jclass, jint index) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return JNI_FALSE; }
   if (!g_pipe->removeLipReferenceAt((int)index)) {
     g_err = g_pipe->error();
@@ -712,12 +744,14 @@ Java_com_facefusion_mobile_NativePipe_removeLipReferenceAt(JNIEnv*, jclass, jint
 
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_clearLipReferenceFace(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   g_lipRefEmbeddings.clear();
   if (g_pipe) g_pipe->clearLipReferenceFace();
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_hasLipReferenceFace(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   return (!g_lipRefEmbeddings.empty() || (g_pipe && g_pipe->hasLipReferenceFace()))
              ? JNI_TRUE : JNI_FALSE;
 }
@@ -728,6 +762,7 @@ Java_com_facefusion_mobile_NativePipe_hasLipReferenceFace(JNIEnv*, jclass) {
 JNIEXPORT jfloatArray JNICALL
 Java_com_facefusion_mobile_NativePipe_lipReferenceEmbedding(JNIEnv* env, jclass,
                                                             jint index) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return env->NewFloatArray(0); }
   float embedding[512] = {0};
   if (!g_pipe->lipReferenceEmbedding((int)index, embedding)) {
@@ -750,6 +785,7 @@ Java_com_facefusion_mobile_NativePipe_lipReferenceEmbedding(JNIEnv* env, jclass,
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_setLipReferences(JNIEnv* env, jclass,
                                                        jfloatArray jFlat, jint n) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return JNI_FALSE; }
   if (n < 0) { g_err = "setLipReferences: negative count"; return JNI_FALSE; }
   if (n == 0) {
@@ -770,6 +806,7 @@ Java_com_facefusion_mobile_NativePipe_setLipReferences(JNIEnv* env, jclass,
 
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_contentGateIsQuantised(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   return (g_pipe && g_pipe->contentGateIsQuantised()) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -778,6 +815,7 @@ Java_com_facefusion_mobile_NativePipe_contentGateIsQuantised(JNIEnv*, jclass) {
 // direction: the UI hides a control rather than showing one that cannot work.
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_hasEnhancer(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   return (g_pipe && g_pipe->hasEnhancer()) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -1007,6 +1045,7 @@ Java_com_facefusion_mobile_NativePipe_probeBackend(JNIEnv* env, jclass, jstring 
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_setSource(JNIEnv* env, jclass, jbyteArray jBgr,
                                                 jint w, jint h) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return JNI_FALSE; }
   ffcv::Image img(w, h, 3);
   env->GetByteArrayRegion(jBgr, 0, (jsize)img.data.size(), (jbyte*)img.data.data());
@@ -1017,6 +1056,7 @@ Java_com_facefusion_mobile_NativePipe_setSource(JNIEnv* env, jclass, jbyteArray 
 JNIEXPORT jint JNICALL
 Java_com_facefusion_mobile_NativePipe_addSource(JNIEnv* env, jclass, jbyteArray jBgr,
                                                 jint w, jint h) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return -1; }
   ffcv::Image img(w, h, 3);
   env->GetByteArrayRegion(jBgr, 0, (jsize)img.data.size(), (jbyte*)img.data.data());
@@ -1025,11 +1065,13 @@ Java_com_facefusion_mobile_NativePipe_addSource(JNIEnv* env, jclass, jbyteArray 
 
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setActiveSource(JNIEnv* env, jclass, jint index) {
+  FF_PIPE_LOCK;
   if (g_pipe) g_pipe->setActiveSource(index);
 }
 
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setSwapEnabled(JNIEnv* env, jclass, jboolean enabled) {
+  FF_PIPE_LOCK;
   if (g_pipe) g_pipe->setSwapEnabled(enabled);
 }
 
@@ -1038,6 +1080,7 @@ Java_com_facefusion_mobile_NativePipe_setSwapEnabled(JNIEnv* env, jclass, jboole
 // every face assignment of the live session.
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setSwapLargestOnly(JNIEnv* env, jclass, jboolean enabled) {
+  FF_PIPE_LOCK;
   if (g_pipe) g_pipe->setSwapLargestOnly(enabled);
 }
 
@@ -1049,6 +1092,7 @@ Java_com_facefusion_mobile_NativePipe_setSwapLargestOnly(JNIEnv* env, jclass, jb
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_setPortrait(JNIEnv* env, jclass, jbyteArray jBgr,
                                                   jint w, jint h) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return JNI_FALSE; }
   ffcv::Image img(w, h, 3);
   env->GetByteArrayRegion(jBgr, 0, (jsize)img.data.size(), (jbyte*)img.data.data());
@@ -1067,6 +1111,7 @@ JNIEXPORT jint JNICALL
 Java_com_facefusion_mobile_NativePipe_portraitFrame(JNIEnv* env, jclass, jbyteArray jDriver,
                                                     jint dw, jint dh, jbyteArray jFrame,
                                                     jint w, jint h, jint frameIndex) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return -1; }
   ffcv::Image img(w, h, 3);
   if (jDriver) {
@@ -1093,9 +1138,30 @@ Java_com_facefusion_mobile_NativePipe_portraitFrame(JNIEnv* env, jclass, jbyteAr
 }
 
 /** Swap every face in a BGR frame, in place.  Returns the face count, or -1 on error. */
+static jint processFrameImpl(JNIEnv* env, jbyteArray jBgr, jint w, jint h);
+
+// A C++ exception escaping a JNI function aborts the whole app (status 6 in the system's
+// exit record). Every per-frame entry point therefore catches, and reports through
+// lastError() like any other failed frame -- a bad frame or an allocation that failed
+// ends the run with a message instead of closing the app.
+#define FF_GUARD(expr)                                                        \
+  try {                                                                      \
+    return (expr);                                                           \
+  } catch (const std::exception& e) {                                        \
+    g_err = std::string("native error: ") + e.what();                        \
+  } catch (...) {                                                            \
+    g_err = "native error";                                                  \
+  }                                                                          \
+  return -1;
+
 JNIEXPORT jint JNICALL
 Java_com_facefusion_mobile_NativePipe_processFrame(JNIEnv* env, jclass, jbyteArray jBgr,
                                                    jint w, jint h) {
+  FF_PIPE_LOCK;
+  FF_GUARD(processFrameImpl(env, jBgr, w, h))
+}
+
+static jint processFrameImpl(JNIEnv* env, jbyteArray jBgr, jint w, jint h) {
   if (!g_pipe) { g_err = "pipeline not initialised"; return -1; }
   ffcv::Image img(w, h, 3);
   env->GetByteArrayRegion(jBgr, 0, (jsize)img.data.size(), (jbyte*)img.data.data());
@@ -1116,6 +1182,7 @@ Java_com_facefusion_mobile_NativePipe_processFrame(JNIEnv* env, jclass, jbyteArr
 // than showing one that cannot work.
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_hasLipSyncer(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   return (g_pipe && g_pipe->hasLipSyncer()) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -1128,6 +1195,7 @@ Java_com_facefusion_mobile_NativePipe_hasLipSyncer(JNIEnv*, jclass) {
 JNIEXPORT jboolean JNICALL
 Java_com_facefusion_mobile_NativePipe_setAudio(JNIEnv* env, jclass, jshortArray jPcm,
                                                jint channels, jint sampleRate, jdouble fps) {
+  FF_PIPE_LOCK;
   if (!g_pipe) { g_err = "pipeline not initialised"; return JNI_FALSE; }
   const jsize n = env->GetArrayLength(jPcm);
   if (n <= 0 || channels <= 0) { g_err = "no audio samples"; return JNI_FALSE; }
@@ -1144,6 +1212,7 @@ Java_com_facefusion_mobile_NativePipe_setAudio(JNIEnv* env, jclass, jshortArray 
 // How many mel windows setAudio produced, for a caller that wants to report coverage.
 JNIEXPORT jint JNICALL
 Java_com_facefusion_mobile_NativePipe_melWindowTotal(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   return g_pipe ? (jint)g_pipe->melWindowTotal() : 0;
 }
 
@@ -1155,9 +1224,18 @@ Java_com_facefusion_mobile_NativePipe_melWindowTotal(JNIEnv*, jclass) {
  * device, or audio that was never set all fall back to a plain swap, so a caller may use
  * this unconditionally.
  */
+static jint processFrameAtImpl(JNIEnv* env, jbyteArray jBgr, jint w, jint h,
+                               jint frameIndex);
+
 JNIEXPORT jint JNICALL
 Java_com_facefusion_mobile_NativePipe_processFrameAt(JNIEnv* env, jclass, jbyteArray jBgr,
                                                      jint w, jint h, jint frameIndex) {
+  FF_PIPE_LOCK;
+  FF_GUARD(processFrameAtImpl(env, jBgr, w, h, frameIndex))
+}
+
+static jint processFrameAtImpl(JNIEnv* env, jbyteArray jBgr, jint w, jint h,
+                               jint frameIndex) {
   if (!g_pipe) { g_err = "pipeline not initialised"; return -1; }
   ffcv::Image img(w, h, 3);
   env->GetByteArrayRegion(jBgr, 0, (jsize)img.data.size(), (jbyte*)img.data.data());
@@ -1191,6 +1269,7 @@ Java_com_facefusion_mobile_NativePipe_processFrameAt(JNIEnv* env, jclass, jbyteA
  */
 JNIEXPORT jstring JNICALL
 Java_com_facefusion_mobile_NativePipe_stageMillis(JNIEnv* env, jclass) {
+  FF_PIPE_LOCK;
   if (!g_pipe) return env->NewStringUTF("");
   const int n = g_pipe->framesDone > 0 ? g_pipe->framesDone : 1;
   char buf[512];
@@ -1214,6 +1293,7 @@ Java_com_facefusion_mobile_NativePipe_stageMillis(JNIEnv* env, jclass) {
 /** Zero the counters, so a run reports its own time and not the previous run's too. */
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_resetStats(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
   if (g_pipe) g_pipe->resetStats();
 }
 
@@ -1424,6 +1504,12 @@ Java_com_facefusion_mobile_NativePipe_bgrToArgb(JNIEnv* env, jclass, jbyteArray 
  *
  * @return the number of faces swapped, or -1 with [lastError] set.
  */
+static jint liveFrameImpl(JNIEnv* env, jobject jY, jint yRow, jobject jU, jint uRow,
+                          jint uPix, jobject jV, jint vRow, jint vPix, jint w, jint h,
+                          jobject jBitmap, jint dstW, jint dstH, jfloat gateThreshold,
+                          jboolean jMirrorRecording, jbyteArray jBgrOut,
+                          jbyteArray jOriginalBgrOut, jfloatArray jFaceBoxesOut);
+
 JNIEXPORT jint JNICALL
 Java_com_facefusion_mobile_NativePipe_liveFrame(JNIEnv* env, jclass,
                                                 jobject jY, jint yRow,
@@ -1435,6 +1521,17 @@ Java_com_facefusion_mobile_NativePipe_liveFrame(JNIEnv* env, jclass,
                                                 jbyteArray jBgrOut,
                                                 jbyteArray jOriginalBgrOut,
                                                 jfloatArray jFaceBoxesOut) {
+  FF_PIPE_LOCK;
+  FF_GUARD(liveFrameImpl(env, jY, yRow, jU, uRow, uPix, jV, vRow, vPix, w, h, jBitmap,
+                         dstW, dstH, gateThreshold, jMirrorRecording, jBgrOut,
+                         jOriginalBgrOut, jFaceBoxesOut))
+}
+
+static jint liveFrameImpl(JNIEnv* env, jobject jY, jint yRow, jobject jU, jint uRow,
+                          jint uPix, jobject jV, jint vRow, jint vPix, jint w, jint h,
+                          jobject jBitmap, jint dstW, jint dstH, jfloat gateThreshold,
+                          jboolean jMirrorRecording, jbyteArray jBgrOut,
+                          jbyteArray jOriginalBgrOut, jfloatArray jFaceBoxesOut) {
   if (!g_pipe) { g_err = "pipeline not initialised"; return -1; }
   if (w <= 0 || h <= 0) { g_err = "liveFrame: empty frame"; return -1; }
 
