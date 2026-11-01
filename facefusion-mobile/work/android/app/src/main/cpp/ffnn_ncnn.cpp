@@ -84,7 +84,9 @@ struct Model {
 };
 
 InitSpec g_spec;
-std::string g_err;
+// thread_local: the mask models run on a worker thread beside the swapper (ffpipe.cpp),
+// and an error string shared between the two would be a data race on every call.
+thread_local std::string g_err;
 bool g_vulkan = false;
 
 // What the caller has allowed. Auto runs the agreement check below; see ffnn.h.
@@ -437,7 +439,7 @@ const std::map<std::string, Spec>& auxSpecs() {
 }
 void* g_auxAssets = nullptr;
 std::string g_auxDir;
-std::string g_auxErr;
+thread_local std::string g_auxErr;
 bool g_auxVulkanAsked = false;
 
 bool loadAux(ncnn::Net& net, const Spec& sp, bool gpu, std::string& err) {
@@ -451,9 +453,10 @@ bool loadAux(ncnn::Net& net, const Spec& sp, bool gpu, std::string& err) {
   net.opt.use_packing_layout = true;
   net.opt.use_fp16_packed = true;
   net.opt.use_fp16_storage = true;
-  // fp32 arithmetic: these are 26-GFLOP U-Nets whose outputs are thresholded, and fp16
-  // accumulation over that depth moves the mask edge more than the speed is worth.
-  net.opt.use_fp16_arithmetic = false;
+  // fp16 arithmetic on the GPU only -- about twice as fast there. The CPU stays fp32 because
+  // it is the REFERENCE: ffpipe's maskNet compares the GPU's mask against it and falls back
+  // to the CPU when fp16 moves the mask too far.
+  net.opt.use_fp16_arithmetic = gpu;
   if (g_lowMem) net.opt.use_winograd_convolution = false;
 
   const std::string stem = std::string(sp.stem) + ".ncnn.";

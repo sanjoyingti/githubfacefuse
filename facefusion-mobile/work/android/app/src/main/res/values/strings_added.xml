@@ -17,6 +17,8 @@
     <string name="opt_realism">Realism</string>
     <string name="opt_realism_off">off</string>
     <string name="opt_realistic_preset">Most realistic</string>
+    <string name="opt_fast_preset">Fast</string>
+    <string name="opt_fast_preset_hint">Fast: quick and still good. 256 pixel boost, occlusion mask, skin-tone matching; no enhancer, expression restorer or mouth masks. Also set Output settings to 30 fps for 60 fps videos.</string>
     <string name="opt_realistic_preset_hint">Sets everything for the most natural result: 512 pixel boost, occlusion mask, real mouth inside, skin-tone matching, expression restorer, face enhancer at half strength, head-turn fade, motion smoothing. Slower. Keeps your model, faces and output settings.</string>
     <string name="opt_color_match">Match skin tone</string>
     <string name="opt_color_match_short">skin tone</string>

@@ -228,6 +228,33 @@ data class SwapOptions(
      * pixel boost 512 is four swapper runs per face, and the restorer and the mask models
      * add their own per-face cost.
      */
+    /**
+     * Quick and still good ("Fast"): the swapper at its native 256, no enhancer, no
+     * expression restorer and no face parser (the slowest per-face extras). The occlusion
+     * mask stays on -- it runs beside the swapper, so it costs little -- and so does skin-tone
+     * matching, which is cheap. Fast video re-detects every 2 frames.
+     */
+    fun fastPreset(): SwapOptions = copy(
+        weight = 0.5f,
+        pixelBoost = 1,
+        maskBlur = 0.4f,
+        maskPadding = listOf(0, 0, 0, 0),
+        occlusionMask = true,
+        regionMask = false,
+        keepMouth = false,
+        keepLips = false,
+        poseFade = true,
+        poseFadeStart = 60f,
+        motionSmooth = true,
+        detectorScore = 0.35f,
+        landmarkerScore = 0.5f,
+        trackPeriod = 2,
+        colorMatch = true,
+        colorMatchStrength = 0.6f,
+        expressionRestore = false,
+        faceEnhance = false,
+    )
+
     fun realisticPreset(): SwapOptions = copy(
         weight = 0.5f,
         pixelBoost = 2,

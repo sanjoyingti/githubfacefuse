@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <future>
 #include <mutex>
 
 #include "ffnn.h"
@@ -2420,6 +2421,23 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // here, before any pixel is read, rather than by pointing the face at some harmless
     // slot: "keep this person's own face" is not a swap with a different source.
     if (six == kNoSource) continue;
+
+    // The MASK MODELS read only the original crop, so they run on a worker thread WHILE the
+    // swapper runs: on a Qualcomm part that is the GPU (or CPU) beside the NPU, and the
+    // mask's cost mostly disappears behind the swap's. The future is joined before the
+    // paste; an early return still joins it (std::async's future blocks in its destructor),
+    // and everything the lambda reads is declared above it.
+    const bool modelMasks = p_->wantsMaskModels();
+    ffcv::MatF faceMask;
+    std::string maskErr;
+    std::future<bool> maskJob;
+    if (modelMasks) {
+      faceMask = mask;
+      Impl* impl = p_.get();
+      maskJob = std::async(std::launch::async, [impl, &crop, &faceMask, &maskErr] {
+        return impl->applyMaskModels(crop, faceMask, maskErr);
+      });
+    }
     const float* srcEmbNorm = p_->srcEmbeddingNorm;
     if (!p_->sourceSlots.empty() && six >= 0 && six < (int)p_->sourceSlots.size())
       srcEmbNorm = p_->sourceSlots[(size_t)six].data();
@@ -2489,11 +2507,13 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // crop (taken before the swap overwrote nothing -- `crop` is the original pixels), then
     // scaled by the pose fade.
     const ffcv::MatF* useMask = &mask;
-    ffcv::MatF faceMask;
-    if (p_->wantsMaskModels() || f.poseFade < 0.999f) {
-      t0 = nowMs();
-      faceMask = mask;
-      if (p_->wantsMaskModels() && !p_->applyMaskModels(crop, faceMask, err_)) return false;
+    if (modelMasks || f.poseFade < 0.999f) {
+      t0 = nowMs();   // only the WAIT is counted: the rest overlapped the swapper
+      if (modelMasks) {
+        if (!maskJob.get()) { err_ = maskErr; return false; }
+      } else {
+        faceMask = mask;
+      }
       if (f.poseFade < 0.999f)
         for (float& v : faceMask.data) v *= f.poseFade;
       Impl::CachedMask cm;

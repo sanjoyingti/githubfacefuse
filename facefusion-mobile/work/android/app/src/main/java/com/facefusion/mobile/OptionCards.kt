@@ -317,11 +317,22 @@ fun RealismCard(
     ).filterNotNull().joinToString(" · ").ifEmpty { stringResource(R.string.opt_realism_off) }
     OptionCard(stringResource(R.string.opt_realism), summary, expanded, onToggle) {
         val preset = opts.realisticPreset()
-        Button(
-            onClick = { onChange(preset) },
-            enabled = opts != preset,
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-        ) { Text(stringResource(R.string.opt_realistic_preset)) }
+        val fast = opts.fastPreset()
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { onChange(fast) }, enabled = opts != fast,
+                           modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.opt_fast_preset))
+            }
+            Button(onClick = { onChange(preset) }, enabled = opts != preset,
+                   modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.opt_realistic_preset))
+            }
+        }
+        Text(stringResource(R.string.opt_fast_preset_hint),
+             style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(top = 4.dp))
         Text(stringResource(R.string.opt_realistic_preset_hint),
              style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
              color = MaterialTheme.colorScheme.onSurfaceVariant,

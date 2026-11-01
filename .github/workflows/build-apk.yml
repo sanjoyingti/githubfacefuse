@@ -62,7 +62,9 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
-          Build 6 adds a Realism card at the top of the gear dialog: a one-tap "Most realistic" preset, skin-tone matching, and the expression restorer (puts the original closed eyes, blinks and mouth shape back on the swapped face; needs the face editor models from Settings, Models).
+          Build 7 is faster: the mask models run at the same time as the swap (GPU beside the NPU) and use faster GPU maths, and the Realism card has a one-tap "Fast" preset next to "Most realistic". For 60 fps videos, set Output settings to 30 fps.
+
+          Build 6 added a Realism card at the top of the gear dialog: a one-tap "Most realistic" preset, skin-tone matching, and the expression restorer (puts the original closed eyes, blinks and mouth shape back on the swapped face; needs the face editor models from Settings, Models).
 
           The content check is ON, as in the original app: photos and videos flagged as nudity are refused before any processing.
 
