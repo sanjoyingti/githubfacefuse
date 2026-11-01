@@ -23,13 +23,26 @@ object Thermal {
             power = ctx.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
     }
 
-    /** The current status, refreshed at most once a second. */
+    /**
+     * The current status, refreshed at most once a second. Also looks AHEAD: Android's
+     * thermal headroom forecast for the next 10 seconds (1.0 = the point where the system
+     * starts throttling). A run that is about to get hot is treated as warm already, so it
+     * eases off before the phone heats up rather than after.
+     */
     fun status(): Int {
         val now = System.currentTimeMillis()
         if (now - lastPollMs >= 1000) {
             lastPollMs = now
-            status = runCatching { power?.currentThermalStatus }.getOrNull()
+            var s = runCatching { power?.currentThermalStatus }.getOrNull()
                 ?: PowerManager.THERMAL_STATUS_NONE
+            val headroom = runCatching { power?.getThermalHeadroom(10) }.getOrNull()
+            if (headroom != null && !headroom.isNaN()) {
+                if (headroom >= 0.95f && s < PowerManager.THERMAL_STATUS_MODERATE)
+                    s = PowerManager.THERMAL_STATUS_MODERATE
+                else if (headroom >= 0.8f && s < PowerManager.THERMAL_STATUS_LIGHT)
+                    s = PowerManager.THERMAL_STATUS_LIGHT
+            }
+            status = s
         }
         return status
     }
@@ -39,6 +52,7 @@ object Thermal {
         s >= PowerManager.THERMAL_STATUS_CRITICAL -> 1000L
         s >= PowerManager.THERMAL_STATUS_SEVERE -> 250L
         s >= PowerManager.THERMAL_STATUS_MODERATE -> 60L
+        s >= PowerManager.THERMAL_STATUS_LIGHT -> 20L
         else -> 0L
     }
 

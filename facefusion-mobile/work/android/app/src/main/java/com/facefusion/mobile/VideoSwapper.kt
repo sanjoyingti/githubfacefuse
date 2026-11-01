@@ -275,6 +275,9 @@ class VideoSwapper(
         // would follow the pipeline into the next preview refresh.
         NativePipe.setTrackPeriod(trackPeriod)
         NativePipe.setSequence(true)
+        // A long run: the NPU's sustained profile instead of burst (see ffqnn's
+        // applyPowerProfileLocked). Same output, much less heat over minutes.
+        NativePipe.setPowerProfile(1)
         if (trackPeriod > 0)
             onLog("fast video: re-detecting every $trackPeriod frames")
         onLog("${width}x$height @ ${inFps}fps" +
@@ -448,6 +451,9 @@ class VideoSwapper(
                            else ""))
                 lastThermal = thermal
             }
+            // Warm: the NPU also drops to its balanced profile until the phone cools.
+            NativePipe.setPowerProfile(
+                if (thermal >= android.os.PowerManager.THERMAL_STATUS_MODERATE) 2 else 1)
             Thermal.pauseMs(thermal).takeIf { it > 0 }?.let { Thread.sleep(it) }
 
             // Checked before the work, not after, so pressing Cancel stops the next frame
@@ -610,6 +616,7 @@ class VideoSwapper(
         if (audioExtractor !== extractor) audioExtractor.release()
         NativePipe.setTrackPeriod(0)
         NativePipe.setSequence(false)
+        NativePipe.setPowerProfile(0)   // back to burst for previews
         onLog((if (cancelled) "partial: " else "") +
               "wrote ${File(outputPath).length() / 1024} KB, $swapped frames")
         // The headline number, spelled out rather than left to be divided out of the stage

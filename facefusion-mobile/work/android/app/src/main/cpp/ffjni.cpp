@@ -372,6 +372,12 @@ Java_com_facefusion_mobile_NativePipe_setQuality(JNIEnv*, jclass, jboolean occlu
   }
 }
 
+// NPU clock profile -- see ffqnn::PowerProfile. Not a pipeline call, so no pipe lock.
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setPowerProfile(JNIEnv*, jclass, jint profile) {
+  ffqnn::setPowerProfile((int)profile);
+}
+
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setSequence(JNIEnv*, jclass, jboolean on) {
   FF_PIPE_LOCK;

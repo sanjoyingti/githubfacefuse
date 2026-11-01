@@ -122,6 +122,9 @@ object NativePipe {
      */
     @JvmStatic external fun setSequence(on: Boolean)
 
+    /** NPU clock profile: 0 burst (previews), 1 sustained (video swaps), 2 balanced (warm). */
+    @JvmStatic external fun setPowerProfile(profile: Int)
+
     /** Where the bundled mask models (assets/masks) are read from. Once per process. */
     @JvmStatic external fun setAuxAssets(assets: android.content.res.AssetManager)
 

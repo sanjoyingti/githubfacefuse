@@ -4820,6 +4820,7 @@ class MainActivity : ComponentActivity() {
             busy = false
           } finally {
             SwapService.stop()
+            runCatching { NativePipe.setPowerProfile(0) }   // burst again for previews
           }
         }
     }

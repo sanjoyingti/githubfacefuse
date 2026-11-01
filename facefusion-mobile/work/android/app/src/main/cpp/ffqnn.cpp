@@ -320,11 +320,65 @@ struct Backend {
   Qnn_DeviceHandle_t device = nullptr;
   Qnn_LogHandle_t log = nullptr;
   uint32_t powerId = 0;
+  // Kept so the power profile can change after init (see setPowerProfile).
+  Qnn_ErrorHandle_t (*setPower)(uint32_t,
+                                const QnnHtpPerfInfrastructure_PowerConfig_t**) = nullptr;
+  int profile = -1;
   bool ready = false;
 };
 
 Backend g_be;
 std::mutex g_mu;
+
+// Same values as ffqnn::PowerProfile in ffqnn.h (this part of the file precedes it).
+constexpr int kPowerBurst = 0, kPowerSustained = 1, kPowerBalanced = 2;
+
+/**
+ * The HTP's clocks, by profile. Burst pins the highest voltage corner with DCVS off -- the
+ * right thing for a preview or a single photo, where latency is everything and the run is
+ * seconds long. A long video swap at that corner turns the whole phone into a heater for
+ * minutes; Qualcomm's own "sustained high performance" profile (TURBO) is made for exactly
+ * that, and "balanced" (DCVS on, NOM_PLUS target) is what the app drops to once the phone
+ * reports it is warm. The outputs are identical; only clocks and voltage change.
+ */
+void applyPowerProfileLocked(int profile) {
+  if (!g_be.setPower || g_be.powerId == 0 || profile == g_be.profile) return;
+  QnnHtpPerfInfrastructure_PowerConfig_t dcvs{};
+  dcvs.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
+  auto& c = dcvs.dcvsV3Config;
+  c.contextId = g_be.powerId;
+  c.setDcvsEnable = 1;
+  c.setSleepLatency = 1;
+  c.setBusParams = 1;
+  c.setCoreParams = 1;
+  c.powerMode = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
+  auto corners = [&](int mn, int tg, int mx) {
+    c.busVoltageCornerMin = (decltype(c.busVoltageCornerMin))mn;
+    c.busVoltageCornerTarget = (decltype(c.busVoltageCornerTarget))tg;
+    c.busVoltageCornerMax = (decltype(c.busVoltageCornerMax))mx;
+    c.coreVoltageCornerMin = (decltype(c.coreVoltageCornerMin))mn;
+    c.coreVoltageCornerTarget = (decltype(c.coreVoltageCornerTarget))tg;
+    c.coreVoltageCornerMax = (decltype(c.coreVoltageCornerMax))mx;
+  };
+  if (profile == kPowerSustained) {
+    c.dcvsEnable = 0;
+    c.sleepLatency = 100;
+    corners(DCVS_VOLTAGE_VCORNER_TURBO, DCVS_VOLTAGE_VCORNER_TURBO, DCVS_VOLTAGE_VCORNER_TURBO);
+  } else if (profile == kPowerBalanced) {
+    c.dcvsEnable = 1;
+    c.sleepLatency = 1000;
+    corners(DCVS_VOLTAGE_VCORNER_NOM, DCVS_VOLTAGE_VCORNER_NOM_PLUS,
+            DCVS_VOLTAGE_VCORNER_TURBO);
+  } else {
+    profile = kPowerBurst;
+    c.dcvsEnable = 0;              // pin, do not let DCVS drop us
+    c.sleepLatency = 40;
+    corners(DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER, DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER,
+            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER);
+  }
+  const QnnHtpPerfInfrastructure_PowerConfig_t* cfgs[] = {&dcvs, nullptr};
+  if (g_be.setPower(g_be.powerId, cfgs) == QNN_SUCCESS) g_be.profile = profile;
+}
 
 // Forward QNN's own diagnostics to logcat. Without this the DSP's explanation of a
 // failed deviceCreate ("Failed to load skel", "loadRemoteSymbols failed") is discarded
@@ -396,24 +450,8 @@ bool initBackend(const std::string& backendPath, const std::string& systemPath,
       auto& perf = htpInfra->perfInfra;
       if (perf.createPowerConfigId &&
           perf.createPowerConfigId(0, 0, &g_be.powerId) == QNN_SUCCESS) {
-        QnnHtpPerfInfrastructure_PowerConfig_t dcvs{};
-        dcvs.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
-        dcvs.dcvsV3Config.contextId = g_be.powerId;
-        dcvs.dcvsV3Config.setDcvsEnable = 1;
-        dcvs.dcvsV3Config.dcvsEnable = 0;              // pin, do not let DCVS drop us
-        dcvs.dcvsV3Config.powerMode = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
-        dcvs.dcvsV3Config.setSleepLatency = 1;
-        dcvs.dcvsV3Config.sleepLatency = 40;
-        dcvs.dcvsV3Config.setBusParams = 1;
-        dcvs.dcvsV3Config.busVoltageCornerMin = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.busVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.busVoltageCornerMax = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.setCoreParams = 1;
-        dcvs.dcvsV3Config.coreVoltageCornerMin = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        dcvs.dcvsV3Config.coreVoltageCornerMax = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        const QnnHtpPerfInfrastructure_PowerConfig_t* cfgs[] = {&dcvs, nullptr};
-        if (perf.setPowerConfig) perf.setPowerConfig(g_be.powerId, cfgs);
+        g_be.setPower = perf.setPowerConfig;
+        applyPowerProfileLocked(kPowerBurst);
       }
     }
   }
@@ -849,6 +887,11 @@ Fp16 fp16Canary(const std::string& canaryDir) {
     return Fp16::Unknown;
   }
   return c249 ? Fp16::Yes : Fp16::No;
+}
+
+void setPowerProfile(int profile) {
+  std::lock_guard<std::mutex> lk(g_mu);
+  applyPowerProfileLocked(profile);
 }
 
 }  // namespace ffqnn

@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "cpu.h"
 #include "net.h"
 
 #ifdef __ANDROID__
@@ -240,7 +241,18 @@ void verifyGpu() {
 
 }  // namespace
 
+// OpenMP worker threads spin-wait after every parallel region by default (KMP_BLOCKTIME,
+// 200 ms). Between frames that is pure CPU burn -- heat and battery for nothing -- so they
+// are told to sleep at once. Throughput of the work itself is unchanged.
+void quietThreads() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  ncnn::set_kmp_blocktime(0);
+}
+
 bool ncnnInit(const InitSpec& spec) {
+  quietThreads();
   g_spec = spec;
   // FFNCNN_GPU=auto|force|off, for the headless CLI. The app sets the same policy through
   // the seam instead -- an Android process has no environment to set from outside.
@@ -494,6 +506,7 @@ const char* ncnnAuxLastError() { return g_auxErr.c_str(); }
 bool ncnnOnGpu(Handle h) { return h && static_cast<Model*>(h)->gpu; }
 
 Handle ncnnOpenAux(const std::string& logicalName, Placement p) {
+  quietThreads();
   g_auxErr.clear();
   auto it = auxSpecs().find(logicalName);
   if (it == auxSpecs().end()) {
