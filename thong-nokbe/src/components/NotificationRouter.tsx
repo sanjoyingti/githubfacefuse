@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { router } from 'expo-router';
 import * as Notifications from 'expo-notifications';
+import { getInitialNotification, getMessaging, onNotificationOpenedApp } from '@react-native-firebase/messaging';
 import { acceptCall, getCall, RING_TIMEOUT_MS } from '../lib/calls';
 import type { UserProfile } from '../lib/types';
 
@@ -23,7 +24,14 @@ export function NotificationRouter({ me }: { me: UserProfile }) {
     const last = Notifications.getLastNotificationResponse();
     if (last) open((last.notification.request.content.data ?? {}) as Record<string, string>);
     const sub = Notifications.addNotificationResponseReceivedListener((r) => open((r.notification.request.content.data ?? {}) as Record<string, string>));
-    return () => sub.remove();
+    // Push notifications from the server (ringing calls, messages) tapped while the app was closed/in background.
+    const messaging = getMessaging();
+    getInitialNotification(messaging).then((m) => m?.data && open(m.data as Record<string, string>));
+    const unsub = onNotificationOpenedApp(messaging, (m) => m?.data && open(m.data as Record<string, string>));
+    return () => {
+      sub.remove();
+      unsub();
+    };
   }, [me]);
   return null;
 }

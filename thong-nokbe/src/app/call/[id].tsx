@@ -4,6 +4,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { onSnapshot } from '@react-native-firebase/firestore';
 import { ChannelProfileType, ClientRoleType, createAgoraRtcEngine, RtcSurfaceView, type IRtcEngine } from 'react-native-agora';
+import { useKeepAwake } from 'expo-keep-awake';
 import { useMe } from '../../context/AuthProvider';
 import { agoraUid, callRef, getCallPass, leaveCall, type CallPass } from '../../lib/calls';
 import { useUsers } from '../../lib/users';
@@ -16,6 +17,7 @@ export default function CallScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const me = useMe();
   const bottomInset = useBottomInset();
+  useKeepAwake('call'); // screen stays on for the whole call
   const { width, height } = useWindowDimensions();
   const engine = useRef<IRtcEngine | null>(null);
   const [call, setCall] = useState<Call | null>(null);

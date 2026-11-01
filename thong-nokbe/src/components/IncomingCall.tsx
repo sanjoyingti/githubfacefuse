@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, Vibration, View } from 'react-native';
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, onSnapshot, query, where } from '@react-native-firebase/firestore';
@@ -57,6 +58,27 @@ export function IncomingCall({ me }: { me: UserProfile }) {
     const t = setTimeout(() => setCall(null), Math.max(0, left));
     return () => clearTimeout(t);
   }, [call]);
+
+  // Ring and vibrate while the incoming-call screen is showing.
+  const ringingId = call?.id;
+  useEffect(() => {
+    if (!ringingId) return;
+    let player: ReturnType<typeof createAudioPlayer> | null = null;
+    setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: false }).catch(() => {});
+    try {
+      player = createAudioPlayer(require('../../assets/sounds/ringtone.wav'));
+      player.loop = true;
+      player.play();
+    } catch {}
+    Vibration.vibrate([0, 800, 600], true);
+    return () => {
+      Vibration.cancel();
+      try {
+        player?.pause();
+        player?.remove();
+      } catch {}
+    };
+  }, [ringingId]);
 
   if (!call) return null;
   const title = call.isGroup ? call.chatName : call.callerName;

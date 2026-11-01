@@ -62,6 +62,6 @@ cd rules-tests && npm install && npm test     # needs Java (Firestore emulator)
 ## Good to know
 
 * **UPI auto-confirmation**: Android UPI apps return a success or failure result, and the app marks the member paid from that. Some apps return nothing; then the member confirms with the UTR number, and the admin can see it and undo the payment if it's wrong. Some UPI apps limit "pay with amount" links to **personal** UPI IDs. A **merchant/business UPI ID** (e.g. GPay for Business, PhonePe Business) works most reliably. For bank-verified payments, use a gateway such as Razorpay.
-* **Alerts:** incoming calls and new messages show as phone notifications while the app is open or still running in the background. If the app has been fully closed, alerts appear the next time it's opened. Instant alerts on a closed app would need a paid server (Cloud Functions + Cloud Messaging).
+* **Alerts:** the Cloudflare Worker sends Firebase Cloud Messaging pushes (`POST /notify`), so incoming calls ring with the app's own ringtone (`assets/sounds/ringtone.wav`, made by `scripts/make-ringtone.py`) and messages/fee notices notify even when the app is closed. Needs the `FIREBASE_SERVICE_ACCOUNT` secret on the worker. The screen stays awake during calls.
 * **"Not on the app"** shows when someone logs out. Uninstalling without logging out can't be detected without a server.
 * Change the default country code (`+91`) in `src/theme.ts`.

@@ -5,6 +5,7 @@ import { auth, db } from '../lib/firebase';
 import { requestInvitedGroups } from '../lib/chats';
 import { signOutGoogle } from '../lib/googleAuth';
 import { setupNotifications } from '../lib/localNotify';
+import { registerPush, unregisterPush } from '../lib/push';
 import type { UserProfile } from '../lib/types';
 
 interface AuthState {
@@ -59,8 +60,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user || !profile) return;
     if (profile.appInstalled === false) updateDoc(doc(db, 'users', user.uid), { appInstalled: true }).catch(() => {});
-    setupNotifications();
+    let unsub: (() => void) | undefined;
+    setupNotifications().then(() => registerPush(user.uid).then((u) => (unsub = u)));
     requestInvitedGroups(profile).catch((e) => console.warn('requestInvitedGroups', e));
+    return () => unsub?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.uid, hasProfile]);
 
@@ -90,7 +93,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     // This person can't be called until they sign in again.
-    if (user && profile) await updateDoc(doc(db, 'users', user.uid), { appInstalled: false }).catch(() => {});
+    if (user && profile) {
+      await unregisterPush(user.uid);
+      await updateDoc(doc(db, 'users', user.uid), { appInstalled: false }).catch(() => {});
+    }
     await signOutGoogle();
     await signOut(auth);
   };

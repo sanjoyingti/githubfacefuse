@@ -55,6 +55,7 @@
       "expo-router",
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
+      "@react-native-firebase/messaging",
       [
         "expo-build-properties",
         {
@@ -85,7 +86,10 @@
       [
         "expo-notifications",
         {
-          "color": "#16A34A"
+          "color": "#16A34A",
+          "sounds": [
+            "./assets/sounds/ringtone.wav"
+          ]
         }
       ]
     ],

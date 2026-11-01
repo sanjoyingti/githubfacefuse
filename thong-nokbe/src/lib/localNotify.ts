@@ -1,7 +1,8 @@
 import { AppState, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { AndroidImportance } from 'expo-notifications';
+import { AndroidImportance, AndroidNotificationVisibility } from 'expo-notifications';
 import { APP_NAME } from '../theme';
+import { isPushReady } from './push';
 
 /**
  * Notifications made on the phone itself (free, no server). They work while the app is open
@@ -17,7 +18,14 @@ export function setupNotifications(): Promise<boolean> {
   if (!ready) {
     ready = (async () => {
       if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync('default', { name: 'Messages & calls', importance: AndroidImportance.HIGH, sound: 'default' });
+        await Notifications.setNotificationChannelAsync('messages', { name: 'Messages & fee notices', importance: AndroidImportance.HIGH, sound: 'default' });
+        await Notifications.setNotificationChannelAsync('calls', {
+          name: 'Incoming calls',
+          importance: AndroidImportance.MAX,
+          sound: 'ringtone.wav',
+          vibrationPattern: [0, 800, 600, 800, 600, 800],
+          lockscreenVisibility: AndroidNotificationVisibility.PUBLIC,
+        });
       }
       const { granted } = await Notifications.requestPermissionsAsync();
       return granted;
@@ -28,9 +36,12 @@ export function setupNotifications(): Promise<boolean> {
 
 /** Shows a notification only when the app is not on screen. */
 export async function notifyIfAway(title: string, body: string, data: Record<string, string>, evenIfOpen = false) {
-  if (AppState.currentState === 'active' && !evenIfOpen) return;
+  const active = AppState.currentState === 'active';
+  if (active && !evenIfOpen) return;
+  if (!active && isPushReady()) return; // the server's push notification covers this (no duplicates)
   if (!(await setupNotifications())) return;
-  await Notifications.scheduleNotificationAsync({ content: { title, body, data, sound: 'default' }, trigger: null }).catch(() => {});
+  const channelId = data.kind === 'call' ? 'calls' : 'messages';
+  await Notifications.scheduleNotificationAsync({ content: { title, body, data, sound: data.kind === 'call' ? 'ringtone.wav' : 'default' }, trigger: { channelId } }).catch(() => {});
 }
 
 const FEE_REMINDER_ID = 'fee-due-reminder';

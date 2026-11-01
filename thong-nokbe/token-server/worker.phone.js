@@ -136,6 +136,121 @@ if(!/Android/i.test(ua)){document.getElementById('open').href=${JSON.stringify(a
 <\/script>
 </body></html>`;
 }
+let googleToken = { value: null, until: 0 };
+function b64url(bytes) {
+  return bytesToB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+async function googleAccessToken(serviceAccount, fetchFn) {
+  if (googleToken.value && Date.now() < googleToken.until) return googleToken.value;
+  const now = Math.floor(Date.now() / 1e3);
+  const header = b64url(enc.encode(JSON.stringify({ alg: "RS256", typ: "JWT" })));
+  const claims = b64url(
+    enc.encode(
+      JSON.stringify({
+        iss: serviceAccount.client_email,
+        scope: "https://www.googleapis.com/auth/firebase.messaging",
+        aud: "https://oauth2.googleapis.com/token",
+        iat: now,
+        exp: now + 3600
+      })
+    )
+  );
+  const pem = serviceAccount.private_key.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+  const der = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("pkcs8", der, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+  const sig = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, enc.encode(`${header}.${claims}`)));
+  const res = await fetchFn("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: `grant_type=${encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer")}&assertion=${header}.${claims}.${b64url(sig)}`
+  });
+  if (!res.ok) throw new Error("google auth failed");
+  const j = await res.json();
+  googleToken = { value: j.access_token, until: Date.now() + 50 * 60 * 1e3 };
+  return j.access_token;
+}
+const fsStr = (f, k) => f?.[k]?.stringValue ?? "";
+const fsBool = (f, k) => f?.[k]?.booleanValue;
+const fsArr = (f, k) => (f?.[k]?.arrayValue?.values ?? []).map((v) => v.stringValue).filter(Boolean);
+async function readDoc(env, path, idToken, fetchFn) {
+  const res = await fetchFn(`https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/${path}`, {
+    headers: { authorization: `Bearer ${idToken}` }
+  });
+  if (!res.ok) return null;
+  return (await res.json()).fields ?? {};
+}
+async function pushTokensFor(env, uids, idToken, fetchFn) {
+  const docs = await Promise.all(uids.slice(0, 100).map((u) => readDoc(env, `users/${u}`, idToken, fetchFn)));
+  return docs.flatMap((f) => f && fsBool(f, "appInstalled") !== false ? fsArr(f, "pushTokens") : []);
+}
+async function sendPush(env, tokens, build, fetchFn) {
+  if (!tokens.length) return { sent: 0, failed: 0 };
+  const sa = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT);
+  const access = await googleAccessToken(sa, fetchFn);
+  const url = `https://fcm.googleapis.com/v1/projects/${sa.project_id || env.FIREBASE_PROJECT_ID}/messages:send`;
+  let sent = 0, failed = 0;
+  await Promise.all(
+    [...new Set(tokens)].map(async (token) => {
+      const r = await fetchFn(url, {
+        method: "POST",
+        headers: { authorization: `Bearer ${access}`, "content-type": "application/json" },
+        body: JSON.stringify({ message: build(token) })
+      });
+      r.ok ? sent++ : failed++;
+    })
+  );
+  return { sent, failed };
+}
+async function handleNotify(body, userId, idToken, env, fetchFn) {
+  if (!env.FIREBASE_SERVICE_ACCOUNT) return json({ error: "push not set up (FIREBASE_SERVICE_ACCOUNT missing)" }, 501);
+  if (body?.kind === "call") {
+    const callId = String(body.callId || "");
+    if (!/^[A-Za-z0-9]{10,64}$/.test(callId)) return json({ error: "bad call" }, 400);
+    const call = await readDoc(env, `calls/${callId}`, idToken, fetchFn);
+    if (!call) return json({ error: "not part of this call" }, 403);
+    if (fsStr(call, "callerId") !== userId) return json({ error: "only the caller can ring" }, 403);
+    if (fsStr(call, "status") === "ended") return json({ error: "call ended" }, 410);
+    const video = fsStr(call, "kind") !== "voice";
+    const isGroup = !!fsBool(call, "isGroup");
+    const title = `${video ? "\u{1F4F9}" : "\u{1F4DE}"} ${isGroup ? fsStr(call, "chatName") : fsStr(call, "callerName")}`;
+    const text = isGroup ? `${fsStr(call, "callerName")} started a group ${video ? "video" : "voice"} call. Tap to join` : `Incoming ${video ? "video" : "voice"} call. Tap to answer`;
+    const tokens = await pushTokensFor(env, fsArr(call, "ringingFor"), idToken, fetchFn);
+    const r = await sendPush(env, tokens, (token) => ({
+      token,
+      notification: { title, body: text },
+      data: { kind: "call", callId, chatId: fsStr(call, "chatId") },
+      android: {
+        priority: "HIGH",
+        ttl: "45s",
+        notification: { channel_id: "calls", sound: "ringtone", tag: callId, notification_priority: "PRIORITY_MAX", visibility: "PUBLIC" }
+      }
+    }), fetchFn);
+    return json(r);
+  }
+  if (body?.kind === "message") {
+    const chatId = String(body.chatId || "");
+    if (!/^[A-Za-z0-9_]{10,140}$/.test(chatId)) return json({ error: "bad chat" }, 400);
+    const chat = await readDoc(env, `chats/${chatId}`, idToken, fetchFn);
+    if (!chat || !fsArr(chat, "members").includes(userId)) return json({ error: "not in this chat" }, 403);
+    const last = chat.lastMessage?.mapValue?.fields;
+    if (!last || fsStr(last, "senderId") !== userId) return json({ error: "nothing new from you" }, 409);
+    const isGroup = fsStr(chat, "type") === "group";
+    const sender = fsStr(last, "senderName");
+    const msg = fsStr(last, "text");
+    const title = isGroup ? fsStr(chat, "name") : sender;
+    const text = (isGroup ? `${sender}: ${msg}` : msg).slice(0, 300);
+    const others = fsArr(chat, "members").filter((u) => u !== userId);
+    const tokens = await pushTokensFor(env, others, idToken, fetchFn);
+    const r = await sendPush(env, tokens, (token) => ({
+      token,
+      notification: { title, body: text },
+      data: { kind: "message", chatId },
+      android: { priority: "HIGH", notification: { channel_id: "messages", tag: chatId, visibility: "PRIVATE" } }
+    }), fetchFn);
+    return json(r);
+  }
+  return json({ error: "bad kind" }, 400);
+}
 async function handle(request, env, fetchFn = fetch) {
   if (request.method === "OPTIONS") return json({}, 204);
   if (request.method === "GET") {
@@ -157,14 +272,15 @@ async function handle(request, env, fetchFn = fetch) {
   } catch {
     return json({ error: "bad request" }, 400);
   }
-  const channel = typeof body?.channel === "string" ? body.channel : "";
-  if (!/^[A-Za-z0-9]{10,64}$/.test(channel)) return json({ error: "bad channel" }, 400);
   let userId;
   try {
     userId = await verifyFirebaseIdToken(idToken, env.FIREBASE_PROJECT_ID, fetchFn);
   } catch (e) {
     return json({ error: "not signed in: " + e.message }, 401);
   }
+  if (new URL(request.url).pathname === "/notify") return handleNotify(body, userId, idToken, env, fetchFn);
+  const channel = typeof body?.channel === "string" ? body.channel : "";
+  if (!/^[A-Za-z0-9]{10,64}$/.test(channel)) return json({ error: "bad channel" }, 400);
   const url = `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/calls/${channel}`;
   const res = await fetchFn(url, { headers: { authorization: `Bearer ${idToken}` } });
   if (res.status === 403 || res.status === 404) return json({ error: "not part of this call" }, 403);
@@ -183,6 +299,7 @@ export {
   buildRtcToken,
   worker_default as default,
   handle,
+  handleNotify,
   invitePage,
   verifyFirebaseIdToken
 };

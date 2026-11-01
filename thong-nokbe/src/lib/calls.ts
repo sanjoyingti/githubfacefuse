@@ -3,6 +3,7 @@ import { getIdToken } from '@react-native-firebase/auth';
 import { auth, db } from './firebase';
 import { CALL_SERVER_URL } from '../config';
 import { getOrCreateDirectChat, sendMessage } from './chats';
+import { notifyServer } from './push';
 import type { Call, CallKind, Chat, UserProfile } from './types';
 import { APP_NAME } from '../theme';
 
@@ -43,6 +44,7 @@ export async function startCall(chat: Chat, me: UserProfile, chatName: string, k
     status: 'ringing',
     createdAt: serverTimestamp(),
   });
+  notifyServer({ kind: 'call', callId: ref.id }); // rings their phones, even if the app is closed
   const icon = kind === 'video' ? '📹' : '📞';
   sendMessage(chat.id, me, `${icon} ${me.name} started a ${isGroup ? 'group ' : ''}${kind} call`, 'call').catch(() => {});
   return ref.id;

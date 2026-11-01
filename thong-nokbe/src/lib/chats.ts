@@ -14,6 +14,7 @@ import {
   writeBatch,
 } from '@react-native-firebase/firestore';
 import { db } from './firebase';
+import { notifyServer } from './push';
 import type { Chat, UserProfile } from './types';
 
 export const chatRef = (id: string) => doc(db, 'chats', id);
@@ -33,6 +34,7 @@ export async function sendMessage(chatId: string, me: UserProfile, text: string,
     updatedAt: serverTimestamp(),
   });
   await batch.commit();
+  if (type === 'text') notifyServer({ kind: 'message', chatId }); // phone notifications, even if the app is closed
 }
 
 export async function createGroup(me: UserProfile, name: string, memberUids: string[], pendingPhones: string[]) {

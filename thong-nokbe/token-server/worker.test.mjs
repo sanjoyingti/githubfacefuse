@@ -93,3 +93,79 @@ test('invite link page: opens the app on Android, offers the APK download, rejec
   const app = await handle(new Request('https://x.workers.dev/app'), env, fakeFetch({}));
   assert.equal(app.status, 302);
 });
+
+// ---- push notifications (/notify) ----
+const sa = await (async () => {
+  const kp = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
+  const der = Buffer.from(await crypto.subtle.exportKey('pkcs8', kp.privateKey)).toString('base64');
+  return { project_id: PROJECT, client_email: 'svc@x.iam.gserviceaccount.com', private_key: `-----BEGIN PRIVATE KEY-----\n${der}\n-----END PRIVATE KEY-----\n` };
+})();
+const envPush = { ...env, FIREBASE_SERVICE_ACCOUNT: JSON.stringify(sa) };
+const S = (v) => ({ stringValue: v });
+const A = (xs) => ({ arrayValue: { values: xs.map(S) } });
+function pushFetch(docs, sentLog) {
+  return async (url, init) => {
+    if (url.includes('googleapis.com/service_accounts')) return Response.json({ keys: [jwk] });
+    if (url === 'https://oauth2.googleapis.com/token') return Response.json({ access_token: 'ya29.test' });
+    if (url.includes('fcm.googleapis.com')) {
+      sentLog.push(JSON.parse(init.body).message);
+      return Response.json({ name: 'ok' });
+    }
+    const m = url.match(/documents\/(.+)$/);
+    if (m) {
+      const d = docs[m[1]];
+      return d && init?.headers?.authorization ? Response.json({ fields: d }) : new Response('{}', { status: 403 });
+    }
+    return new Response('nf', { status: 404 });
+  };
+}
+const notify = (body, token) =>
+  new Request('https://x.workers.dev/notify', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+
+test('notify call: rings only the people still being rung, with the ringtone channel', async () => {
+  const sent = [];
+  const docs = {
+    'calls/Call0000000000000001': { callerId: S('alice'), callerName: S('Alice'), chatName: S('Gym'), chatId: S('g1'), kind: S('video'), status: S('ringing'), ringingFor: A(['bob', 'carol']) },
+    'users/bob': { pushTokens: A(['tokB']) },
+    'users/carol': { pushTokens: A(['tokC1', 'tokC2']), appInstalled: { booleanValue: true } },
+  };
+  const res = await handle(notify({ kind: 'call', callId: 'Call0000000000000001' }, await idToken({})), envPush, pushFetch(docs, sent));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { sent: 3, failed: 0 });
+  assert.deepEqual(sent.map((m) => m.token).sort(), ['tokB', 'tokC1', 'tokC2']);
+  assert.equal(sent[0].android.notification.channel_id, 'calls');
+  assert.equal(sent[0].android.notification.sound, 'ringtone');
+  assert.equal(sent[0].data.kind, 'call');
+  assert.match(sent[0].notification.title, /Alice/);
+});
+
+test('notify call: only the caller can ring; ended calls and outsiders refused', async () => {
+  const sent = [];
+  const docs = { 'calls/Call0000000000000001': { callerId: S('mallory'), ringingFor: A(['bob']), status: S('ringing') } };
+  assert.equal((await handle(notify({ kind: 'call', callId: 'Call0000000000000001' }, await idToken({})), envPush, pushFetch(docs, sent))).status, 403);
+  assert.equal((await handle(notify({ kind: 'call', callId: 'NotVisible0000000001' }, await idToken({})), envPush, pushFetch(docs, sent))).status, 403);
+  docs['calls/Call0000000000000001'] = { callerId: S('alice'), ringingFor: A(['bob']), status: S('ended') };
+  assert.equal((await handle(notify({ kind: 'call', callId: 'Call0000000000000001' }, await idToken({})), envPush, pushFetch(docs, sent))).status, 410);
+  assert.equal(sent.length, 0);
+  assert.equal((await handle(notify({ kind: 'call', callId: 'Call0000000000000001' }, await idToken({})), env, pushFetch(docs, sent))).status, 501);
+});
+
+test('notify message: tells the other members about my latest message only', async () => {
+  const sent = [];
+  const docs = {
+    'chats/GroupChat0000000001': {
+      type: S('group'), name: S('Iron Gym'), members: A(['alice', 'bob']),
+      lastMessage: { mapValue: { fields: { senderId: S('alice'), senderName: S('Alice'), text: S('📢 Fee notice: pay by the 1st') } } },
+    },
+    'users/bob': { pushTokens: A(['tokB']) },
+  };
+  const res = await handle(notify({ kind: 'message', chatId: 'GroupChat0000000001' }, await idToken({})), envPush, pushFetch(docs, sent));
+  assert.deepEqual(await res.json(), { sent: 1, failed: 0 });
+  assert.equal(sent[0].notification.title, 'Iron Gym');
+  assert.match(sent[0].notification.body, /Alice: 📢 Fee notice/);
+  // someone else's message → refused; not a member → refused
+  docs['chats/GroupChat0000000001'].lastMessage.mapValue.fields.senderId = S('bob');
+  assert.equal((await handle(notify({ kind: 'message', chatId: 'GroupChat0000000001' }, await idToken({})), envPush, pushFetch(docs, sent))).status, 409);
+  docs['chats/GroupChat0000000001'].members = A(['bob']);
+  assert.equal((await handle(notify({ kind: 'message', chatId: 'GroupChat0000000001' }, await idToken({})), envPush, pushFetch(docs, sent))).status, 403);
+});

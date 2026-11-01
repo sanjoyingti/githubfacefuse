@@ -73,6 +73,15 @@ This small server keeps the Agora certificate secret. It gives a call pass only 
 
 ---
 
+**B3. Ringing calls & notifications when the app is closed (free)**
+1. Firebase → **⚙️ Project settings → Service accounts** → **Generate new private key** → **Generate key**. A `.json` file downloads.
+   **Keep it secret.** Don't send it to anyone or paste it in a chat.
+2. Open the file in a text viewer → select all → copy.
+3. Cloudflare → **thong-nokbe-calls → Settings → Variables and Secrets → + Add**:
+   Key `FIREBASE_SERVICE_ACCOUNT`, Value: paste, **tick Secret** → **Add variable and deploy**.
+
+---
+
 ## Part C: Give the app its Firebase file
 
 Send **google-services.json** (Part A step 5) to Claude in the chat. It's not a password: it's built into every copy of the app anyway.
@@ -106,6 +115,6 @@ These rules decide who can see and change what. For example, only admins mark at
 
 ## What's different from the paid version
 * Login is with **Google** instead of an SMS code.
-* Message and call alerts appear while the app is open or running in the background. If the app is fully closed, nothing pops up until it's opened.
+* With step B3 done, incoming calls ring (with the app's ringtone) and messages notify even when the app is closed, through Firebase Cloud Messaging (free) and the Cloudflare Worker.
 * The fee reminder is an alarm on each phone on the **1st of every month at 9 AM**.
 * Calls use Agora's free minutes. A free Cloudflare Worker hands out call passes and keeps the Agora certificate secret.
