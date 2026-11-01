@@ -229,6 +229,20 @@ void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF
   }
 }
 
+ffcv::MatF remapMask(const ffcv::MatF& mask, const ffcv::Affine& fromAffine,
+                     const ffcv::Affine& toAffine, int w, int h) {
+  // old crop -> frame (inverse of fromAffine), then frame -> new crop (toAffine).
+  const ffcv::Affine inv = ffcv::invertAffine(fromAffine);
+  ffcv::Affine m;
+  for (int r = 0; r < 2; ++r)
+    for (int c = 0; c < 3; ++c) {
+      double v = toAffine(r, 0) * inv(0, c) + toAffine(r, 1) * inv(1, c);
+      if (c == 2) v += toAffine(r, 2);
+      m(r, c) = v;
+    }
+  return ffcv::warpAffineF(mask, m, w, h, ffcv::BORDER_CONSTANT);
+}
+
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h) {
   if (src.w == w && src.h == h) return src;
   ffcv::MatF dst(w, h, 1);

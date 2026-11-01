@@ -70,6 +70,9 @@ struct Config {
   // Upstream's --expression-restorer-factor 0-100 is this x100; it maps to 0-1.2.
   bool expressionRestore = false;
   float expressionRestoreFactor = 0.8f;
+  // Run the mask models on a helper thread WHILE the swapper runs (GPU beside the NPU).
+  // Safe mode turns it off after a crash.
+  bool parallelMasks = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;

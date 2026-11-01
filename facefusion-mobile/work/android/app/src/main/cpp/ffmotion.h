@@ -64,6 +64,12 @@ float iou(const float* a, const float* b);
 void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF& mask,
                 float strength);
 
+// Re-map a mask made for one crop of the frame into another crop of the same frame.
+// `fromAffine` and `toAffine` are the frame->crop affines of the two crops; pixels of the
+// new crop that fall outside the old one get 0.
+ffcv::MatF remapMask(const ffcv::MatF& mask, const ffcv::Affine& fromAffine,
+                     const ffcv::Affine& toAffine, int w, int h);
+
 // Bilinear resize of a single-channel float mask.
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h);
 

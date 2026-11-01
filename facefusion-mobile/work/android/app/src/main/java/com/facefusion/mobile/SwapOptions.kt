@@ -221,6 +221,8 @@ data class SwapOptions(
     // (FaceFusion's expression_restorer, LivePortrait). Needs the face editor models.
     val expressionRestore: Boolean = false,
     val expressionFactor: Float = 0.8f,
+    // Run the mask models alongside the swap (GPU beside the NPU): faster with the masks on.
+    val parallelMasks: Boolean = true,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -332,6 +334,7 @@ data class SwapOptions(
             .putFloat(K_COLOR_MATCH_STRENGTH, colorMatchStrength)
             .putBoolean(K_EXPRESSION, expressionRestore)
             .putFloat(K_EXPRESSION_FACTOR, expressionFactor)
+            .putBoolean(K_PARALLEL_MASKS, parallelMasks)
             .apply()
     }
 
@@ -368,6 +371,7 @@ data class SwapOptions(
         private const val K_COLOR_MATCH_STRENGTH = "color_match_strength"
         private const val K_EXPRESSION = "expression_restore"
         private const val K_EXPRESSION_FACTOR = "expression_restore_factor"
+        private const val K_PARALLEL_MASKS = "parallel_masks"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -448,6 +452,7 @@ data class SwapOptions(
                 expressionRestore = p.getBoolean(K_EXPRESSION, d.expressionRestore),
                 expressionFactor = p.getFloat(K_EXPRESSION_FACTOR, d.expressionFactor)
                     .coerceIn(0f, 1f),
+                parallelMasks = p.getBoolean(K_PARALLEL_MASKS, d.parallelMasks),
             )
         }
     }

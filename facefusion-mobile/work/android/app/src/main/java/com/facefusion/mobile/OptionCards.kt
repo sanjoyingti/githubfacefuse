@@ -472,6 +472,9 @@ fun FaceMaskerCard(
         OptionSwitch(stringResource(R.string.opt_keep_lips), opts.keepLips,
                      { onChange(opts.copy(keepLips = it)) },
                      hint = stringResource(R.string.opt_keep_lips_hint))
+        OptionSwitch(stringResource(R.string.opt_parallel_masks), opts.parallelMasks,
+                     { onChange(opts.copy(parallelMasks = it)) },
+                     hint = stringResource(R.string.opt_parallel_masks_hint))
         // What the native side actually did with the switches above, refreshed every second:
         // a mask that silently is not running looks exactly like a mask that does not work.
         var maskStatus by remember { mutableStateOf("") }

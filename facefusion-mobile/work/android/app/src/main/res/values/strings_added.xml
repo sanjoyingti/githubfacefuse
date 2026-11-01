@@ -19,11 +19,13 @@
     <string name="notif_swap_text">Frame %1$d of %2$d</string>
     <string name="notif_swap_preparing">Preparing…</string>
     <string name="status_last_exit">The app closed unexpectedly last time, because of %1$s. If it happens again, try the Fast preset, 30 fps or a shorter trim, and share a bug report (Settings, About).</string>
-    <string name="status_safe_mode">Safe mode: the expression restorer and 512 pixel boost are switched off after the crash, and your last video is reloaded. Turn them back on under Realism and Face Swapper if you want them.</string>
+    <string name="status_safe_mode">Safe mode: the expression restorer, 512 pixel boost and faster masks are switched off after the crash, and your last video is reloaded. Turn them back on under Realism and Face Swapper if you want them.</string>
     <string name="status_safe_mode_same">Your last video is reloaded.</string>
     <string name="resume_title">Continue unfinished swap?</string>
     <string name="resume_body">"%1$s" was stopped at %2$s of %3$s. Continue from where it stopped? The same video, trim and output settings are used.</string>
     <string name="resume_ok">Continue</string>
+    <string name="opt_parallel_masks">Faster masks</string>
+    <string name="opt_parallel_masks_hint">Works out the masks on the graphics chip while the AI chip swaps the face, at the same time. Faster with the masks on, same result. Switched off automatically if the app ever crashes.</string>
     <string name="opt_realism">Realism</string>
     <string name="opt_realism_off">off</string>
     <string name="opt_realistic_preset">Most realistic</string>

@@ -9,6 +9,7 @@
 // work/native/build_host_test.sh. Not part of the APK.
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -103,6 +104,29 @@ static int selfTests() {
     if (t > 5) lag = std::max(lag, std::abs(want - pts[0]) / 60.f);
   }
   printf("[self] one-euro lag at 6 px/frame: %.3f eye spans\n", lag);
+  // remapMask: a picture warped into crop A and re-mapped into crop B must match the same
+  // picture warped into crop B directly (the expression restorer reuses the swap's mask).
+  {
+    ffcv::MatF img(400, 300, 1);
+    for (int y = 0; y < img.h; ++y)
+      for (int x = 0; x < img.w; ++x)
+        img.row(y)[x] = 0.5f + 0.5f * std::sin(x * 0.05f) * std::cos(y * 0.04f);
+    const float lm[10] = {170, 140, 230, 138, 200, 175, 178, 205, 224, 204};
+    float ta[10], tb[10];
+    const float* A = ffcv::warpTemplate(1);   // arcface_128, as the swap
+    const float* B = ffcv::warpTemplate(2);   // ffhq_512, a different crop
+    for (int i = 0; i < 10; ++i) { ta[i] = A[i] * 256; tb[i] = B[i] * 512; }
+    const ffcv::Affine amA = ffcv::umeyama(lm, ta, 5), amB = ffcv::umeyama(lm, tb, 5);
+    const ffcv::MatF inA = ffcv::warpAffineF(img, amA, 256, 256, ffcv::BORDER_CONSTANT);
+    const ffcv::MatF direct = ffcv::warpAffineF(img, amB, 512, 512, ffcv::BORDER_CONSTANT);
+    const ffcv::MatF moved = ffmotion::remapMask(inA, amA, amB, 512, 512);
+    double err = 0; int n = 0;
+    for (size_t i = 0; i < direct.data.size(); ++i)
+      if (moved.data[i] > 0.f) { err += std::fabs(moved.data[i] - direct.data[i]); ++n; }
+    err = n ? err / n : 1.0;
+    printf("[self] remapMask mean error %.4f over %d px\n", err, n);
+    if (!(n > 10000 && err < 0.02)) { puts("FAIL remapMask"); ++fails; }
+  }
   if (!(lag < 0.03f)) { puts("FAIL smoothing lag"); ++fails; }
   return fails;
 }
@@ -125,6 +149,7 @@ int main(int argc, char** argv) {
     else if (a == "--region") cfg.regionMask = v() == "1";
     else if (a == "--mouth") cfg.keepMouth = v() == "1";
     else if (a == "--lips") cfg.keepLips = v() == "1";
+    else if (a == "--parallel") cfg.parallelMasks = v() == "1";
     else if (a == "--color") cfg.colorMatch = (float)atof(v().c_str());
     else if (a == "--fade") cfg.poseFadeStart = (float)atof(v().c_str());
     else if (a == "--sequence") sequence = v() == "1";

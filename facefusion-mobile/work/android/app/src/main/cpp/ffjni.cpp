@@ -133,6 +133,7 @@ struct Quality {
   float colorMatch = 0.6f;
   bool expressionRestore = false;
   float expressionFactor = 0.8f;
+  bool parallelMasks = true;
   float poseFadeStart = 60.f;
   bool smooth = true, recover = true, rotated = false;
 };
@@ -151,6 +152,7 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.colorMatch = g_quality.colorMatch;
   cfg.expressionRestore = g_quality.expressionRestore;
   cfg.expressionRestoreFactor = g_quality.expressionFactor;
+  cfg.parallelMasks = g_quality.parallelMasks;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -348,7 +350,9 @@ Java_com_facefusion_mobile_NativePipe_setQuality(JNIEnv*, jclass, jboolean occlu
                                                  jboolean recover, jboolean rotated,
                                                  jfloat colorMatch,
                                                  jboolean expressionRestore,
-                                                 jfloat expressionFactor) {
+                                                 jfloat expressionFactor,
+                                                 jboolean parallelMasks) {
+  g_quality.parallelMasks = parallelMasks == JNI_TRUE;
   FF_PIPE_LOCK;
   auto unit = [](float v, float dflt) {
     return std::isfinite(v) ? std::fmin(1.f, std::fmax(0.f, v)) : dflt;

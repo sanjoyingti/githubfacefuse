@@ -4509,7 +4509,8 @@ class MainActivity : ComponentActivity() {
      * else stay as they were.
      */
     private fun enterSafeMode() {
-        val safe = opts.copy(expressionRestore = false, pixelBoost = 1, detectRotated = false)
+        val safe = opts.copy(expressionRestore = false, pixelBoost = 1, detectRotated = false,
+                             parallelMasks = false)
         val changed = safe != opts
         if (changed) { opts = safe; safe.save(this) }
         val msg = getString(if (changed) R.string.status_safe_mode else R.string.status_safe_mode_same)

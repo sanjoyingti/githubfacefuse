@@ -10,7 +10,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <condition_variable>
+#include <functional>
 #include <mutex>
+#include <thread>
 
 #include "ffnn.h"
 
@@ -273,13 +276,69 @@ struct Pipeline::Impl {
   // the mask models a second time on an already-swapped face.
   struct CachedMask {
     float lm5[10];
-    ffcv::MatF mask;
+    ffcv::MatF mask;      // box x occlusion/region x pose fade, in the swap crop
+    ffcv::Affine am;      // frame -> swap crop
   };
+
+  // ONE long-lived thread for the mask models, reused for every face of every frame.
+  // (Build 7 started a new std::async thread per face per frame, and that path crashed on
+  // device; a fixed thread also keeps the OpenMP thread pool of the mask models stable.)
+  struct MaskWorker {
+    std::thread th;
+    std::mutex m;
+    std::condition_variable cv;
+    std::function<void()> job;
+    bool busy = false, stop = false;
+    void post(std::function<void()> j) {
+      if (!th.joinable()) th = std::thread([this] { loop(); });
+      {
+        std::lock_guard<std::mutex> l(m);
+        job = std::move(j);
+        busy = true;
+      }
+      cv.notify_all();
+    }
+    void wait() {
+      std::unique_lock<std::mutex> l(m);
+      cv.wait(l, [&] { return !busy; });
+    }
+    void loop() {
+      for (;;) {
+        std::function<void()> j;
+        {
+          std::unique_lock<std::mutex> l(m);
+          cv.wait(l, [&] { return stop || static_cast<bool>(job); });
+          if (!job) return;
+          j.swap(job);
+        }
+        j();
+        {
+          std::lock_guard<std::mutex> l(m);
+          busy = false;
+        }
+        cv.notify_all();
+      }
+    }
+    ~MaskWorker() {
+      {
+        std::lock_guard<std::mutex> l(m);
+        stop = true;
+      }
+      cv.notify_all();
+      if (th.joinable()) th.join();
+    }
+  };
+  MaskWorker maskWorker;
   std::vector<CachedMask> maskCache;
   // The frame as it was BEFORE swapAll, for the expression restorer (which needs the
   // original face's expression). Only kept when the restorer will run.
   ffcv::Image preSwap;
   bool havePreSwap = false;
+  const CachedMask* cachedMaskEntry(const Face& f) const {
+    for (const auto& c : maskCache)
+      if (std::memcmp(c.lm5, f.landmark5_68, sizeof(c.lm5)) == 0) return &c;
+    return nullptr;
+  }
   const ffcv::MatF* cachedMask(const Face& f) const {
     for (const auto& c : maskCache)
       if (std::memcmp(c.lm5, f.landmark5_68, sizeof(c.lm5)) == 0) return &c.mask;
@@ -731,6 +790,7 @@ void Pipeline::updateConfig(const Config& c) {
   live.colorMatch        = c.colorMatch;
   live.expressionRestore = c.expressionRestore;
   live.expressionRestoreFactor = c.expressionRestoreFactor;
+  live.parallelMasks     = c.parallelMasks;
   live.poseFadeStart     = c.poseFadeStart;
   live.motionSmooth      = c.motionSmooth;
   live.lowScoreRecovery  = c.lowScoreRecovery;
@@ -2435,6 +2495,32 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // stays.
     const bool modelMasks = p_->wantsMaskModels();
     ffcv::MatF faceMask;
+    // PARALLEL: the mask models read only the original crop, so with parallelMasks they run
+    // on the helper thread while this thread runs the swapper. Joined before the paste; the
+    // guard joins on any early return too, before the locals it reads go away.
+    std::string maskErr;
+    bool maskOk = true;
+    struct Join {
+      Impl::MaskWorker* w = nullptr;
+      ~Join() { if (w) w->wait(); }
+    } join;
+    const bool parallel = modelMasks && cfg.parallelMasks;
+    if (parallel) {
+      faceMask = mask;
+      Impl* impl = p_.get();
+      join.w = &p_->maskWorker;
+      p_->maskWorker.post([impl, &crop, &faceMask, &maskErr, &maskOk] {
+        try {
+          maskOk = impl->applyMaskModels(crop, faceMask, maskErr);
+        } catch (const std::exception& e) {
+          maskOk = false;
+          maskErr = std::string("mask: ") + e.what();
+        } catch (...) {
+          maskOk = false;
+          maskErr = "mask: native error";
+        }
+      });
+    }
     const float* srcEmbNorm = p_->srcEmbeddingNorm;
     if (!p_->sourceSlots.empty() && six >= 0 && six < (int)p_->sourceSlots.size())
       srcEmbNorm = p_->sourceSlots[(size_t)six].data();
@@ -2506,13 +2592,20 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     const ffcv::MatF* useMask = &mask;
     if (modelMasks || f.poseFade < 0.999f) {
       t0 = nowMs();
-      faceMask = mask;
-      if (modelMasks && !p_->applyMaskModels(crop, faceMask, err_)) return false;
+      if (parallel) {
+        p_->maskWorker.wait();
+        join.w = nullptr;
+        if (!maskOk) { err_ = maskErr; return false; }
+      } else {
+        faceMask = mask;
+        if (modelMasks && !p_->applyMaskModels(crop, faceMask, err_)) return false;
+      }
       if (f.poseFade < 0.999f)
         for (float& v : faceMask.data) v *= f.poseFade;
       Impl::CachedMask cm;
       std::memcpy(cm.lm5, f.landmark5_68, sizeof(cm.lm5));
       cm.mask = faceMask;
+      cm.am = am;
       p_->maskCache.push_back(std::move(cm));
       useMask = &faceMask;
       msGeomMask += nowMs() - t0;
@@ -2829,14 +2922,23 @@ bool Pipeline::restoreExpression(ffcv::Image& frame, const std::vector<Face>& fa
     // The same mask the swap used, in this crop's geometry: occlusion and the mouth
     // switches are measured on the ORIGINAL face, so a kept mouth or a hand stays kept.
     ffcv::MatF mask = box;
-    if (p_->wantsMaskModels()) {
-      t0 = nowMs();
+    bool faded = false;
+    t0 = nowMs();
+    if (const Impl::CachedMask* cm = p_->cachedMaskEntry(f)) {
+      // REUSED, not recomputed: the swap's own mask for this face (occlusion, mouth, pose
+      // fade already in it), re-mapped from its crop into this one. Running the two mask
+      // models again here doubled their cost per face per frame.
+      const ffcv::MatF moved = ffmotion::remapMask(cm->mask, cm->am, am, kLpCrop, kLpCrop);
+      for (size_t i = 0; i < mask.data.size(); ++i)
+        if (moved.data[i] < mask.data[i]) mask.data[i] = moved.data[i];
+      faded = true;
+    } else if (p_->wantsMaskModels()) {
       const ffcv::Image oc =
           ffcv::warpAffine(p_->preSwap, am, kLpCrop, kLpCrop, ffcv::BORDER_REPLICATE);
       if (!p_->applyMaskModels(oc, mask, err_)) return false;
-      msGeomMask += nowMs() - t0;
     }
-    if (f.poseFade < 0.999f)
+    msGeomMask += nowMs() - t0;
+    if (!faded && f.poseFade < 0.999f)
       for (float& v : mask.data) v *= f.poseFade;
     if (!lpRender(fv, source, target, am, mask, frame)) return false;
   }
