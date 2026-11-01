@@ -69,8 +69,14 @@ data class ResumeJob(
     }.toString()
 
     companion object {
-        /** 20 seconds of video per piece: little lost on a crash, few joins. */
-        const val CHUNK_US = 20_000_000L
+        /**
+         * 5 seconds of video per piece. Progress is only saved when a piece finishes, and
+         * with the heavy settings at 60 fps a 20-second piece took minutes -- closing the
+         * app before the first one finished left nothing to continue. Each piece costs
+         * only an encoder start and re-decoding from the nearest keyframe, which is small
+         * next to swapping its frames.
+         */
+        const val CHUNK_US = 5_000_000L
 
         fun fromJson(s: String): ResumeJob? = runCatching {
             val o = JSONObject(s)

@@ -75,7 +75,7 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
-          Build 13 adds Continue: a video swap is saved in 20-second pieces as it runs, so if you stop it, close the app or it crashes, the next time you open the app it asks "Continue unfinished swap?" and carries on from where it stopped. Lip-sync swaps keep the old single-run behaviour.
+          Build 14 saves progress every 5 seconds of video (was 20), so Continue is offered even when the app is closed early in a long, slow swap. Build 13 added Continue: a video swap is saved in pieces as it runs, so if you stop it, close the app or it crashes, the next time you open the app it asks "Continue unfinished swap?" and carries on from where it stopped. Lip-sync swaps keep the old single-run behaviour.
 
           Builds 9 and 10 (crash fixes, safe mode, delete guard, background and battery fixes) are included in this build; they were built but not published because releases were blocked at the time.
 

@@ -4764,6 +4764,8 @@ class MainActivity : ComponentActivity() {
                             }
                             job.done = i + 1
                             ResumeStore.save(this@MainActivity, job)
+                            appendLog("saved %s of %s (can be continued from here)"
+                                .format(fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)))
                         }
                         val pieces = (0 until job.done).map {
                             ResumeStore.part(this@MainActivity, it) to job.offset(it)
