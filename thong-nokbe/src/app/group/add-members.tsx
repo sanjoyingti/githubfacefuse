@@ -34,7 +34,7 @@ export default function AddMembers() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <MemberPicker meUid={me.uid} excludeUids={chat.members} excludePhones={chat.pendingPhones} value={sel} onChange={setSel} />
-      <View style={{ padding: 12, paddingBottom: 12 + bottomInset, backgroundColor: '#fff', borderTopWidth: 1, borderColor: colors.border }}>
+      <View style={{ padding: 12, paddingBottom: 12 + bottomInset, backgroundColor: colors.card, borderTopWidth: 1, borderColor: colors.border }}>
         <Button title={n ? `Add ${n} member(s)` : 'Select members'} disabled={!n} onPress={save} loading={busy} />
       </View>
     </View>

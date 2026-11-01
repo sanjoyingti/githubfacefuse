@@ -285,21 +285,21 @@ function UtrModal({ open, onClose, onSubmit }: { open: boolean; onClose: () => v
 }
 
 const styles = StyleSheet.create({
-  monthBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 10 },
+  monthBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.card, paddingHorizontal: 16, paddingVertical: 10 },
   monthText: { fontWeight: '800', color: colors.text, fontSize: 16 },
   myCard: { borderRadius: 20, padding: 18, marginBottom: 12 },
   myLabel: { color: 'rgba(255,255,255,0.85)', fontWeight: '700' },
   myStatus: { color: '#fff', fontSize: 30, fontWeight: '900', marginTop: 4 },
   myDetail: { color: '#fff', marginTop: 4 },
-  payBtn: { marginTop: 14, backgroundColor: '#fff', borderRadius: 12, height: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  payBtn: { marginTop: 14, backgroundColor: colors.card, borderRadius: 12, height: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   payText: { color: colors.unpaid, fontWeight: '900', fontSize: 16 },
   cardTitle: { color: colors.muted, fontWeight: '700', marginBottom: 6 },
   totals: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: 8 },
   hint: { color: colors.muted, fontSize: 12, marginBottom: 8 },
-  remindBtn: { borderWidth: 2, borderColor: colors.unpaid, borderRadius: 18, paddingHorizontal: 10, height: 36, justifyContent: 'center', backgroundColor: '#fff' },
+  remindBtn: { borderWidth: 2, borderColor: colors.unpaid, borderRadius: 18, paddingHorizontal: 10, height: 36, justifyContent: 'center', backgroundColor: colors.card },
   memberRow: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 14, marginBottom: 8, borderLeftWidth: 5 },
   memberName: { fontWeight: '700', color: colors.text },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: 20 },
-  sheet: { backgroundColor: '#fff', borderRadius: 20, padding: 18 },
+  sheet: { backgroundColor: colors.card, borderRadius: 20, padding: 18 },
   utrInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, height: 48, paddingHorizontal: 14, fontSize: 18, letterSpacing: 2, color: colors.text },
 });

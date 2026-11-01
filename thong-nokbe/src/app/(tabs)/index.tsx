@@ -112,7 +112,7 @@ export default function Workouts() {
 }
 
 const styles = StyleSheet.create({
-  progressCard: { backgroundColor: '#fff', borderRadius: 14, padding: 12, marginBottom: 12 },
+  progressCard: { backgroundColor: colors.card, borderRadius: 14, padding: 12, marginBottom: 12 },
   progressText: { fontWeight: '900', color: colors.text, fontSize: 16 },
   progressTrack: { height: 10, borderRadius: 5, backgroundColor: colors.paidBg, marginTop: 8, overflow: 'hidden' },
   progressFill: { height: 10, backgroundColor: colors.paid },
@@ -128,7 +128,7 @@ const styles = StyleSheet.create({
   newBadge: { position: 'absolute', right: 14, top: 14, backgroundColor: colors.accent, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, zIndex: 2 },
   newBadgeText: { color: '#fff', fontWeight: '900', fontSize: 11 },
   days: { gap: 8, paddingBottom: 12 },
-  dayPill: { backgroundColor: '#fff', borderRadius: 18, paddingVertical: 10, paddingHorizontal: 14, minWidth: 82, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
+  dayPill: { backgroundColor: colors.card, borderRadius: 18, paddingVertical: 10, paddingHorizontal: 14, minWidth: 82, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
   dayPillActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   dayShort: { fontWeight: '900', color: colors.text, fontSize: 16, marginTop: 2 },
   dayMuscle: { fontSize: 13, color: colors.muted, marginTop: 2, fontWeight: '600' },
@@ -136,7 +136,7 @@ const styles = StyleSheet.create({
   sectionSub: { color: colors.muted, marginBottom: 12, fontSize: 15 },
   playBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.primary, borderRadius: 20, paddingHorizontal: 14, height: 40 },
   playText: { color: '#fff', fontWeight: '900', fontSize: 15 },
-  row: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, padding: 10, marginBottom: 10 },
+  row: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, borderRadius: 18, padding: 10, marginBottom: 10 },
   thumbWrap: { width: 112, height: 63, borderRadius: 10, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   thumb: { ...StyleSheet.absoluteFill },
   playSmall: { width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' },

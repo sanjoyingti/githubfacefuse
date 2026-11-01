@@ -6,7 +6,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "ios": {
       "bundleIdentifier": "com.thongnokbe.app",
       "googleServicesFile": "./GoogleService-Info.plist",
@@ -88,6 +88,7 @@
           "color": "#16A34A"
         }
       ]
-    ]
+    ],
+    "backgroundColor": "#0E1512"
   }
 }

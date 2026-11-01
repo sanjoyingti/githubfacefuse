@@ -240,7 +240,7 @@ export default function CallScreen() {
 function Ctrl({ icon, label, onPress, active }: { icon: React.ComponentProps<typeof Ionicons>['name']; label: string; onPress: () => void; active?: boolean }) {
   return (
     <View style={{ alignItems: 'center' }}>
-      <Pressable style={[styles.ctrl, active && { backgroundColor: '#fff' }]} onPress={onPress} accessibilityLabel={label}>
+      <Pressable style={[styles.ctrl, active && { backgroundColor: colors.card }]} onPress={onPress} accessibilityLabel={label}>
         <Ionicons name={icon} size={28} color={active ? '#000' : '#fff'} />
       </Pressable>
       <Text style={styles.ctrlLabel}>{label}</Text>

@@ -113,7 +113,7 @@ export default function ChatScreen() {
 function Bubble({ m, mine, showName }: { m: Message; mine: boolean; showName: boolean }) {
   if (m.type === 'system' || m.type === 'call') {
     return (
-      <View style={[styles.dayChip, { backgroundColor: m.type === 'call' ? '#DCFCE7' : '#FFF7D6' }]}>
+      <View style={[styles.dayChip, { backgroundColor: m.type === 'call' ? colors.paidBg : colors.warnBg }]}>
         <Text style={[styles.dayChipText, { color: colors.text }]}>{m.text}</Text>
       </View>
     );
@@ -134,9 +134,9 @@ const styles = StyleSheet.create({
   sender: { color: colors.primaryDark, fontWeight: '700', fontSize: 13, marginBottom: 2 },
   msg: { fontSize: 16, color: colors.text },
   time: { fontSize: 11, color: colors.muted, alignSelf: 'flex-end', marginTop: 2 },
-  dayChip: { alignSelf: 'center', backgroundColor: '#E1F0FA', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4, marginVertical: 8, maxWidth: '90%' },
-  dayChipText: { fontSize: 12, color: '#334155', textAlign: 'center' },
+  dayChip: { alignSelf: 'center', backgroundColor: colors.infoBg, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4, marginVertical: 8, maxWidth: '90%' },
+  dayChipText: { fontSize: 12, color: colors.muted, textAlign: 'center' },
   composer: { flexDirection: 'row', alignItems: 'flex-end', padding: 8, gap: 8 },
-  input: { flex: 1, backgroundColor: '#fff', borderRadius: 24, paddingHorizontal: 16, paddingVertical: Platform.OS === 'ios' ? 12 : 8, fontSize: 16, maxHeight: 120, color: colors.text },
+  input: { flex: 1, backgroundColor: colors.card, borderRadius: 24, paddingHorizontal: 16, paddingVertical: Platform.OS === 'ios' ? 12 : 8, fontSize: 16, maxHeight: 120, color: colors.text },
   send: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
 });

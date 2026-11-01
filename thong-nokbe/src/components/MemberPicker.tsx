@@ -180,7 +180,7 @@ export function MemberPicker({
 }
 
 const styles = StyleSheet.create({
-  manualRow: { flexDirection: 'row', alignItems: 'center', margin: 12, backgroundColor: '#fff', borderRadius: 12, paddingLeft: 12, borderWidth: 1, borderColor: colors.border },
+  manualRow: { flexDirection: 'row', alignItems: 'center', margin: 12, backgroundColor: colors.card, borderRadius: 12, paddingLeft: 12, borderWidth: 1, borderColor: colors.border },
   manualInput: { flex: 1, height: 46, fontSize: 16, marginLeft: 8, color: colors.text },
   addBtn: { backgroundColor: colors.primary, height: 46, paddingHorizontal: 18, justifyContent: 'center', borderTopRightRadius: 12, borderBottomRightRadius: 12 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 12, marginBottom: 6 },
@@ -188,7 +188,7 @@ const styles = StyleSheet.create({
   searchRow: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 12, marginBottom: 4, gap: 8 },
   search: { flex: 1, height: 40, fontSize: 15, color: colors.text },
   section: { backgroundColor: colors.bg, paddingHorizontal: 16, paddingVertical: 6, color: colors.muted, fontWeight: '700', fontSize: 12, textTransform: 'uppercase' },
-  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, backgroundColor: '#fff' },
+  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, backgroundColor: colors.card },
   rowName: { fontSize: 16, fontWeight: '600', color: colors.text },
   rowSub: { color: colors.muted, marginTop: 2, fontSize: 13 },
   note: { color: colors.muted, textAlign: 'center', padding: 24 },

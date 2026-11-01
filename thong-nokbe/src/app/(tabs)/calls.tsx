@@ -119,10 +119,10 @@ export default function Calls() {
 }
 
 const styles = StyleSheet.create({
-  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, margin: 12, backgroundColor: '#fff', borderRadius: 14, paddingHorizontal: 14, borderWidth: 1, borderColor: colors.border },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, margin: 12, backgroundColor: colors.card, borderRadius: 14, paddingHorizontal: 14, borderWidth: 1, borderColor: colors.border },
   search: { flex: 1, height: 48, fontSize: 17, color: colors.text },
   section: { fontSize: 15, fontWeight: '800', color: colors.text, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6 },
-  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', marginHorizontal: 12, marginBottom: 8, borderRadius: 16, padding: 12 },
+  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, marginHorizontal: 12, marginBottom: 8, borderRadius: 16, padding: 12 },
   middle: { flex: 1, marginHorizontal: 12 },
   name: { fontSize: 17, fontWeight: '800', color: colors.text },
   sub: { color: colors.muted, marginTop: 2 },

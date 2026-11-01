@@ -36,7 +36,7 @@ export default function NewGroup() {
         <Input label="Group name" placeholder="e.g. Iron Paradise Gym" value={name} onChangeText={setName} />
       </View>
       <MemberPicker meUid={me.uid} value={sel} onChange={setSel} />
-      <View style={{ padding: 12, paddingBottom: 12 + bottomInset, backgroundColor: '#fff', borderTopWidth: 1, borderColor: colors.border }}>
+      <View style={{ padding: 12, paddingBottom: 12 + bottomInset, backgroundColor: colors.card, borderTopWidth: 1, borderColor: colors.border }}>
         <Button
           title={`Create group${sel.users.length + sel.phones.length ? ` with ${sel.users.length + sel.phones.length} member(s)` : ''}`}
           onPress={create}

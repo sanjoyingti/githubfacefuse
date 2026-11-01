@@ -100,7 +100,7 @@ const styles = StyleSheet.create({
   btnText: { fontWeight: '800', fontSize: 17 },
   label: { fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: 6 },
   input: {
-    backgroundColor: '#fff',
+    backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 12,

@@ -36,9 +36,10 @@ export default function TabsLayout() {
         headerRight: () => <MeButton />,
         tabBarHideOnKeyboard: true,
         tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: '#64748B',
+        tabBarInactiveTintColor: colors.muted,
+        sceneStyle: { backgroundColor: colors.bg },
         tabBarLabelStyle: { fontSize: 13, fontWeight: '800' },
-        tabBarStyle: { height: 68 + insets.bottom, paddingTop: 6, paddingBottom: 8 + insets.bottom },
+        tabBarStyle: { height: 68 + insets.bottom, paddingTop: 6, paddingBottom: 8 + insets.bottom, backgroundColor: colors.card, borderTopColor: colors.border },
       }}
     >
       <Tabs.Screen name="index" options={{ title: 'Exercise', headerTitle: 'Thong Nokbe Gym', tabBarIcon: icon('barbell') }} />

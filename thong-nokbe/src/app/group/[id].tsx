@@ -225,10 +225,10 @@ function Row({ icon, label, onPress, danger }: { icon: React.ComponentProps<type
 }
 
 const styles = StyleSheet.create({
-  header: { alignItems: 'center', backgroundColor: '#fff', paddingVertical: 24, marginBottom: 10 },
+  header: { alignItems: 'center', backgroundColor: colors.card, paddingVertical: 24, marginBottom: 10 },
   groupName: { fontSize: 22, fontWeight: '800', color: colors.text },
   nameInput: { borderBottomWidth: 2, borderColor: colors.primary, fontSize: 20, minWidth: 180, color: colors.text, paddingVertical: 4 },
-  section: { backgroundColor: '#fff', marginBottom: 10, paddingVertical: 4 },
+  section: { backgroundColor: colors.card, marginBottom: 10, paddingVertical: 4 },
   sectionTitle: { color: colors.muted, fontWeight: '700', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 4 },
   member: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10 },
   memberName: { fontSize: 16, fontWeight: '600', color: colors.text },

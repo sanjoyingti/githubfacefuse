@@ -69,7 +69,8 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [ended, setEnded] = useState(false);
-  const [slow, setSlow] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [barWidth, setBarWidth] = useState(1);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
@@ -120,7 +121,7 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
               width={width}
               videoId={videoId}
               play={playing}
-              playbackRate={slow ? 0.5 : 1}
+              playbackRate={speed}
               onReady={() => setReady(true)}
               onChangeState={onState}
               onError={() => setFailed(true)}
@@ -150,23 +151,50 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
 
       <View style={styles.progressRow}>
         <Text style={styles.time}>{fmt(time)}</Text>
-        <View style={styles.track}>
-          <View style={[styles.fill, { width: `${pct}%` }]} />
-        </View>
+        {/* Tap anywhere on the bar to jump there */}
+        <Pressable
+          style={styles.trackTouch}
+          onLayout={(e) => setBarWidth(e.nativeEvent.layout.width || 1)}
+          onPress={(e) => {
+            if (!duration) return;
+            const t = Math.max(0, Math.min(duration, (e.nativeEvent.locationX / barWidth) * duration));
+            player.current?.seekTo(t, true);
+            setTime(t);
+          }}
+        >
+          <View style={styles.track}>
+            <View style={[styles.fill, { width: `${pct}%` }]} />
+          </View>
+          <View style={[styles.knob, { left: `${pct}%` }]} />
+        </Pressable>
         <Text style={styles.time}>{duration ? fmt(duration) : '--:--'}</Text>
       </View>
 
       <View style={styles.controls}>
-        <Ctrl icon="play-back" label="10 sec" onPress={() => seek(-10)} />
-        <Pressable style={styles.playBtn} onPress={toggle} accessibilityLabel={playing ? 'Pause' : 'Play'}>
-          <Ionicons name={ended ? 'refresh' : playing ? 'pause' : 'play'} size={40} color="#fff" />
-        </Pressable>
-        <Ctrl icon="play-forward" label="10 sec" onPress={() => seek(10)} />
+        <Ctrl icon="play-back" label="Rewind 10s" onPress={() => seek(-10)} />
+        <View style={{ alignItems: 'center' }}>
+          <Pressable style={styles.playBtn} onPress={toggle} accessibilityLabel={playing ? 'Pause' : 'Play'}>
+            <Ionicons name={ended ? 'refresh' : playing ? 'pause' : 'play'} size={40} color="#fff" />
+          </Pressable>
+          <Text style={styles.ctrlLabel}>{ended ? 'Replay' : playing ? 'Pause' : 'Play'}</Text>
+        </View>
+        <Ctrl icon="play-forward" label="Forward 10s" onPress={() => seek(10)} />
       </View>
       <View style={styles.controls2}>
-        <Pressable style={[styles.pill, slow && styles.pillOn]} onPress={() => setSlow((x) => !x)}>
-          <Text style={[styles.pillText, slow && { color: '#0b0f0d' }]}>🐢 Slow motion {slow ? 'ON' : 'OFF'}</Text>
-        </Pressable>
+        {(
+          [
+            [0.5, '🐢 0.5×'],
+            [1, '1×'],
+            [1.5, '1.5×'],
+            [2, '⏩ 2×'],
+          ] as const
+        ).map(([v, label]) => (
+          <Pressable key={v} style={[styles.pill, speed === v && styles.pillOn]} onPress={() => setSpeed(v)} accessibilityLabel={`Speed ${v}`}>
+            <Text style={[styles.pillText, speed === v && { color: '#0b0f0d' }]}>{label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <View style={styles.controls2}>
         <Pressable style={styles.pill} onPress={restart}>
           <Text style={styles.pillText}>⏮ Start again</Text>
         </Pressable>
@@ -191,20 +219,22 @@ const styles = StyleSheet.create({
   retry: { marginTop: 12, backgroundColor: colors.primary, paddingHorizontal: 18, height: 42, borderRadius: 21, justifyContent: 'center' },
   progressRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, gap: 10 },
   time: { color: '#cbd5e1', fontVariant: ['tabular-nums'], fontSize: 13, width: 40, textAlign: 'center' },
-  track: { flex: 1, height: 6, borderRadius: 3, backgroundColor: '#334155', overflow: 'hidden' },
+  trackTouch: { flex: 1, height: 28, justifyContent: 'center' },
+  track: { height: 6, borderRadius: 3, backgroundColor: '#334155', overflow: 'hidden' },
+  knob: { position: 'absolute', width: 18, height: 18, borderRadius: 9, marginLeft: -9, backgroundColor: '#fff', top: 5 },
   fill: { height: 6, backgroundColor: colors.primary },
   controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-evenly', paddingTop: 14 },
-  ctrl: { alignItems: 'center', width: 80 },
+  ctrl: { alignItems: 'center', width: 96 },
   ctrlLabel: { color: '#cbd5e1', fontSize: 12, marginTop: 2, fontWeight: '700' },
   playBtn: { width: 84, height: 84, borderRadius: 42, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
-  controls2: { flexDirection: 'row', justifyContent: 'center', gap: 10, paddingTop: 14 },
-  pill: { borderWidth: 2, borderColor: '#475569', borderRadius: 20, paddingHorizontal: 14, height: 40, justifyContent: 'center' },
+  controls2: { flexDirection: 'row', justifyContent: 'center', gap: 8, paddingTop: 12 },
+  pill: { borderWidth: 2, borderColor: '#475569', borderRadius: 20, paddingHorizontal: 12, height: 40, justifyContent: 'center' },
   pillOn: { backgroundColor: '#fde047', borderColor: '#fde047' },
   pillText: { color: '#e2e8f0', fontWeight: '800' },
   count: { color: '#94a3b8', fontWeight: '700' },
   name: { color: '#fff', fontSize: 24, fontWeight: '900', marginTop: 2 },
   tip: { color: '#cbd5e1', marginTop: 8, fontSize: 15, lineHeight: 21 },
-  doneBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 16, height: 56, borderRadius: 28, borderWidth: 2, borderColor: colors.primary, backgroundColor: '#fff' },
+  doneBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 16, height: 56, borderRadius: 28, borderWidth: 2, borderColor: colors.primary, backgroundColor: colors.card },
   doneBtnOn: { backgroundColor: colors.primary },
   doneText: { fontSize: 18, fontWeight: '900', color: colors.primary },
   navRow: { flexDirection: 'row', gap: 12, marginTop: 14 },

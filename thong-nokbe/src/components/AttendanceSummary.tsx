@@ -109,10 +109,10 @@ export function AttendanceSummary({
 }
 
 const styles = StyleSheet.create({
-  bar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 10 },
+  bar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.card, paddingHorizontal: 16, paddingVertical: 10 },
   barText: { fontWeight: '900', color: colors.text, fontSize: 17 },
   note: { color: colors.muted, marginBottom: 12, fontSize: 14, textAlign: 'center' },
-  row: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, padding: 12, marginBottom: 8 },
+  row: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, borderRadius: 16, padding: 12, marginBottom: 8 },
   rank: { width: 30, fontSize: 18, fontWeight: '900', color: colors.muted, textAlign: 'center' },
   name: { fontWeight: '800', color: colors.text, fontSize: 16 },
   track: { height: 8, backgroundColor: colors.unpaidBg, borderRadius: 4, marginTop: 6, overflow: 'hidden' },

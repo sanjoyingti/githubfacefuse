@@ -244,13 +244,13 @@ function HistoryModal({
 }
 
 const styles = StyleSheet.create({
-  tabs: { flexDirection: 'row', gap: 8, backgroundColor: '#fff', paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4 },
+  tabs: { flexDirection: 'row', gap: 8, backgroundColor: colors.card, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4 },
   tab: { flex: 1, height: 42, borderRadius: 21, borderWidth: 2, borderColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
   tabOn: { backgroundColor: colors.primary },
   tabText: { fontWeight: '900', color: colors.primary, fontSize: 15 },
-  dateBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 10 },
+  dateBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.card, paddingHorizontal: 16, paddingVertical: 10 },
   dateText: { fontWeight: '900', color: colors.text, fontSize: 17 },
-  summary: { flexDirection: 'row', backgroundColor: '#fff', borderRadius: 16, paddingVertical: 14, marginBottom: 12 },
+  summary: { flexDirection: 'row', backgroundColor: colors.card, borderRadius: 16, paddingVertical: 14, marginBottom: 12 },
   note: { color: colors.muted, marginBottom: 12, textAlign: 'center', fontSize: 15 },
   row: { flexDirection: 'row', alignItems: 'center', padding: 12 },
   rowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
@@ -258,8 +258,8 @@ const styles = StyleSheet.create({
   sub: { color: colors.muted, fontSize: 13, marginTop: 2 },
   toggle: { minWidth: 70, height: 44, borderRadius: 12, borderWidth: 2, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: 20 },
-  sheet: { backgroundColor: '#fff', borderRadius: 20, padding: 18 },
+  sheet: { backgroundColor: colors.card, borderRadius: 20, padding: 18 },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
   cell: { width: `${100 / 7}%`, aspectRatio: 1, alignItems: 'center', justifyContent: 'center', textAlign: 'center', textAlignVertical: 'center' },
-  dayCell: { borderRadius: 10, borderWidth: 2, borderColor: '#fff', backgroundColor: '#F1F5F9' },
+  dayCell: { borderRadius: 10, borderWidth: 2, borderColor: colors.card, backgroundColor: colors.border },
 });
