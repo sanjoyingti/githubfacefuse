@@ -1,6 +1,6 @@
 # Thong Nokbe Gym 🏋️
 
-A simple gym app for Android and iPhone, built with React Native (Expo SDK 58). It uses big buttons, plain words and pictures, so anyone (even a kid) can use it. The icon is an orange dumbbell on an emerald-green background (`assets/icon.png`; regenerate with any image editor).
+A simple gym app for Android and iPhone, built with React Native (Expo SDK 58). It uses big buttons, plain words and pictures, so anyone (even a kid) can use it. The icon is an original black bodybuilder silhouette in a double-biceps flex with one red arm (`assets/icon.png`, drawn by `python3 scripts/make-icon.py assets`).
 
 The five tabs at the bottom are **Exercise · Chat · Call · Attendance · Fees**. Tap **Me** at the top right for your profile.
 
