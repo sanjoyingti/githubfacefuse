@@ -1,12 +1,19 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import YoutubePlayer, { PLAYER_STATES, type YoutubeIframeRef } from 'react-native-youtube-iframe';
+import { WebView as RNWebView, type WebViewMessageEvent } from 'react-native-webview';
+import { ytCmd, ytPlayerHtml } from '../lib/ytHtml';
+import { QUALITY_OPTIONS, setVideoQuality, useVideoQuality } from '../lib/videoQuality';
+import { CALL_SERVER_URL } from '../config';
 import { DAY_EMOJI, getWorkoutDay, type WorkoutDayKey } from '../data/workouts';
 import { toggleDone, useDoneToday } from '../lib/workoutProgress';
 import { useBottomInset } from '../components/useBottomInset';
 import { colors } from '../theme';
+
+// react-native-webview's TypeScript types don't match React 19 yet; the component itself works.
+const WebView = RNWebView as unknown as React.ComponentType<any>;
+type WebViewHandle = { injectJavaScript: (js: string) => void };
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
@@ -17,6 +24,7 @@ export default function Play() {
   const [index, setIndex] = useState(Math.max(0, Math.min(day.exercises.length - 1, Number(i) || 0)));
   const [retryKey, setRetryKey] = useState(0);
   const ex = day.exercises[index];
+  const quality = useVideoQuality();
   const bottomInset = useBottomInset();
   const done = useDoneToday();
   const go = (d: number) => setIndex((n) => Math.max(0, Math.min(day.exercises.length - 1, n + d)));
@@ -26,7 +34,7 @@ export default function Play() {
     <View style={{ flex: 1, backgroundColor: '#0b0f0d' }}>
       <Stack.Screen options={{ title: `${DAY_EMOJI[day.key]} ${day.title}` }} />
       {/* key: a fresh player (and fresh play/progress state) for every exercise or retry */}
-      <VideoPanel key={`${ex.id}-${retryKey}`} videoId={ex.videoId} onRetry={() => setRetryKey((k) => k + 1)} />
+      <VideoPanel key={`${ex.id}-${retryKey}-${quality}`} videoId={ex.videoId} quality={quality} onRetry={() => setRetryKey((k) => k + 1)} />
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 24 + bottomInset }}>
         <Text style={styles.count}>
@@ -61,16 +69,17 @@ export default function Play() {
   );
 }
 
-function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () => void }) {
+function VideoPanel({ videoId, quality, onRetry }: { videoId: string | null; quality: number; onRetry: () => void }) {
   const { width } = useWindowDimensions();
   const height = Math.round((width * 9) / 16);
-  const player = useRef<YoutubeIframeRef | null>(null);
-  // `want` is what we ask the player to do; `isPlaying` is what it is really doing.
-  const [want, setWant] = useState(true);
+  const web = useRef<WebViewHandle>(null);
+  // If YouTube refuses the small (low quality) player, try once more at full size.
+  const [fullSize, setFullSize] = useState(false);
+  const target = quality && !fullSize ? quality : null;
+  const html = useMemo(() => (videoId ? ytPlayerHtml(videoId, target) : ''), [videoId, target]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [started, setStarted] = useState(false); // video has really shown at least one frame
-  const [buffering, setBuffering] = useState(true);
-  const [ready, setReady] = useState(false);
+  const [started, setStarted] = useState(false); // the video has really started at least once
+  const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [ended, setEnded] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -78,71 +87,78 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // Update the progress bar while playing.
-  useEffect(() => {
-    if (!isPlaying || !ready) return;
-    const t = setInterval(async () => {
-      const p = player.current;
-      if (!p) return;
-      setTime(await p.getCurrentTime());
-      if (!duration) setDuration(await p.getDuration());
-    }, 500);
-    return () => clearInterval(t);
-  }, [isPlaying, ready, duration]);
+  const run = (js: string) => web.current?.injectJavaScript(js);
 
-  // If the phone silently refuses to start the video, stop the spinner and show our play button.
+  // If nothing happens for a while (phone blocked auto-start), stop the spinner and show our play button.
   useEffect(() => {
-    if (!ready || started) return;
-    const t = setTimeout(() => setBuffering(false), 2500);
+    if (!loading || isPlaying) return;
+    const t = setTimeout(() => setLoading(false), 8000);
     return () => clearTimeout(t);
-  }, [ready, started]);
+  }, [loading, isPlaying, html]);
 
-  const onState = (s: PLAYER_STATES) => {
-    if (s === PLAYER_STATES.PLAYING) {
-      setIsPlaying(true);
-      setStarted(true);
-      setBuffering(false);
-      setEnded(false);
-      setWant(true);
-    } else if (s === PLAYER_STATES.BUFFERING) {
-      setBuffering(true);
-    } else if (s === PLAYER_STATES.ENDED) {
-      setIsPlaying(false);
-      setBuffering(false);
-      setEnded(true);
-      setWant(false);
-    } else if (s === PLAYER_STATES.PAUSED) {
-      setIsPlaying(false);
-      setBuffering(false);
-      setWant(false);
-    } else if (s === PLAYER_STATES.UNSTARTED || s === PLAYER_STATES.VIDEO_CUED) {
-      setBuffering(false); // phone blocked auto-start: our play button takes over
+  const onMessage = (e: WebViewMessageEvent) => {
+    let m: any;
+    try {
+      m = JSON.parse(e.nativeEvent.data);
+    } catch {
+      return;
+    }
+    if (m.duration) setDuration(m.duration);
+    if (typeof m.time === 'number' && m.time > 0) setTime(m.time);
+    if (m.t === 'ready') {
+      if (speed !== 1) run(ytCmd.speed(speed));
+    } else if (m.t === 'state') {
+      if (m.s === 1) {
+        setIsPlaying(true);
+        setStarted(true);
+        setLoading(false);
+        setEnded(false);
+      } else if (m.s === 3) {
+        setLoading(true);
+      } else if (m.s === 0) {
+        setIsPlaying(false);
+        setLoading(false);
+        setEnded(true);
+      } else if (m.s === 2) {
+        setIsPlaying(false);
+        setLoading(false);
+      } else if (m.s === 5) {
+        setLoading(false);
+      }
+    } else if (m.t === 'error') {
+      if (target && !started && m.code !== 'offline') {
+        setFullSize(true); // loads a fresh full-size player
+        setIsPlaying(false);
+        setLoading(true);
+      }
+      else setFailed(true);
     }
   };
 
-  /** Ask the player to play, even if we had already asked before (the phone may have ignored it). */
   const play = () => {
-    setBuffering(true);
-    if (want) {
-      setWant(false);
-      requestAnimationFrame(() => setWant(true));
-    } else setWant(true);
+    setLoading(true);
+    run(ytCmd.play);
   };
-  const pause = () => setWant(false);
-
-  const seek = (delta: number) => {
-    const t = Math.max(0, Math.min(duration || 1e9, time + delta));
-    player.current?.seekTo(t, true);
+  const pause = () => {
+    setIsPlaying(false);
+    run(ytCmd.pause);
+  };
+  const seekTo = (t: number) => {
+    run(ytCmd.seek(t));
     setTime(t);
   };
+  const seek = (delta: number) => seekTo(Math.max(0, Math.min(duration || 1e9, time + delta)));
   const restart = () => {
-    player.current?.seekTo(0, true);
-    setTime(0);
+    seekTo(0);
     setEnded(false);
     play();
   };
+  const changeSpeed = (v: number) => {
+    setSpeed(v);
+    run(ytCmd.speed(v));
+  };
   const toggle = () => (ended ? restart() : isPlaying ? pause() : play());
-  const showPlaying = isPlaying || (want && buffering);
+  const showPlaying = isPlaying || loading;
   const pct = duration ? Math.min(100, (time / duration) * 100) : 0;
 
   return (
@@ -150,27 +166,32 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
       <View style={{ width, height, backgroundColor: '#000', justifyContent: 'center' }}>
         {videoId && !failed ? (
           <>
-            <YoutubePlayer
-              ref={player}
-              height={height}
-              width={width}
-              videoId={videoId}
-              play={want}
-              forceAndroidAutoplay
-              playbackRate={speed}
-              onReady={() => setReady(true)}
-              onChangeState={onState}
+            <WebView
+              ref={web}
+              key={html.length + String(target)}
+              source={{ html, baseUrl: CALL_SERVER_URL }}
+              originWhitelist={['*']}
+              style={{ width, height, backgroundColor: '#000' }}
+              javaScriptEnabled
+              domStorageEnabled
+              allowsInlineMediaPlayback
+              mediaPlaybackRequiresUserAction={false}
+              allowsFullscreenVideo={false}
+              scrollEnabled={false}
+              bounces={false}
+              setSupportMultipleWindows={false}
+              onMessage={onMessage}
               onError={() => setFailed(true)}
-              initialPlayerParams={{ controls: false, rel: false, iv_load_policy: 3, preventFullScreen: true }}
-              webViewProps={{ allowsFullscreenVideo: false }}
+              // Never leave the player page (no YouTube links, no ads pages)
+              onShouldStartLoadWithRequest={(r: { url: string; isTopFrame?: boolean }) => r.url === 'about:blank' || r.url.startsWith('data:') || r.url.startsWith(CALL_SERVER_URL) || r.url.startsWith('https://www.youtube.com/embed') || !r.isTopFrame}
             />
             {/* Our own cover: hides YouTube's red play button, title and suggestions. Tap = play/pause. */}
             <Pressable style={StyleSheet.absoluteFill} onPress={toggle}>
               {(!started || ended) && (
                 <Image source={{ uri: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` }} style={[StyleSheet.absoluteFill, styles.cover]} resizeMode="cover" />
               )}
-              {started && !ended && !isPlaying && <View style={[StyleSheet.absoluteFill, styles.dim]} />}
-              {want && buffering ? (
+              {started && !ended && !isPlaying && !loading && <View style={[StyleSheet.absoluteFill, styles.dim]} />}
+              {loading && !isPlaying ? (
                 <View style={styles.centerIcon}>
                   <ActivityIndicator color="#fff" size="large" />
                 </View>
@@ -202,9 +223,7 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
           onLayout={(e) => setBarWidth(e.nativeEvent.layout.width || 1)}
           onPress={(e) => {
             if (!duration) return;
-            const t = Math.max(0, Math.min(duration, (e.nativeEvent.locationX / barWidth) * duration));
-            player.current?.seekTo(t, true);
-            setTime(t);
+            seekTo(Math.max(0, Math.min(duration, (e.nativeEvent.locationX / barWidth) * duration)));
           }}
         >
           <View style={styles.track}>
@@ -234,7 +253,7 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
             [2, '⏩ 2×'],
           ] as const
         ).map(([v, label]) => (
-          <Pressable key={v} style={[styles.pill, speed === v && styles.pillOn]} onPress={() => setSpeed(v)} accessibilityLabel={`Speed ${v}`}>
+          <Pressable key={v} style={[styles.pill, speed === v && styles.pillOn]} onPress={() => changeSpeed(v)} accessibilityLabel={`Speed ${v}`}>
             <Text style={[styles.pillText, speed === v && { color: '#0b0f0d' }]}>{label}</Text>
           </Pressable>
         ))}
@@ -244,6 +263,27 @@ function VideoPanel({ videoId, onRetry }: { videoId: string | null; onRetry: () 
           <Text style={styles.pillText}>⏮ Start again</Text>
         </Pressable>
       </View>
+      <QualityPicker />
+    </View>
+  );
+}
+
+/** 📶 Video quality: lower = less internet data and smoother on weak signal. Saved on the phone. */
+function QualityPicker() {
+  const q = useVideoQuality();
+  return (
+    <View style={styles.qualityBox}>
+      <Text style={styles.qualityTitle}>📶 Video quality</Text>
+      <View style={styles.qualityRow}>
+        {QUALITY_OPTIONS.map((o) => (
+          <Pressable key={o.value} style={[styles.pill, q === o.value && styles.pillOn]} onPress={() => setVideoQuality(o.value)} accessibilityLabel={`Quality ${o.label}`}>
+            <Text style={[styles.pillText, q === o.value && { color: '#0b0f0d' }]}>{o.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <Text style={styles.qualityHint}>
+        {QUALITY_OPTIONS.find((o) => o.value === q)?.hint}. Weak internet? Choose 240p or 144p.
+      </Text>
     </View>
   );
 }
@@ -278,6 +318,10 @@ const styles = StyleSheet.create({
   pill: { borderWidth: 2, borderColor: '#475569', borderRadius: 20, paddingHorizontal: 12, height: 40, justifyContent: 'center' },
   pillOn: { backgroundColor: '#fde047', borderColor: '#fde047' },
   pillText: { color: '#e2e8f0', fontWeight: '800' },
+  qualityBox: { marginTop: 14, marginHorizontal: 16, padding: 12, borderRadius: 16, backgroundColor: '#111a16' },
+  qualityTitle: { color: '#fff', fontWeight: '900', fontSize: 15, marginBottom: 8 },
+  qualityRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  qualityHint: { color: '#94a3b8', marginTop: 8, fontSize: 13 },
   count: { color: '#94a3b8', fontWeight: '700' },
   name: { color: '#fff', fontSize: 24, fontWeight: '900', marginTop: 2 },
   tip: { color: '#cbd5e1', marginTop: 8, fontSize: 15, lineHeight: 21 },
