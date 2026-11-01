@@ -1,11 +1,17 @@
 import { addDoc, arrayRemove, arrayUnion, collection, doc, getDoc, runTransaction, serverTimestamp, updateDoc } from '@react-native-firebase/firestore';
 import { httpsCallable } from '@react-native-firebase/functions';
 import { db, functions } from './firebase';
-import { sendMessage } from './chats';
-import type { Call, Chat, UserProfile } from './types';
+import { getOrCreateDirectChat, sendMessage } from './chats';
+import type { Call, CallKind, Chat, UserProfile } from './types';
+import { APP_NAME } from '../theme';
 
 export const RING_TIMEOUT_MS = 45_000;
 export const callRef = (id: string) => doc(db, 'calls', id);
+
+/** Only people who have the app (signed in, not logged out / uninstalled) can be called. */
+export function hasApp(p: UserProfile | null | undefined) {
+  return !!p && p.appInstalled !== false;
+}
 
 /** Stable 32-bit numeric id for a Firebase uid (Agora needs numeric uids). */
 export function agoraUid(uid: string): number {
@@ -14,15 +20,19 @@ export function agoraUid(uid: string): number {
     h ^= uid.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
-  return (h >>> 0) % 2147483646 + 1;
+  return ((h >>> 0) % 2147483646) + 1;
 }
 
-export async function startCall(chat: Chat, me: UserProfile, chatName: string, onlyUid?: string) {
-  const invited = (onlyUid ? [onlyUid] : chat.members).filter((m) => m !== me.uid);
+/** Rings everyone in a chat: the whole gym group, or the other person in a 1:1 chat. */
+export async function startCall(chat: Chat, me: UserProfile, chatName: string, kind: CallKind) {
+  const invited = chat.members.filter((m) => m !== me.uid);
+  if (!invited.length) throw new Error('There is nobody else in this group to call yet.');
+  const isGroup = chat.type === 'group';
   const ref = await addDoc(collection(db, 'calls'), {
+    kind,
     chatId: chat.id,
     chatName,
-    isGroup: chat.type === 'group' && !onlyUid,
+    isGroup,
     callerId: me.uid,
     callerName: me.name,
     invited,
@@ -31,8 +41,17 @@ export async function startCall(chat: Chat, me: UserProfile, chatName: string, o
     status: 'ringing',
     createdAt: serverTimestamp(),
   });
-  sendMessage(chat.id, me, `📹 ${me.name} started a ${onlyUid || chat.type === 'direct' ? '' : 'group '}video call`, 'call').catch(() => {});
+  const icon = kind === 'video' ? '📹' : '📞';
+  sendMessage(chat.id, me, `${icon} ${me.name} started a ${isGroup ? 'group ' : ''}${kind} call`, 'call').catch(() => {});
   return ref.id;
+}
+
+/** Calls one app user directly (works for anyone on the app, not just gym-group members). */
+export async function callPerson(me: UserProfile, other: UserProfile, kind: CallKind) {
+  if (!hasApp(other)) throw new Error(`${other.name} doesn't have ${APP_NAME} right now, so they can't be called.`);
+  const id = await getOrCreateDirectChat(me, other);
+  const members = [me.uid, other.uid].sort();
+  return startCall({ id, type: 'direct', members, admins: [], createdBy: me.uid, pendingPhones: [] }, me, other.name, kind);
 }
 
 export async function acceptCall(callId: string, me: UserProfile) {
@@ -64,14 +83,13 @@ export async function getCall(callId: string): Promise<Call | null> {
   return s.exists() ? ({ id: s.id, ...(s.data() as Omit<Call, 'id'>) } as Call) : null;
 }
 
-/** Fetches an Agora token from the Cloud Function. Returns '' when the project runs Agora in "testing mode" (App ID only). */
+/**
+ * Gets a one-call pass from our server. The server only hands it to people who are in this call,
+ * so nobody outside the app (or outside the call) can join the room.
+ */
 export async function getAgoraToken(channel: string, uid: number): Promise<string> {
-  try {
-    const fn = httpsCallable<{ channel: string; uid: number }, { token: string }>(functions, 'agoraToken');
-    const res = await fn({ channel, uid });
-    return res.data.token ?? '';
-  } catch (e) {
-    console.warn('agoraToken function unavailable, joining without token', e);
-    return '';
-  }
+  const fn = httpsCallable<{ channel: string; uid: number }, { token: string }>(functions, 'agoraToken');
+  const res = await fn({ channel, uid });
+  if (!res.data?.token) throw new Error('Calling is not set up on the server yet.');
+  return res.data.token;
 }

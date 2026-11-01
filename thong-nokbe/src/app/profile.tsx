@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { Alert, ScrollView, Text, View } from 'react-native';
-import { useAuth, useMe } from '../../context/AuthProvider';
-import { useChats } from '../../context/ChatsProvider';
-import { Avatar, Button, Card, Input } from '../../components/ui';
-import { formatPhone } from '../../lib/phone';
-import { APP_NAME, colors } from '../../theme';
+import { useAuth, useMe } from '../context/AuthProvider';
+import { useChats } from '../context/ChatsProvider';
+import { Avatar, Button, Card, Input } from '../components/ui';
+import { formatPhone } from '../lib/phone';
+import { APP_NAME, colors } from '../theme';
 
 export default function Profile() {
   const me = useMe();

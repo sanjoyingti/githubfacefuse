@@ -54,11 +54,13 @@ export default function Chats() {
         contentContainerStyle={{ paddingBottom: 120 }}
       />
       <View style={styles.fabs}>
-        <Pressable style={[styles.fab, styles.fabSmall]} onPress={() => router.push('/new-chat')}>
-          <Ionicons name="chatbubble-ellipses" size={22} color={colors.primary} />
+        <Pressable style={[styles.fab, styles.fabLight]} onPress={() => router.push('/new-chat')}>
+          <Ionicons name="person-add" size={22} color={colors.primary} />
+          <Text style={[styles.fabText, { color: colors.primary }]}>New chat</Text>
         </Pressable>
         <Pressable style={styles.fab} onPress={() => router.push('/new-group')}>
-          <Ionicons name="people" size={26} color="#fff" />
+          <Ionicons name="people" size={24} color="#fff" />
+          <Text style={styles.fabText}>New group</Text>
         </Pressable>
       </View>
     </View>
@@ -69,11 +71,12 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12 },
   middle: { flex: 1, marginLeft: 14 },
   topLine: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { fontSize: 16, fontWeight: '700', color: colors.text, flex: 1, marginRight: 8 },
+  title: { fontSize: 17, fontWeight: '800', color: colors.text, flex: 1, marginRight: 8 },
   time: { fontSize: 12, color: colors.muted },
-  preview: { color: colors.muted, marginTop: 3, flex: 1 },
+  preview: { color: colors.muted, marginTop: 3, flex: 1, fontSize: 15 },
   sep: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: 80 },
-  fabs: { position: 'absolute', right: 18, bottom: 24, alignItems: 'center', gap: 14 },
-  fab: { width: 58, height: 58, borderRadius: 18, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', elevation: 4, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 6, shadowOffset: { width: 0, height: 3 } },
-  fabSmall: { width: 46, height: 46, borderRadius: 14, backgroundColor: '#fff' },
+  fabs: { position: 'absolute', right: 16, bottom: 20, alignItems: 'flex-end', gap: 12 },
+  fab: { flexDirection: 'row', gap: 8, height: 56, paddingHorizontal: 20, borderRadius: 28, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', elevation: 4, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 6, shadowOffset: { width: 0, height: 3 } },
+  fabLight: { backgroundColor: '#fff', borderWidth: 2, borderColor: colors.primary },
+  fabText: { color: '#fff', fontWeight: '900', fontSize: 16 },
 });

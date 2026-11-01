@@ -45,6 +45,15 @@ export const WORKOUT_DAYS: WorkoutDay[] = (Object.keys(raw) as WorkoutDayKey[]).
   }),
 }));
 
+export const DAY_EMOJI: Record<WorkoutDayKey, string> = {
+  monday: '🏋️',
+  tuesday: '💪',
+  wednesday: '🧗',
+  thursday: '🤜',
+  friday: '🙆',
+  saturday: '🦵',
+};
+
 export function todayKey(d = new Date()): DayKey {
   return DAY_KEYS[d.getDay()];
 }

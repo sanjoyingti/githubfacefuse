@@ -31,6 +31,16 @@ async function tokensFor(uids: string[]): Promise<{ tokens: string[]; owner: Map
   return { tokens: [...owner.keys()], owner };
 }
 
+/** A dead token means the app was uninstalled from that phone. No phones left => "not on the app". */
+async function removeDeadToken(uid: string, token: string) {
+  const ref = db.collection('users').doc(uid);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const left = ((snap.get('pushTokens') as string[] | undefined) ?? []).filter((t) => t !== token);
+    tx.update(ref, { pushTokens: left, ...(left.length === 0 ? { appInstalled: false } : {}) });
+  });
+}
+
 /** Sends to many devices in chunks and removes tokens FCM says are dead. */
 async function send(uids: string[], build: (tokens: string[]) => MulticastMessage) {
   const { tokens, owner } = await tokensFor(uids);
@@ -42,7 +52,7 @@ async function send(uids: string[], build: (tokens: string[]) => MulticastMessag
         const code = r.error?.code ?? '';
         if (code === 'messaging/registration-token-not-registered' || code === 'messaging/invalid-registration-token') {
           const uid = owner.get(chunk[idx]);
-          if (uid) return db.collection('users').doc(uid).update({ pushTokens: FieldValue.arrayRemove(chunk[idx]) });
+          if (uid) return removeDeadToken(uid, chunk[idx]);
         }
         return null;
       }),
@@ -71,8 +81,10 @@ export const onNewMessage = onDocumentCreated('chats/{chatId}/messages/{msgId}',
 export const onNewCall = onDocumentCreated('calls/{callId}', async (event) => {
   const call = event.data?.data();
   if (!call) return;
-  const title = call.isGroup ? `📹 ${call.chatName}` : `📹 ${call.callerName}`;
-  const body = call.isGroup ? `${call.callerName} started a group video call` : 'Incoming video call';
+  const kind = call.kind === 'voice' ? 'voice' : 'video';
+  const icon = kind === 'video' ? '📹' : '📞';
+  const title = call.isGroup ? `${icon} ${call.chatName}` : `${icon} ${call.callerName}`;
+  const body = call.isGroup ? `${call.callerName} started a group ${kind} call — tap to join` : `Incoming ${kind} call — tap to answer`;
   await send(call.invited as string[], (tokens) => ({
     tokens,
     notification: { title, body },
@@ -82,18 +94,37 @@ export const onNewCall = onDocumentCreated('calls/{callId}', async (event) => {
   }));
 });
 
-/** Returns an Agora token for the caller, only if they are part of the call. Returns '' if no certificate is configured. */
+/** Same numeric id the app uses for each person in the call room. */
+function agoraUid(uid: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < uid.length; i++) {
+    h ^= uid.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 2147483646) + 1;
+}
+
+/**
+ * Hands out the pass for a call room. Only signed-in app users who are part of this call
+ * (and still in its chat) get one, only while the call is live, and only for their own id.
+ * The Agora project must have its App Certificate enabled so rooms can't be joined without a pass.
+ */
 export const agoraToken = onCall({ secrets: [AGORA_APP_CERTIFICATE] }, async (req) => {
   if (!req.auth) throw new HttpsError('unauthenticated', 'Sign in first');
   const { channel, uid } = req.data as { channel: string; uid: number };
   if (!channel || typeof uid !== 'number') throw new HttpsError('invalid-argument', 'channel and uid are required');
+  if (uid !== agoraUid(req.auth.uid)) throw new HttpsError('permission-denied', 'Wrong caller id');
   const call = (await db.collection('calls').doc(channel).get()).data();
   if (!call || (call.callerId !== req.auth.uid && !(call.invited as string[]).includes(req.auth.uid))) {
     throw new HttpsError('permission-denied', 'You are not part of this call');
   }
+  if (call.status === 'ended') throw new HttpsError('failed-precondition', 'This call has ended');
+  const chat = (await db.collection('chats').doc(String(call.chatId)).get()).data();
+  if (!chat || !(chat.members as string[]).includes(req.auth.uid)) throw new HttpsError('permission-denied', 'You are no longer in this chat');
+  const appId = AGORA_APP_ID.value();
   const cert = AGORA_APP_CERTIFICATE.value();
-  if (!cert) return { token: '' };
-  const token = RtcTokenBuilder.buildTokenWithUid(AGORA_APP_ID.value(), cert, channel, uid, RtcRole.PUBLISHER, 3600, 3600);
+  if (!appId || !cert) throw new HttpsError('failed-precondition', 'Calling is not set up on the server yet (Agora App ID / Certificate missing)');
+  const token = RtcTokenBuilder.buildTokenWithUid(appId, cert, channel, uid, RtcRole.PUBLISHER, 7200, 7200);
   return { token };
 });
 

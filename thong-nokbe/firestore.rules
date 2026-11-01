@@ -88,12 +88,18 @@ service cloud.firestore {
       }
     }
 
-    // ---- Video calls (signalling only; media goes through Agora)
+    // ---- Voice & video calls (signalling only; audio/video goes through Agora).
+    // You can only ring people who are in the same chat as you: your gym group,
+    // or the other person of a 1:1 chat (which any app user can open with any other app user).
     match /calls/{callId} {
       allow read: if signedIn() && (me() == resource.data.callerId || me() in resource.data.invited);
       allow create: if signedIn() && request.resource.data.callerId == me()
-        && isMemberOf(request.resource.data.chatId)
-        && request.resource.data.status == 'ringing';
+        && request.resource.data.kind in ['video', 'voice']
+        && request.resource.data.status == 'ringing'
+        && request.resource.data.joined == [me()]
+        && request.resource.data.invited.size() > 0
+        && !(me() in request.resource.data.invited)
+        && chatData(request.resource.data.chatId).members.hasAll(request.resource.data.invited.concat([me()]));
       allow update: if signedIn() && (me() == resource.data.callerId || me() in resource.data.invited)
         && changed().hasOnly(['joined', 'declined', 'status', 'endedAt']);
       allow delete: if false;

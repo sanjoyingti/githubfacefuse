@@ -23,12 +23,12 @@ export default function ProfileSetup() {
 
   return (
     <ScrollView contentContainerStyle={{ padding: 20 }} keyboardShouldPersistTaps="handled">
-      <Text style={{ fontSize: 22, fontWeight: '800', color: colors.text }}>Welcome! 💪</Text>
+      <Text style={{ fontSize: 26, fontWeight: '900', color: colors.text }}>Welcome! 💪</Text>
       <Text style={{ color: colors.muted, marginTop: 6, marginBottom: 20 }}>
-        Signed in as {formatPhone(user?.phoneNumber ?? '')}. Tell your gym mates who you are.
+        You are {formatPhone(user?.phoneNumber ?? '')}. What is your name?
       </Text>
       <Input label="Your name" placeholder="e.g. Sanjoy Ingti" value={name} onChangeText={setName} autoFocus />
-      <Button title="Continue" onPress={save} loading={busy} />
+      <Button title="Done ✓" onPress={save} loading={busy} />
       <Button title="Use a different number" variant="ghost" onPress={logout} style={{ marginTop: 8 }} />
     </ScrollView>
   );

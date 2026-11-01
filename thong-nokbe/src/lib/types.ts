@@ -8,6 +8,8 @@ export interface UserProfile {
   phone: string; // E.164, e.g. +919876543210
   about?: string;
   pushTokens?: string[];
+  /** false once the user logs out on every phone or uninstalls the app. */
+  appInstalled?: boolean;
 }
 
 export interface UpiSettings {
@@ -60,8 +62,11 @@ export interface FeePayment {
   recordedBy: string;
 }
 
+export type CallKind = 'video' | 'voice';
+
 export interface Call {
   id: string;
+  kind: CallKind;
   chatId: string;
   chatName: string;
   isGroup: boolean;

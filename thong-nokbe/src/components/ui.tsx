@@ -33,7 +33,7 @@ export function Button({
         style,
       ]}
     >
-      {loading ? <ActivityIndicator color={fg} /> : <Text style={[styles.btnText, small && { fontSize: 13 }, { color: fg }]}>{title}</Text>}
+      {loading ? <ActivityIndicator color={fg} /> : <Text style={[styles.btnText, small && { fontSize: 15 }, { color: fg }]}>{title}</Text>}
     </Pressable>
   );
 }
@@ -95,18 +95,18 @@ export function Loading() {
 }
 
 const styles = StyleSheet.create({
-  btn: { height: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 18 },
-  btnSmall: { height: 34, borderRadius: 8, paddingHorizontal: 12 },
-  btnText: { fontWeight: '700', fontSize: 16 },
-  label: { fontSize: 13, fontWeight: '600', color: colors.muted, marginBottom: 6 },
+  btn: { height: 54, borderRadius: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 18 },
+  btnSmall: { height: 42, borderRadius: 12, paddingHorizontal: 14 },
+  btnText: { fontWeight: '800', fontSize: 17 },
+  label: { fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: 6 },
   input: {
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 12,
     paddingHorizontal: 14,
-    height: 48,
-    fontSize: 16,
+    height: 54,
+    fontSize: 18,
     color: colors.text,
   },
   card: { backgroundColor: colors.card, borderRadius: 16, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 1 },

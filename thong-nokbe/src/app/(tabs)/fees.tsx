@@ -111,7 +111,7 @@ export default function Fees() {
         {/* My status */}
         <View style={[styles.myCard, { backgroundColor: mine ? colors.paid : colors.unpaid }]}>
           <Text style={styles.myLabel}>Your fee · {formatMonth(monthDate)}</Text>
-          <Text style={styles.myStatus}>{mine ? 'PAID ✓' : 'NOT PAID'}</Text>
+          <Text style={styles.myStatus}>{mine ? 'PAID ✅' : 'NOT PAID ❌'}</Text>
           <Text style={styles.myDetail}>
             {mine
               ? `₹${mine.amount} · ${mine.paidAt ? mine.paidAt.toDate().toLocaleDateString('en-IN') : 'just now'} · ${methodLabel[mine.method]}`
@@ -123,7 +123,7 @@ export default function Fees() {
             (upi ? (
               <Pressable style={styles.payBtn} onPress={pay} disabled={paying}>
                 <Ionicons name="flash" size={18} color={colors.unpaid} />
-                <Text style={styles.payText}>{paying ? 'Opening UPI app…' : `Pay ₹${upi.amount} via UPI`}</Text>
+                <Text style={styles.payText}>{paying ? 'Opening UPI app…' : `Pay ₹${upi.amount} now`}</Text>
               </Pressable>
             ) : (
               <Text style={[styles.myDetail, { marginTop: 10 }]}>The admin hasn't added a UPI ID yet.</Text>

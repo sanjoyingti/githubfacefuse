@@ -1,14 +1,19 @@
-# Thong Nokbe 💪 — gym app
+# Thong Nokbe Gym 🏋️
 
-A React Native (Expo SDK 58) app for a gym and its members. It works on Android and iOS.
+A simple gym app for Android and iPhone, built with React Native (Expo SDK 58). It uses big buttons, plain words and pictures, so anyone (even a kid) can use it. The logo is a person lifting a barbell (`assets/icon.png`).
+
+The five tabs at the bottom are **Exercise · Chat · Call · Attendance · Fees**. Tap **Me** at the top right for your profile.
 
 | Tab | What it does |
 | --- | --- |
-| **Workouts** | 20 exercise videos for each day: **Mon chest · Tue biceps · Wed back · Thu triceps · Fri shoulders · Sat legs** (Sunday is rest). Each video has a play button and plays inside the app (YouTube). The top card shows a **"NEW TODAY"** exercise of the day, which rotates every week. |
-| **Chats** | WhatsApp-style groups and 1:1 chats. Create a group, then add members **from phone contacts or by typing a number**. The creator is the **admin** and can add or remove members and **make other members admin** (or dismiss them). Messages are real-time over the internet. The 📹 button starts a **video call** with one person or the whole group. |
+| **Exercise** | 20 exercise videos for each day: **Mon chest · Tue biceps · Wed back · Thu triceps · Fri shoulders · Sat legs** (Sunday is rest). Each video has a play button and plays inside the app (YouTube). The top card shows a **"NEW TODAY"** exercise of the day, which rotates every week. |
+| **Chat** | WhatsApp-style groups and 1:1 chats. Create a group, then add members **from phone contacts or by typing a number**. The creator is the **admin** and can add or remove members and **make other members admin** (or dismiss them). Messages are real-time over the internet. |
+| **Call** | Call **any app user** one-to-one, or call a **whole gym group** at once (everyone in it rings). Every call offers 📞 **Voice** or 📹 **Video**. Video calls are live, with camera on/off and front/back flip; voice calls have mute and a speaker button. The call buttons are also in every chat's top bar and on the group info page. |
 | **Attendance** | Only **admins** can mark each member **Present / Absent** for a day. **Every member can view** attendance: the day list, monthly totals, and a calendar per member. |
 | **Fees** | Fees are due on the **1st of every month**. Paid members show **green**, unpaid members show **red**. **Pay ₹X via UPI** opens GPay, PhonePe, Paytm or BHIM with the admin's UPI ID and the amount already filled in. When the UPI app reports success, the member is marked paid automatically. The admin adds their UPI ID, fee amount and QR code, and can mark cash payments or undo a payment. |
-| **Profile** | Name, about, and log out. |
+| **Me** | Name, about, and log out. |
+
+**Only people who have installed the app can call or be called.** The server only lets you ring people who share a chat with you (your gym group, or a 1:1 chat, which any app user can open with any other app user). Only the people in a call get a pass to its call room, and only while the call is live. Someone who logs out or uninstalls shows as *Not on the app now* and can't be called until they sign in again.
 
 Members **must install the app** to be in a group. You can add someone who doesn't have the app yet by phone number. They show as *Invited*, and they join the group automatically the first time they sign in with that number.
 
@@ -21,7 +26,7 @@ Members **must install the app** to be in a group. You can add someone who doesn
   * UPI QR images (Storage).
   * Push notifications (Cloud Messaging).
   * Cloud Functions in `functions/`.
-* **Agora** handles video calls, both 1:1 and group (`react-native-agora`).
+* **Agora** handles voice and video calls, both 1:1 and group (`react-native-agora`). Call rooms need a server-issued pass (`agoraToken` Cloud Function).
 * **UPI**: on Android the app opens the UPI app with `startActivityForResult` (`expo-intent-launcher`), so it can read back the `Status=SUCCESS&txnId=…` result. iOS doesn't return a result, so the member types in the UTR number instead.
 * **Security rules** (`firestore.rules`) enforce the important parts on the server:
   * Only admins can change members or admins, mark attendance, or mark cash payments.
@@ -39,7 +44,7 @@ Members **must install the app** to be in a group. You can add someone who doesn
    * Upgrade to the **Blaze** plan. Cloud Functions and SMS need it, and there is a free quota.
    * Add an **Android app** with package `com.thongnokbe.app`. Add your **SHA-1 and SHA-256** fingerprints (from `npx eas-cli credentials`); phone auth needs them. Download **`google-services.json`** into this folder.
    * Add an **iOS app** with bundle ID `com.thongnokbe.app`. Download **`GoogleService-Info.plist`** into this folder. Upload an APNs key under *Project settings → Cloud Messaging*.
-2. **Agora** at <https://console.agora.io>: create a project with an App ID and an App Certificate.
+2. **Agora** at <https://console.agora.io>: create a project in **secure mode (App ID + App Certificate)**. The certificate is required: without it, calls won't start.
 3. **Configure**:
    ```bash
    cp .env.example .env          # set EXPO_PUBLIC_AGORA_APP_ID
@@ -70,5 +75,6 @@ cd rules-tests && npm install && npm test     # needs Java (Firestore emulator)
 ## Good to know
 
 * **UPI auto-confirmation**: Android UPI apps return a success or failure result, and the app marks the member paid from that. Some apps return nothing; then the member confirms with the UTR number, and the admin can see it and undo the payment if it's wrong. Some UPI apps limit "pay with amount" links to **personal** UPI IDs. A **merchant/business UPI ID** (e.g. GPay for Business, PhonePe Business) works most reliably. For bank-verified payments, use a gateway such as Razorpay.
-* **Incoming calls when the app is closed** arrive as a high-priority push notification. Tapping it joins the call. When the app is open, a full-screen accept/decline screen appears. A ringing lock-screen UI like WhatsApp's would need CallKit or ConnectionService.
+* **Incoming calls when the app is closed** arrive as a high-priority push notification. Tapping it joins the call. When the app is open, a full-screen Answer/No screen appears.
+* **"Not on the app"** is detected when someone logs out, or the next time the server tries to notify a phone that has uninstalled the app. So right after an uninstall, a person can still show as on the app for a short while. A ringing lock-screen UI like WhatsApp's would need CallKit or ConnectionService.
 * Change the default country code (`+91`) in `src/theme.ts`.

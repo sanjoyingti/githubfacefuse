@@ -3,7 +3,7 @@ import { onAuthStateChanged, signOut, type User } from '@react-native-firebase/a
 import { doc, onSnapshot, serverTimestamp, setDoc } from '@react-native-firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import { joinPendingGroups } from '../lib/chats';
-import { registerForPush } from '../lib/push';
+import { registerForPush, unregisterPush } from '../lib/push';
 import type { UserProfile } from '../lib/types';
 
 interface AuthState {
@@ -64,12 +64,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!user?.phoneNumber) throw new Error('Not signed in with a phone number');
     await setDoc(
       doc(db, 'users', user.uid),
-      { name: name.trim(), about: about?.trim() ?? '', phone: user.phoneNumber, updatedAt: serverTimestamp() },
+      { name: name.trim(), about: about?.trim() ?? '', phone: user.phoneNumber, appInstalled: true, updatedAt: serverTimestamp() },
       { merge: true },
     );
   };
 
   const logout = async () => {
+    if (user) await unregisterPush(user.uid);
     await signOut(auth);
   };
 

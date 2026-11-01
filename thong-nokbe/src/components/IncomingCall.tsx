@@ -43,11 +43,12 @@ export function IncomingCall({ me }: { me: UserProfile }) {
 
   if (!call) return null;
   const title = call.isGroup ? call.chatName : call.callerName;
+  const video = call.kind !== 'voice';
 
   return (
     <Modal visible animationType="fade" onRequestClose={() => {}}>
       <View style={styles.root}>
-        <Text style={styles.kind}>{call.isGroup ? 'Incoming group video call' : 'Incoming video call'}</Text>
+        <Text style={styles.kind}>{video ? '📹' : '📞'} {call.isGroup ? 'Group ' : ''}{video ? 'Video call' : 'Voice call'}</Text>
         <View style={{ alignItems: 'center', marginTop: 40 }}>
           <Avatar name={title} size={120} />
           <Text style={styles.name}>{title}</Text>
@@ -61,7 +62,8 @@ export function IncomingCall({ me }: { me: UserProfile }) {
               setCall(null);
             }}
           >
-            <Ionicons name="call" size={32} color="#fff" style={{ transform: [{ rotate: '135deg' }] }} />
+            <Ionicons name="call" size={34} color="#fff" style={{ transform: [{ rotate: '135deg' }] }} />
+            <Text style={styles.btnLabel}>No</Text>
           </Pressable>
           <Pressable
             style={[styles.circle, { backgroundColor: colors.primary }]}
@@ -72,7 +74,8 @@ export function IncomingCall({ me }: { me: UserProfile }) {
               router.push(`/call/${id}`);
             }}
           >
-            <Ionicons name="videocam" size={32} color="#fff" />
+            <Ionicons name={video ? 'videocam' : 'call'} size={34} color="#fff" />
+            <Text style={styles.btnLabel}>Answer</Text>
           </Pressable>
         </View>
       </View>
@@ -82,9 +85,10 @@ export function IncomingCall({ me }: { me: UserProfile }) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.header, paddingTop: 80, alignItems: 'center' },
-  kind: { color: '#a7f3d0', fontSize: 15, letterSpacing: 0.5 },
+  kind: { color: '#a7f3d0', fontSize: 20, fontWeight: '800' },
+  btnLabel: { position: 'absolute', bottom: -30, color: '#fff', fontWeight: '800', fontSize: 16 },
   name: { color: '#fff', fontSize: 28, fontWeight: '800', marginTop: 20, textAlign: 'center', paddingHorizontal: 20 },
   sub: { color: '#cbd5e1', marginTop: 6 },
   actions: { position: 'absolute', bottom: 80, flexDirection: 'row', width: '100%', justifyContent: 'space-evenly' },
-  circle: { width: 76, height: 76, borderRadius: 38, alignItems: 'center', justifyContent: 'center' },
+  circle: { width: 86, height: 86, borderRadius: 43, alignItems: 'center', justifyContent: 'center' },
 });

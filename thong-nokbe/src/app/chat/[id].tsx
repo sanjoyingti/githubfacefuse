@@ -6,7 +6,7 @@ import { limit, onSnapshot, orderBy, query } from '@react-native-firebase/firest
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
 import { messagesCol, sendMessage } from '../../lib/chats';
-import { startCall } from '../../lib/calls';
+import { useCaller } from '../../components/useCaller';
 import { useChatTitle } from '../../components/useChatTitle';
 import { Avatar, Empty } from '../../components/ui';
 import { dayKey, formatDayLong, formatTime } from '../../lib/dates';
@@ -29,15 +29,7 @@ export default function ChatScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, !!chat]);
 
-  const call = async () => {
-    if (!chat) return;
-    try {
-      const callId = await startCall(chat, me, title);
-      router.push(`/call/${callId}`);
-    } catch (e: any) {
-      Alert.alert('Could not start call', e?.message ?? String(e));
-    }
-  };
+  const { callChat } = useCaller();
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -55,8 +47,11 @@ export default function ChatScreen() {
       headerRight: () =>
         chat ? (
           <View style={{ flexDirection: 'row', gap: 18 }}>
-            <Pressable onPress={call} hitSlop={10}>
-              <Ionicons name="videocam" size={24} color="#fff" />
+            <Pressable onPress={() => callChat(chat, title, 'voice')} hitSlop={10} accessibilityLabel="Voice call">
+              <Ionicons name="call" size={24} color="#fff" />
+            </Pressable>
+            <Pressable onPress={() => callChat(chat, title, 'video')} hitSlop={10} accessibilityLabel="Video call">
+              <Ionicons name="videocam" size={26} color="#fff" />
             </Pressable>
             {chat.type === 'group' && (
               <Pressable onPress={() => router.push(`/group/${id}`)} hitSlop={10}>

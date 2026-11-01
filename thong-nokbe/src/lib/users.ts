@@ -13,8 +13,8 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-async function fetchUsers(uids: string[]) {
-  const missing = uids.filter((u) => !cache.has(u) && !inflight.has(u));
+async function fetchUsers(uids: string[], force = false) {
+  const missing = uids.filter((u) => (force || !cache.has(u)) && !inflight.has(u));
   if (!missing.length) return;
   missing.forEach((u) => inflight.add(u));
   try {
@@ -26,6 +26,11 @@ async function fetchUsers(uids: string[]) {
     missing.forEach((u) => inflight.delete(u));
     listeners.forEach((l) => l());
   }
+}
+
+/** Re-reads these profiles from the server (e.g. to see who still has the app). */
+export function refreshUsers(uids: string[]) {
+  return fetchUsers(uids, true).catch(() => {});
 }
 
 /** Returns a uid -> profile map for the given uids, loading any that aren't cached. */

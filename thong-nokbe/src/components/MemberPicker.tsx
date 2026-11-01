@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, SectionList, Share, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Contact, ContactField, requestPermissionsAsync } from 'expo-contacts';
 import { Ionicons } from '@expo/vector-icons';
 import { findUsersByPhones } from '../lib/users';
+import { useContacts, type ContactRow } from '../lib/contacts';
 import { formatPhone, normalizePhone } from '../lib/phone';
 import type { UserProfile } from '../lib/types';
 import { APP_INVITE_LINK } from '../config';
@@ -14,14 +14,7 @@ export interface Selection {
   phones: string[]; // numbers without the app -> invited, auto-join after installing
 }
 
-interface Row {
-  key: string;
-  name: string;
-  phone: string;
-  user?: UserProfile;
-}
-
-const FIELDS = [ContactField.FULL_NAME, ContactField.PHONES] as const;
+type Row = ContactRow;
 
 /**
  * WhatsApp-style member picker: shows phone contacts that already use the app first,
@@ -42,41 +35,14 @@ export function MemberPicker({
   onChange: (s: Selection) => void;
   single?: boolean; // for starting a 1:1 chat (registered users only)
 }) {
-  const [loading, setLoading] = useState(true);
-  const [rows, setRows] = useState<Row[]>([]);
+  const { loading, rows, permissionDenied, error } = useContacts();
   const [search, setSearch] = useState('');
   const [manual, setManual] = useState('');
   const [manualBusy, setManualBusy] = useState(false);
-  const [permissionDenied, setPermissionDenied] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const { granted } = await requestPermissionsAsync();
-        if (!granted) {
-          setPermissionDenied(true);
-          return;
-        }
-        const details = await Contact.getAllDetails(FIELDS);
-        const all: Row[] = [];
-        for (const c of details) {
-          for (const p of c.phones ?? []) {
-            const n = normalizePhone(p.number ?? '');
-            if (n) all.push({ key: `${c.id}-${n}`, name: c.fullName || n, phone: n });
-          }
-        }
-        const dedup = new Map<string, Row>();
-        all.forEach((r) => !dedup.has(r.phone) && dedup.set(r.phone, r));
-        const list = [...dedup.values()];
-        const registered = await findUsersByPhones(list.map((r) => r.phone));
-        setRows(list.map((r) => ({ ...r, user: registered[r.phone] })).sort((a, b) => a.name.localeCompare(b.name)));
-      } catch (e: any) {
-        Alert.alert('Could not read contacts', e?.message ?? String(e));
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+    if (error) Alert.alert('Could not read contacts', error);
+  }, [error]);
 
   const excluded = (r: Row) => (r.user ? r.user.uid === meUid || excludeUids.includes(r.user.uid) : excludePhones.includes(r.phone));
   const isSelected = (r: Row) => (r.user ? value.users.some((u) => u.uid === r.user!.uid) : value.phones.includes(r.phone));

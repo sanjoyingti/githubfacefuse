@@ -15,7 +15,8 @@ export const colors = {
   otherBubble: '#FFFFFF',
   chatBg: '#EFE7DD',
   accent: '#F59E0B',
+  voice: '#2563EB',
 };
 
 export const DEFAULT_COUNTRY_CODE = '+91';
-export const APP_NAME = 'Thong Nokbe';
+export const APP_NAME = 'Thong Nokbe Gym';

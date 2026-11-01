@@ -73,19 +73,19 @@ export default function Attendance() {
       </View>
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
         <View style={styles.summary}>
-          <Stat n={presentCount} label="Present" color={colors.paid} />
-          <Stat n={absentCount} label="Absent" color={colors.unpaid} />
+          <Stat n={presentCount} label="✓ Came" color={colors.paid} />
+          <Stat n={absentCount} label="✗ Didn't come" color={colors.unpaid} />
           <Stat n={members.length - presentCount - absentCount} label="Not marked" color={colors.muted} />
         </View>
         {isAdmin ? (
           !isFuture && (
             <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
-              <Button small title="Mark rest present" variant="outline" onPress={() => markAllUnmarked('present')} style={{ flex: 1 }} />
-              <Button small title="Mark rest absent" variant="outline" onPress={() => markAllUnmarked('absent')} style={{ flex: 1 }} />
+              <Button small title="✓ Everyone else here" variant="outline" onPress={() => markAllUnmarked('present')} style={{ flex: 1 }} />
+              <Button small title="✗ Everyone else away" variant="outline" onPress={() => markAllUnmarked('absent')} style={{ flex: 1 }} />
             </View>
           )
         ) : (
-          <Text style={styles.note}>Only group admins can mark attendance. Everyone in the group can view it.</Text>
+          <Text style={styles.note}>👀 Only the gym admin can mark who came. Everyone can see it.</Text>
         )}
         <Card style={{ padding: 0 }}>
           {members.map((m, i) => {
@@ -106,8 +106,8 @@ export default function Attendance() {
                 </Pressable>
                 {isAdmin && !isFuture ? (
                   <View style={{ flexDirection: 'row', gap: 8 }}>
-                    <Toggle label="P" active={s === 'present'} color={colors.paid} onPress={() => mark(m.uid, 'present')} />
-                    <Toggle label="A" active={s === 'absent'} color={colors.unpaid} onPress={() => mark(m.uid, 'absent')} />
+                    <Toggle label="✓ Here" active={s === 'present'} color={colors.paid} onPress={() => mark(m.uid, 'present')} />
+                    <Toggle label="✗ Away" active={s === 'absent'} color={colors.unpaid} onPress={() => mark(m.uid, 'absent')} />
                   </View>
                 ) : (
                   <StatusTag s={s} />
@@ -144,7 +144,7 @@ function StatusTag({ s }: { s?: AttendanceStatus }) {
   const present = s === 'present';
   return (
     <View style={{ backgroundColor: present ? colors.paidBg : colors.unpaidBg, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 }}>
-      <Text style={{ color: present ? colors.paid : colors.unpaid, fontWeight: '800', fontSize: 12 }}>{present ? 'Present' : 'Absent'}</Text>
+      <Text style={{ color: present ? colors.paid : colors.unpaid, fontWeight: '800', fontSize: 14 }}>{present ? '✓ Came' : '✗ Away'}</Text>
     </View>
   );
 }
@@ -204,14 +204,14 @@ function HistoryModal({
 
 const styles = StyleSheet.create({
   dateBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 10 },
-  dateText: { fontWeight: '800', color: colors.text, fontSize: 15 },
+  dateText: { fontWeight: '900', color: colors.text, fontSize: 17 },
   summary: { flexDirection: 'row', backgroundColor: '#fff', borderRadius: 16, paddingVertical: 14, marginBottom: 12 },
-  note: { color: colors.muted, marginBottom: 12, textAlign: 'center' },
+  note: { color: colors.muted, marginBottom: 12, textAlign: 'center', fontSize: 15 },
   row: { flexDirection: 'row', alignItems: 'center', padding: 12 },
   rowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
-  name: { fontWeight: '700', color: colors.text, fontSize: 15 },
-  sub: { color: colors.muted, fontSize: 12, marginTop: 2 },
-  toggle: { width: 40, height: 40, borderRadius: 10, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  name: { fontWeight: '800', color: colors.text, fontSize: 16 },
+  sub: { color: colors.muted, fontSize: 13, marginTop: 2 },
+  toggle: { minWidth: 70, height: 44, borderRadius: 12, borderWidth: 2, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: 20 },
   sheet: { backgroundColor: '#fff', borderRadius: 20, padding: 18 },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },

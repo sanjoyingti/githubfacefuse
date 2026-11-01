@@ -5,10 +5,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
 import { cancelInvite, dismissAdmin, getOrCreateDirectChat, leaveGroup, makeAdmin, removeMember, updateGroupInfo } from '../../lib/chats';
-import { startCall } from '../../lib/calls';
+import { hasApp } from '../../lib/calls';
+import { useCaller } from '../../components/useCaller';
 import { displayName, useUsers } from '../../lib/users';
 import { formatPhone } from '../../lib/phone';
 import { Avatar, Button, Chip, Empty } from '../../components/ui';
+import { CallButtons } from '../../components/CallButtons';
 import { APP_INVITE_LINK } from '../../config';
 import { APP_NAME, colors } from '../../theme';
 import type { UserProfile } from '../../lib/types';
@@ -31,6 +33,7 @@ export default function GroupInfo() {
   const me = useMe();
   const chat = useChat(id);
   const users = useUsers(chat?.members ?? []);
+  const { callChat, callUser } = useCaller();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
 
@@ -44,14 +47,12 @@ export default function GroupInfo() {
     const isAdmin = chat.admins.includes(u.uid);
     const opts: { label: string; destructive?: boolean; onPress: () => void }[] = [
       { label: `Message ${u.name}`, onPress: () => run(async () => router.push(`/chat/${await getOrCreateDirectChat(me, u)}`)) },
-      {
-        label: `Video call ${u.name}`,
-        onPress: () =>
-          run(async () => {
-            const dm = await getOrCreateDirectChat(me, u);
-            router.push(`/call/${await startCall({ ...chat, id: dm, type: 'direct', members: [me.uid, u.uid] }, me, u.name, u.uid)}`);
-          }),
-      },
+      ...(hasApp(u)
+        ? [
+            { label: `📞 Voice call ${u.name}`, onPress: () => callUser(u, 'voice') },
+            { label: `📹 Video call ${u.name}`, onPress: () => callUser(u, 'video') },
+          ]
+        : []),
     ];
     if (iAmAdmin) {
       opts.push(
@@ -108,6 +109,9 @@ export default function GroupInfo() {
           </Pressable>
         )}
         <Text style={{ color: colors.muted, marginTop: 4 }}>Group · {chat.members.length} members</Text>
+        <View style={{ marginTop: 14 }}>
+          <CallButtons onCall={(kind) => callChat(chat, chat.name ?? 'Group', kind)} />
+        </View>
       </View>
 
       {iAmAdmin && (
@@ -126,7 +130,11 @@ export default function GroupInfo() {
               <Text style={styles.memberName}>{u.uid === me.uid ? 'You' : displayName(u)}</Text>
               <Text style={styles.memberSub}>{u.phone ? formatPhone(u.phone) : ''}</Text>
             </View>
-            {chat.admins.includes(u.uid) && <Chip text="Group admin" color={colors.primaryDark} bg={colors.paidBg} />}
+            {chat.admins.includes(u.uid) ? (
+              <Chip text="Group admin" color={colors.primaryDark} bg={colors.paidBg} />
+            ) : !hasApp(u) && u.uid !== me.uid ? (
+              <Chip text="Not on app" color={colors.unpaid} bg={colors.unpaidBg} />
+            ) : null}
           </Pressable>
         ))}
       </View>

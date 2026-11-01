@@ -37,6 +37,7 @@ function RootNavigator() {
         <Stack.Screen name="group/fee-settings" options={{ title: 'Fee & UPI settings' }} />
         <Stack.Screen name="new-group" options={{ title: 'New group' }} />
         <Stack.Screen name="new-chat" options={{ title: 'New chat' }} />
+        <Stack.Screen name="profile" options={{ title: 'Me' }} />
         <Stack.Screen name="call/[id]" options={{ headerShown: false, presentation: 'fullScreenModal', gestureEnabled: false }} />
       </Stack.Protected>
     </Stack>

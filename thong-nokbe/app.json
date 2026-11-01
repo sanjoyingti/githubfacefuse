@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Thong Nokbe",
+    "name": "Thong Nokbe Gym",
     "slug": "thong-nokbe",
     "scheme": "thongnokbe",
     "version": "1.0.0",
@@ -12,10 +12,10 @@
       "googleServicesFile": "./GoogleService-Info.plist",
       "supportsTablet": false,
       "infoPlist": {
-        "NSCameraUsageDescription": "Thong Nokbe uses the camera for video calls with your gym group.",
-        "NSMicrophoneUsageDescription": "Thong Nokbe uses the microphone for video calls with your gym group.",
-        "NSContactsUsageDescription": "Thong Nokbe uses your contacts to find gym friends and add them to groups.",
-        "NSPhotoLibraryUsageDescription": "Thong Nokbe needs photo access so admins can upload their UPI QR code.",
+        "NSCameraUsageDescription": "Thong Nokbe Gym uses the camera for video calls with your gym group.",
+        "NSMicrophoneUsageDescription": "Thong Nokbe Gym uses the microphone for voice and video calls with your gym group.",
+        "NSContactsUsageDescription": "Thong Nokbe Gym uses your contacts to find gym friends and add them to groups.",
+        "NSPhotoLibraryUsageDescription": "Thong Nokbe Gym needs photo access so admins can upload their UPI QR code.",
         "LSApplicationQueriesSchemes": [
           "upi",
           "gpay",
@@ -71,13 +71,13 @@
       [
         "expo-contacts",
         {
-          "contactsPermission": "Thong Nokbe uses your contacts to find gym friends and add them to groups."
+          "contactsPermission": "Thong Nokbe Gym uses your contacts to find gym friends and add them to groups."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Thong Nokbe needs photo access so admins can upload their UPI QR code."
+          "photosPermission": "Thong Nokbe Gym needs photo access so admins can upload their UPI QR code."
         }
       ],
       [
