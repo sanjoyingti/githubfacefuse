@@ -1608,6 +1608,7 @@ class MainActivity : ComponentActivity() {
         }
         ApiService.restore(this)
         if (crashedLastTime) enterSafeMode()
+        offerResume()
 
         // adb: ... --es selftest 1 --es enhance 1 --es lipsync 1   (or `0` to force OFF)
         //
@@ -3175,7 +3176,7 @@ class MainActivity : ComponentActivity() {
         f
     }.getOrNull()
 
-    private fun loadTarget(uri: Uri) {
+    private fun loadTarget(uri: Uri, onLoaded: (() -> Unit)? = null) {
         resetSwapPersonState()
         dropLipReferenceFace()
         lipPickMode = false
@@ -3194,8 +3195,15 @@ class MainActivity : ComponentActivity() {
                     // truncate it to nothing before the first byte is read.
                     val same = uri.scheme == "file" &&
                         uri.path?.let { File(it).canonicalPath == f.canonicalPath } == true
-                    if (!same) contentResolver.openInputStream(uri).use { i ->
-                        f.outputStream().use { o -> i!!.copyTo(o) }
+                    // Written beside and renamed over, never rewritten in place: an unfinished
+                    // swap keeps a hard link to the old file (ResumeStore), and truncating that
+                    // inode would change the video under it.
+                    if (!same) {
+                        val tmp = File(cacheDir, "target.mp4.tmp")
+                        contentResolver.openInputStream(uri).use { i ->
+                            tmp.outputStream().use { o -> i!!.copyTo(o) }
+                        }
+                        if (!tmp.renameTo(f)) error("cannot store the target")
                     }
                     val mmr = MediaMetadataRetriever().apply { setDataSource(f.absolutePath) }
                     val d = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
@@ -3263,6 +3271,7 @@ class MainActivity : ComponentActivity() {
                 // `preview` too, which this path used to leave set -- see clearPreviewFrames.
                 clearPreviewFrames()
                 originalFrame = previews.frameAt(0f)
+                onLoaded?.invoke()
             }.onFailure {
                 status = getString(R.string.status_cannot_read_video, it.message ?: "")
             }
@@ -4510,7 +4519,36 @@ class MainActivity : ComponentActivity() {
         if (last.isFile && last.length() > 0) loadTarget(Uri.fromFile(last))
     }
 
-    private fun runSwap() {
+    /**
+     * An unfinished video swap from an earlier session -- stopped with Cancel, closed, or
+     * crashed -- is offered once per start: Continue reloads its video with the same trim
+     * and output settings and carries on at the next unfinished piece.
+     */
+    private fun offerResume() {
+        val job = runCatching { ResumeStore.load(this) }.getOrNull() ?: return
+        // done == count too: every piece finished but the app stopped before joining them.
+        if (job.done <= 0) return
+        pendingConfirm = Confirm(
+            getString(R.string.resume_title),
+            getString(R.string.resume_body, job.targetName,
+                      fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)),
+            getString(R.string.resume_ok), destructive = false,
+        ) { resumeSwap(job) }
+    }
+
+    private fun resumeSwap(job: ResumeJob) {
+        if (busy) return
+        loadTarget(Uri.fromFile(File(job.targetPath))) {
+            trimStartMs = job.startUs / 1000f
+            trimEndMs = if (job.toEnd) durationMs.toFloat() else job.endUs / 1000f
+            if (opts.outputFps != job.outputFps || opts.outputMaxShortEdge != job.outputMaxShortEdge)
+                applyOpts(opts.copy(outputFps = job.outputFps,
+                                    outputMaxShortEdge = job.outputMaxShortEdge))
+            runSwap(resume = job)
+        }
+    }
+
+    private fun runSwap(resume: ResumeJob? = null) {
         if (opts.swapsFace && sourceUri == null) return
         val tgt = targetFile ?: return
         // Defence in depth: the Swap button in SwapScreen is already disabled without one
@@ -4632,29 +4670,7 @@ class MainActivity : ComponentActivity() {
                     // the progress readout can show, and the final tick always lands.
                     var lastProgress = 0L
 
-                    VideoSwapper(
-                        outputFps = opts.outputFps,
-                        outputMaxShortEdge = opts.outputMaxShortEdge,
-                        trackPeriod = opts.trackPeriod,
-                        lipSync = opts.lipSync,
-                        voicePath = voiceFile?.absolutePath,
-                        voiceTrimStartUs = (voiceTrimStartMs * 1000).toLong(),
-                        voiceTrimEndUs = if (voiceTrimEndMs >= voiceDurationMs) Long.MAX_VALUE
-                                         else (voiceTrimEndMs * 1000).toLong(),
-                        trimStartUs = (trimStartMs * 1000).toLong(),
-                        trimEndUs = if (trimEndMs >= durationMs) Long.MAX_VALUE
-                                    else (trimEndMs * 1000).toLong(),
-                        onProgress = { done, total ->
-                            val now = System.currentTimeMillis()
-                            SwapStatus.done = done; SwapStatus.total = total
-                            if (now - lastProgress >= 100 || done >= total) {
-                                lastProgress = now
-                                framesDone = done; framesTotal = total
-                                progress = if (total > 0) done.toFloat() / total else 0f
-                                elapsedS = (now - t0) / 1000.0
-                            }
-                        },
-                        onFrame = { bgr, w, h ->
+                    fun onFrameCb(bgr: ByteArray, w: Int, h: Int) {
                             // Real-time on the NPU, throttled elsewhere -- see
                             // previewIntervalMs for why the number is derived and not a
                             // setting. Read once per run, not per frame.
@@ -4666,11 +4682,99 @@ class MainActivity : ComponentActivity() {
                                 val argb = NativePipe.bgrToArgb(bgr, w, h, pw, ph)
                                 preview = Bitmap.createBitmap(argb, pw, ph, Bitmap.Config.ARGB_8888)
                             }
-                        },
+                        }
+                    fun swapper(startUs: Long, endUs: Long, fps: Int, maxEdge: Int, track: Int,
+                                onProg: (Int, Int) -> Unit) = VideoSwapper(
+                        outputFps = fps,
+                        outputMaxShortEdge = maxEdge,
+                        trackPeriod = track,
+                        lipSync = opts.lipSync,
+                        voicePath = voiceFile?.absolutePath,
+                        voiceTrimStartUs = (voiceTrimStartMs * 1000).toLong(),
+                        voiceTrimEndUs = if (voiceTrimEndMs >= voiceDurationMs) Long.MAX_VALUE
+                                         else (voiceTrimEndMs * 1000).toLong(),
+                        trimStartUs = startUs,
+                        trimEndUs = endUs,
+                        onProgress = { d, t -> onProg(d, t) },
+                        onFrame = { bgr, w, h -> onFrameCb(bgr, w, h) },
                         onLog = { appendLog(it) },
                         // The in-app Cancel, or Cancel on the background notification.
                         isCancelled = { cancelRequested || SwapStatus.cancelRequested },
-                    ).swap(tgt!!.absolutePath, out.absolutePath).getOrThrow()
+                    )
+                    val runStartUs = (trimStartMs * 1000).toLong()
+                    val runEndUs = if (trimEndMs >= durationMs) Long.MAX_VALUE
+                                   else (trimEndMs * 1000).toLong()
+                    fun showProgress(done: Int, total: Int) {
+                            val now = System.currentTimeMillis()
+                            SwapStatus.done = done; SwapStatus.total = total
+                            if (now - lastProgress >= 100 || done >= total) {
+                                lastProgress = now
+                                framesDone = done; framesTotal = total
+                                progress = if (total > 0) done.toFloat() / total else 0f
+                                elapsedS = (now - t0) / 1000.0
+                            }
+                    }
+
+                    if (opts.lipSync) {
+                        // Lip sync keeps the ONE continuous run: its mouth timing counts frames
+                        // from the start of the run, which pieces would restart.
+                        swapper(runStartUs, runEndUs, opts.outputFps, opts.outputMaxShortEdge,
+                                opts.trackPeriod, ::showProgress)
+                            .swap(tgt!!.absolutePath, out.absolutePath).getOrThrow()
+                    } else {
+                        // RESUMABLE: pieces of 20 s, each saved as it finishes, joined at the
+                        // end -- see ResumableSwap.kt. A new swap starts a new job; Continue
+                        // picks up the saved one at its next piece.
+                        val job = resume ?: ResumeStore.begin(this@MainActivity, tgt!!) { path ->
+                            ResumeJob(
+                                targetPath = path, targetName = targetName ?: tgt.name,
+                                startUs = runStartUs,
+                                endUs = if (runEndUs == Long.MAX_VALUE) durationMs.toLong() * 1000
+                                        else runEndUs,
+                                toEnd = runEndUs == Long.MAX_VALUE,
+                                chunkUs = ResumeJob.CHUNK_US,
+                                outputFps = opts.outputFps,
+                                outputMaxShortEdge = opts.outputMaxShortEdge,
+                                trackPeriod = opts.trackPeriod,
+                            )
+                        }
+                        if (job.done > 0)
+                            appendLog("continuing: %d of %d pieces already done".format(job.done, job.count))
+                        var framesBefore = 0
+                        var partial: File? = null
+                        for (i in job.done until job.count) {
+                            if (cancelRequested || SwapStatus.cancelRequested) break
+                            val (cs, ce) = job.range(i)
+                            val part = ResumeStore.part(this@MainActivity, i)
+                            val pieceLen = (if (ce == Long.MAX_VALUE) job.endUs else ce) - cs + 1
+                            swapper(cs, ce, job.outputFps, job.outputMaxShortEdge, job.trackPeriod) { d, t ->
+                                // Whole-run progress: time done over time asked for.
+                                val frac = ((cs - job.startUs) +
+                                            (if (t > 0) d.toDouble() / t else 0.0) * pieceLen) /
+                                           maxOf(1L, job.totalUs).toDouble()
+                                val doneAll = framesBefore + d
+                                showProgress(doneAll,
+                                             if (frac > 0.0) (doneAll / frac).toInt().coerceAtLeast(doneAll)
+                                             else doneAll + t)
+                            }.swap(job.targetPath, part.absolutePath).getOrThrow()
+                            framesBefore += SwapStatus.done.coerceAtLeast(0) - framesBefore
+                            if (cancelRequested || SwapStatus.cancelRequested) {
+                                partial = part   // shown now, redone on Continue
+                                break
+                            }
+                            job.done = i + 1
+                            ResumeStore.save(this@MainActivity, job)
+                        }
+                        val pieces = (0 until job.done).map {
+                            ResumeStore.part(this@MainActivity, it) to job.offset(it)
+                        } + listOfNotNull(partial?.let { it to job.offset(job.done) })
+                        if (pieces.isEmpty()) error("cancelled")
+                        Mp4Concat.join(pieces, out)
+                        partial?.safeDelete()
+                        if (job.done >= job.count) ResumeStore.clear(this@MainActivity)
+                        else appendLog("stopped at %s of %s: Continue is offered next time"
+                            .format(fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)))
+                    }
 
                     appendLog("total %.1f s".format((System.currentTimeMillis() - t0) / 1000.0))
                     out
