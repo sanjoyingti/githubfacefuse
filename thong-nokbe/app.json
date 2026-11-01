@@ -1,0 +1,94 @@
+{
+  "expo": {
+    "name": "Thong Nokbe Gym",
+    "slug": "thong-nokbe",
+    "scheme": "thongnokbe",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "com.thongnokbe.app",
+      "googleServicesFile": "./GoogleService-Info.plist",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Thong Nokbe Gym uses the camera for video calls with your gym group.",
+        "NSMicrophoneUsageDescription": "Thong Nokbe Gym uses the microphone for voice and video calls with your gym group.",
+        "NSContactsUsageDescription": "Thong Nokbe Gym uses your contacts to find gym friends and add them to groups.",
+        "NSPhotoLibraryUsageDescription": "Thong Nokbe Gym needs photo access so admins can upload their UPI QR code.",
+        "LSApplicationQueriesSchemes": [
+          "upi",
+          "gpay",
+          "tez",
+          "phonepe",
+          "paytmmp",
+          "bhim"
+        ],
+        "UIBackgroundModes": [
+          "remote-notification",
+          "audio"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.thongnokbe.app",
+      "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B1F14",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.READ_CONTACTS",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      "@react-native-firebase/messaging",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          },
+          "android": {}
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Thong Nokbe Gym uses your contacts to find gym friends and add them to groups."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Thong Nokbe Gym needs photo access so admins can upload their UPI QR code."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0B1F14",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160
+        }
+      ],
+      "expo-font"
+    ]
+  }
+}

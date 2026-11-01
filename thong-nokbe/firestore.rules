@@ -1,0 +1,108 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function myPhone() { return request.auth.token.phone_number; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function chatData(chatId) { return get(/databases/$(database)/documents/chats/$(chatId)).data; }
+    function isMemberOf(chatId) { return signedIn() && me() in chatData(chatId).members; }
+    function isAdminOf(chatId) {
+      let c = chatData(chatId);
+      return signedIn() && c.type == 'group' && me() in c.admins;
+    }
+
+    // ---- Users: everyone signed in can look people up (to match contacts), only you edit yourself.
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && me() == uid
+        && request.resource.data.phone == myPhone();
+      allow delete: if false;
+    }
+
+    // ---- Chats (groups and 1:1)
+    match /chats/{chatId} {
+      allow read: if signedIn() && (
+        resource == null
+        || me() in resource.data.members
+        || myPhone() in resource.data.pendingPhones
+      );
+
+      allow create: if signedIn() && (
+        // Group: creator is the only admin and a member.
+        (request.resource.data.type == 'group'
+          && request.resource.data.admins == [me()]
+          && me() in request.resource.data.members
+          && request.resource.data.createdBy == me())
+        ||
+        // 1:1 chat: id is derived from both uids.
+        (request.resource.data.type == 'direct'
+          && request.resource.data.members.size() == 2
+          && me() in request.resource.data.members
+          && chatId == 'dm_' + request.resource.data.members[0] + '_' + request.resource.data.members[1])
+      );
+
+      allow update: if signedIn() && (
+        // Admins manage everything about a group: members, admins, name, UPI/fee settings.
+        (resource.data.type == 'group' && me() in resource.data.admins)
+        ||
+        // Any member may bump the last-message preview.
+        (me() in resource.data.members && changed().hasOnly(['lastMessage', 'updatedAt']))
+        ||
+        // A non-admin member may leave (remove only themselves).
+        (resource.data.type == 'group' && me() in resource.data.members
+          && changed().hasOnly(['members', 'admins'])
+          && request.resource.data.members.toSet() == resource.data.members.toSet().difference([me()].toSet())
+          && request.resource.data.admins.toSet() == resource.data.admins.toSet().difference([me()].toSet()))
+        ||
+        // An invited phone number joins after installing the app.
+        (resource.data.type == 'group' && myPhone() in resource.data.pendingPhones
+          && changed().hasOnly(['members', 'pendingPhones'])
+          && request.resource.data.members.toSet() == resource.data.members.toSet().union([me()].toSet())
+          && request.resource.data.pendingPhones.toSet() == resource.data.pendingPhones.toSet().difference([myPhone()].toSet()))
+      );
+
+      allow delete: if signedIn() && resource.data.type == 'group' && me() in resource.data.admins;
+
+      match /messages/{msgId} {
+        allow read: if isMemberOf(chatId);
+        allow create: if isMemberOf(chatId) && request.resource.data.senderId == me();
+        allow update, delete: if false;
+      }
+
+      // Attendance: admins mark, every member views.
+      match /attendance/{date} {
+        allow read: if isMemberOf(chatId);
+        allow write: if isAdminOf(chatId);
+      }
+
+      // Fees: members record their own payment, admins record/undo anyone's, every member views.
+      match /fees/{month}/payments/{uid} {
+        allow read: if isMemberOf(chatId);
+        allow create, update: if isAdminOf(chatId)
+          || (isMemberOf(chatId) && uid == me()
+              && request.resource.data.status == 'paid'
+              && request.resource.data.method in ['upi', 'upi-manual']
+              && request.resource.data.recordedBy == me());
+        allow delete: if isAdminOf(chatId);
+      }
+    }
+
+    // ---- Voice & video calls (signalling only; audio/video goes through Agora).
+    // You can only ring people who are in the same chat as you: your gym group,
+    // or the other person of a 1:1 chat (which any app user can open with any other app user).
+    match /calls/{callId} {
+      allow read: if signedIn() && (me() == resource.data.callerId || me() in resource.data.invited);
+      allow create: if signedIn() && request.resource.data.callerId == me()
+        && request.resource.data.kind in ['video', 'voice']
+        && request.resource.data.status == 'ringing'
+        && request.resource.data.joined == [me()]
+        && request.resource.data.invited.size() > 0
+        && !(me() in request.resource.data.invited)
+        && chatData(request.resource.data.chatId).members.hasAll(request.resource.data.invited.concat([me()]));
+      allow update: if signedIn() && (me() == resource.data.callerId || me() in resource.data.invited)
+        && changed().hasOnly(['joined', 'declined', 'status', 'endedAt']);
+      allow delete: if false;
+    }
+  }
+}
