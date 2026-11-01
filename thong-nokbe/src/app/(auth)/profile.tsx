@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Alert, ScrollView, Text } from 'react-native';
 import { useAuth } from '../../context/AuthProvider';
+import { markActivated } from '../../lib/registration';
 import { Button, Input } from '../../components/ui';
 import { formatPhone } from '../../lib/phone';
 import { colors } from '../../theme';
@@ -14,6 +15,7 @@ export default function ProfileSetup() {
     if (name.trim().length < 2) return Alert.alert('Name required', 'Please enter your name so gym members recognise you.');
     setBusy(true);
     try {
+      markActivated();
       await saveProfile(name);
     } catch (e: any) {
       Alert.alert('Could not save', e?.message ?? String(e));

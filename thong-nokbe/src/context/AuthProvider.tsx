@@ -4,6 +4,7 @@ import { doc, onSnapshot, serverTimestamp, setDoc } from '@react-native-firebase
 import { auth, db } from '../lib/firebase';
 import { joinPendingGroups } from '../lib/chats';
 import { registerForPush, unregisterPush } from '../lib/push';
+import { markActivated, takePendingName } from '../lib/registration';
 import type { UserProfile } from '../lib/types';
 
 interface AuthState {
@@ -42,6 +43,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return onSnapshot(
       doc(db, 'users', user.uid),
       (s) => {
+        if (!s.exists()) {
+          // New number that just verified its SMS code: activate the account with the registered name.
+          const pending = takePendingName();
+          if (pending && user.phoneNumber) {
+            markActivated();
+            setDoc(doc(db, 'users', user.uid), {
+              name: pending,
+              about: '',
+              phone: user.phoneNumber,
+              appInstalled: true,
+              activatedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            }).catch((e) => {
+              console.warn('activation failed', e);
+              setProfile(null);
+              setProfileReady(true);
+            });
+            return; // the snapshot fires again once the profile exists
+          }
+        }
         setProfile(s.exists() ? ({ uid: user.uid, ...(s.data() as Omit<UserProfile, 'uid'>) } as UserProfile) : null);
         setProfileReady(true);
       },
