@@ -3,4 +3,4 @@
 export const CALL_SERVER_URL = process.env.EXPO_PUBLIC_CALL_SERVER_URL ?? 'https://thong-nokbe-calls.samaengti.workers.dev';
 // Link shared with contacts who don't have the app yet.
 export const APP_INVITE_LINK =
-  process.env.EXPO_PUBLIC_INVITE_LINK ?? 'https://play.google.com/store/apps/details?id=com.thongnokbe.app';
+  process.env.EXPO_PUBLIC_INVITE_LINK ?? 'https://github.com/sanjoyingti/githubfacefuse/releases/download/thong-nokbe-latest/ThongNokbeGym.apk';

@@ -150,10 +150,48 @@ export async function buildRtcToken({ appId, appCertificate, channel, uid, expir
   return '007' + bytesToB64(await zlibDeflate(content));
 }
 
+// ---------- invite link page (WhatsApp-style) ----------
+const APK_URL = 'https://github.com/sanjoyingti/githubfacefuse/releases/download/thong-nokbe-latest/ThongNokbeGym.apk';
+
+export function invitePage(code) {
+  const appLink = `thongnokbe://join/${code}`;
+  const intentLink = `intent://join/${code}#Intent;scheme=thongnokbe;package=com.thongnokbe.app;S.browser_fallback_url=${encodeURIComponent(APK_URL)};end`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Join my gym group on Thong Nokbe Gym</title>
+<meta property="og:title" content="Join my gym group on Thong Nokbe Gym">
+<meta property="og:description" content="Tap to join the group: workouts, chat, calls, attendance and fees.">
+<style>
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0e1512;color:#f1f5f9;display:flex;min-height:100vh;align-items:center;justify-content:center}
+.c{max-width:420px;padding:28px;text-align:center}
+h1{font-size:26px;margin:12px 0 6px}p{color:#94a3b8;font-size:16px;line-height:1.5}
+a.b{display:block;margin:14px 0;padding:16px;border-radius:30px;font-size:18px;font-weight:800;text-decoration:none}
+.join{background:#22c55e;color:#fff}.dl{border:2px solid #22c55e;color:#22c55e}
+.s{font-size:13px;color:#64748b;margin-top:22px}
+</style></head><body><div class="c">
+<div style="font-size:64px">🏋️</div>
+<h1>You're invited!</h1>
+<p>Join my gym group on <b>Thong Nokbe Gym</b>.</p>
+<a class="b join" href="${intentLink}" id="open">✅ Open in the app &amp; join</a>
+<a class="b dl" href="${APK_URL}">⬇️ Don't have the app? Download it</a>
+<p class="s">After installing, sign in, then tap the invite link again to join.</p>
+</div>
+<script>
+var ua=navigator.userAgent||'';
+if(!/Android/i.test(ua)){document.getElementById('open').href=${JSON.stringify(appLink)};}
+</script>
+</body></html>`;
+}
+
 // ---------- request handler ----------
 export async function handle(request, env, fetchFn = fetch) {
   if (request.method === 'OPTIONS') return json({}, 204);
-  if (request.method === 'GET') return json({ ok: true, service: 'Thong Nokbe Gym call pass server' });
+  if (request.method === 'GET') {
+    const path = new URL(request.url).pathname;
+    const m = path.match(/^\/join\/([A-Za-z0-9]{12,32})\/?$/);
+    if (m) return new Response(invitePage(m[1]), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    if (path === '/app') return Response.redirect(APK_URL, 302);
+    return json({ ok: true, service: 'Thong Nokbe Gym call pass server' });
+  }
   if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
   if (!env.AGORA_APP_ID || !env.AGORA_APP_CERTIFICATE || !env.FIREBASE_PROJECT_ID)
     return json({ error: 'Server is missing AGORA_APP_ID, AGORA_APP_CERTIFICATE or FIREBASE_PROJECT_ID' }, 500);

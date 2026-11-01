@@ -1,5 +1,7 @@
-import React from 'react';
-import { Stack } from 'expo-router';
+import React, { useEffect } from 'react';
+import { Stack, router } from 'expo-router';
+import { useLinkingURL } from 'expo-linking';
+import { inviteCodeFromUrl, savePendingInvite, takePendingInvite } from '../lib/pendingInvite';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider, useAuth } from '../context/AuthProvider';
 import { ChatsProvider } from '../context/ChatsProvider';
@@ -10,9 +12,21 @@ import { colors } from '../theme';
 
 function RootNavigator() {
   const { user, profile, initializing } = useAuth();
-  if (initializing) return <Loading />;
   const signedIn = !!user;
-  const ready = signedIn && !!profile;
+  const ready = !initializing && signedIn && !!profile;
+
+  // Invite links opened before signing in: remember them and open "Join group" once ready.
+  const url = useLinkingURL();
+  useEffect(() => {
+    const code = inviteCodeFromUrl(url);
+    if (code && !ready) savePendingInvite(code);
+  }, [url, ready]);
+  useEffect(() => {
+    if (!ready) return;
+    takePendingInvite().then((code) => code && router.push(`/join/${code}`));
+  }, [ready]);
+
+  if (initializing) return <Loading />;
 
   const stack = (
     <Stack
@@ -35,6 +49,8 @@ function RootNavigator() {
         <Stack.Screen name="group/[id]" options={{ title: 'Group info' }} />
         <Stack.Screen name="group/add-members" options={{ title: 'Add members' }} />
         <Stack.Screen name="group/fee-settings" options={{ title: 'Fee & UPI settings' }} />
+        <Stack.Screen name="group/invite" options={{ title: 'Invite via link' }} />
+        <Stack.Screen name="join/[code]" options={{ title: 'Join group' }} />
         <Stack.Screen name="new-group" options={{ title: 'New group' }} />
         <Stack.Screen name="new-chat" options={{ title: 'New chat' }} />
         <Stack.Screen name="profile" options={{ title: 'Me' }} />

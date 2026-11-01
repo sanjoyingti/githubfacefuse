@@ -159,3 +159,25 @@ test('users: can mark own app as installed/uninstalled only', async () => {
   await assertSucceeds(updateDoc(doc(as(MEMBER), 'users/member'), { appInstalled: false }));
   await assertFails(updateDoc(doc(as(ADMIN), 'users/member'), { appInstalled: true }));
 });
+
+test('invite links: admin makes a link, anyone signed in can join with the current code only', async () => {
+  // admin creates the link
+  const adb = as(ADMIN);
+  const b = writeBatch(adb);
+  b.set(doc(adb, 'invites/Code1234567890AB'), { chatId: 'g1', name: 'Gym', createdBy: ADMIN.uid });
+  b.update(doc(adb, 'chats/g1'), { inviteCode: 'Code1234567890AB' });
+  await assertSucceeds(b.commit());
+  // a member can't make links; nobody can list them
+  await assertFails(setDoc(doc(as(MEMBER), 'invites/Code9999999999XY'), { chatId: 'g1', name: 'Gym' }));
+  await assertFails(getDocs(collection(as(OUTSIDER), 'invites')));
+  // someone with the link can read the group name
+  await assertSucceeds(getDoc(doc(as(OUTSIDER), 'invites/Code1234567890AB')));
+  // wrong code fails, adding someone else fails, right code works
+  await assertFails(updateDoc(doc(as(OUTSIDER), 'chats/g1'), { members: arrayUnion(OUTSIDER.uid), lastJoinCode: 'WrongCode0000000' }));
+  await assertFails(updateDoc(doc(as(OUTSIDER), 'chats/g1'), { members: arrayUnion(OUTSIDER.uid, 'friend'), lastJoinCode: 'Code1234567890AB' }));
+  await assertFails(updateDoc(doc(as(OUTSIDER), 'chats/g1'), { members: arrayUnion(OUTSIDER.uid), admins: arrayUnion(OUTSIDER.uid), lastJoinCode: 'Code1234567890AB' }));
+  await assertSucceeds(updateDoc(doc(as(OUTSIDER), 'chats/g1'), { members: arrayUnion(OUTSIDER.uid), lastJoinCode: 'Code1234567890AB' }));
+  // after a reset the old code stops working
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { inviteCode: 'NewCode123456789' }));
+  await assertFails(updateDoc(doc(as(INVITEE), 'chats/g1'), { members: arrayUnion(INVITEE.uid), lastJoinCode: 'Code1234567890AB' }));
+});

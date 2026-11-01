@@ -63,3 +63,12 @@ export async function sendFeeReminder(admin: UserProfile, member: UserProfile, g
     ` for ${monthLabel} is not paid yet. Please pay from the Fees tab. Thank you! – ${admin.name}`;
   await sendMessage(chatId, admin, text);
 }
+
+export const FEE_NOTICE_PREFIX = '📢 Fee notice';
+
+/** Admin → everyone in the group: posted in the group chat; every member's phone shows a notification. */
+export async function sendFeeNoticeToAll(admin: UserProfile, groupId: string, text: string) {
+  const body = text.trim();
+  if (!body) return;
+  await sendMessage(groupId, admin, `${FEE_NOTICE_PREFIX}: ${body}`);
+}

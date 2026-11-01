@@ -6,6 +6,7 @@ import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
 import { approveJoin, cancelInvite, dismissAdmin, getOrCreateDirectChat, leaveGroup, makeAdmin, rejectJoin, removeMember, updateGroupInfo } from '../../lib/chats';
 import { hasApp } from '../../lib/calls';
+import { inviteLink, syncInviteName } from '../../lib/invites';
 import { useCaller } from '../../components/useCaller';
 import { displayName, useUsers } from '../../lib/users';
 import { formatPhone } from '../../lib/phone';
@@ -91,7 +92,10 @@ export default function GroupInfo() {
               title="Save"
               onPress={() =>
                 run(async () => {
-                  if (name.trim()) await updateGroupInfo(chat.id, { name: name.trim() });
+                  if (name.trim()) {
+                    await updateGroupInfo(chat.id, { name: name.trim() });
+                    await syncInviteName({ ...chat, name: name.trim() });
+                  }
                   setEditing(false);
                 })
               }
@@ -119,6 +123,7 @@ export default function GroupInfo() {
       {iAmAdmin && (
         <View style={styles.section}>
           <Row icon="person-add" label="Add members" onPress={() => router.push({ pathname: '/group/add-members', params: { id: chat.id } })} />
+          <Row icon="link" label="Invite via link (SMS, WhatsApp, QR)" onPress={() => router.push({ pathname: '/group/invite', params: { id: chat.id } })} />
           <Row icon="qr-code" label="Fee & UPI payment settings" onPress={() => router.push({ pathname: '/group/fee-settings', params: { id: chat.id } })} />
         </View>
       )}
@@ -175,7 +180,13 @@ export default function GroupInfo() {
               <Avatar name="?" size={42} color="#94A3B8" />
               <Text style={[styles.memberName, { flex: 1, marginLeft: 12 }]}>{formatPhone(p)}</Text>
               <Pressable
-                onPress={() => Share.share({ message: `Join our gym group "${chat.name}" on ${APP_NAME}. Install the app and sign in with ${p}: ${APP_INVITE_LINK}` })}
+                onPress={() =>
+                  Share.share({
+                    message: chat.inviteCode
+                      ? `Join our gym group "${chat.name}" on ${APP_NAME} 💪 Tap to join: ${inviteLink(chat.inviteCode)}`
+                      : `Join our gym group "${chat.name}" on ${APP_NAME}. Install the app and sign in with ${p}: ${APP_INVITE_LINK}`,
+                  })
+                }
                 hitSlop={8}
               >
                 <Ionicons name="share-social" size={22} color={colors.primary} />

@@ -8,7 +8,7 @@ import { useChats } from '../../context/ChatsProvider';
 import { GroupSwitcher, NoGroups } from '../../components/GroupSwitcher';
 import { Avatar, Button, Card, Loading } from '../../components/ui';
 import { UpiQr } from '../../components/UpiQr';
-import { clearPayment, recordPayment, sendFeeReminder, useMonthPayments } from '../../lib/fees';
+import { clearPayment, recordPayment, sendFeeNoticeToAll, sendFeeReminder, useMonthPayments } from '../../lib/fees';
 import { IOS_UPI_APPS, makeTxnRef, payWithUpi } from '../../lib/upi';
 import { addMonths, formatMonth, monthKey, parseMonthKey } from '../../lib/dates';
 import { displayName, useUsers } from '../../lib/users';
@@ -27,6 +27,7 @@ export default function Fees() {
   const [utrOpen, setUtrOpen] = useState(false);
   const [reminded, setReminded] = useState<Record<string, boolean>>({});
   const [reminding, setReminding] = useState<string | null>(null);
+  const [noticeOpen, setNoticeOpen] = useState(false);
 
   const members = useMemo(
     () => (group?.members ?? []).map((uid) => users[uid] ?? ({ uid, name: '…', phone: '' } as UserProfile)).sort((a, b) => Number(!!payments[a.uid]) - Number(!!payments[b.uid]) || a.name.localeCompare(b.name)),
@@ -189,6 +190,9 @@ export default function Fees() {
           </Text>
           <Text style={{ color: colors.muted }}>Collected ₹{collected}</Text>
         </View>
+        {isAdmin && (
+          <Button title="📢 Notify all members about fees" onPress={() => setNoticeOpen(true)} style={{ marginBottom: 10 }} />
+        )}
         {isAdmin && unpaidOthers.length > 0 && (
           <Button
             title={reminding === 'all' ? 'Sending…' : `🔔 Remind all unpaid (${unpaidOthers.length})`}
@@ -233,6 +237,16 @@ export default function Fees() {
           );
         })}
       </ScrollView>
+      <NoticeModal
+        open={noticeOpen}
+        defaultText={`Gym fee${upi ? ` of ₹${upi.amount}` : ''} for ${formatMonth(monthDate)} is due on the 1st. Please pay from the Fees tab in the app. Thank you! – ${me.name}`}
+        onClose={() => setNoticeOpen(false)}
+        onSend={async (text) => {
+          await sendFeeNoticeToAll(me, group.id, text);
+          setNoticeOpen(false);
+          Alert.alert('Notice sent 📢', `All ${members.length - 1} member(s) of ${group.name} get it as a notification and in the group chat.`);
+        }}
+      />
       <UtrModal
         open={utrOpen}
         onClose={() => setUtrOpen(false)}
@@ -244,6 +258,41 @@ export default function Fees() {
         }}
       />
     </View>
+  );
+}
+
+function NoticeModal({ open, defaultText, onClose, onSend }: { open: boolean; defaultText: string; onClose: () => void; onSend: (text: string) => Promise<void> }) {
+  const [text, setText] = useState(defaultText);
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose} onShow={() => setText(defaultText)}>
+      <View style={styles.backdrop}>
+        <View style={styles.sheet}>
+          <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text }}>📢 Fee notice to everyone</Text>
+          <Text style={{ color: colors.muted, marginVertical: 8 }}>Every member of the group gets this as a notification and in the group chat. You can change the words.</Text>
+          <TextInput value={text} onChangeText={setText} multiline style={styles.noticeInput} placeholderTextColor={colors.muted} />
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+            <Button title="Cancel" variant="ghost" onPress={onClose} style={{ flex: 1 }} />
+            <Button
+              title="Send 📢"
+              disabled={!text.trim()}
+              loading={busy}
+              style={{ flex: 1 }}
+              onPress={async () => {
+                setBusy(true);
+                try {
+                  await onSend(text);
+                } catch (e: any) {
+                  Alert.alert('Could not send', e?.message ?? String(e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            />
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -301,5 +350,6 @@ const styles = StyleSheet.create({
   memberName: { fontWeight: '700', color: colors.text },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: 20 },
   sheet: { backgroundColor: colors.card, borderRadius: 20, padding: 18 },
+  noticeInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, minHeight: 110, padding: 12, fontSize: 16, color: colors.text, textAlignVertical: 'top' },
   utrInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, height: 48, paddingHorizontal: 14, fontSize: 18, letterSpacing: 2, color: colors.text },
 });

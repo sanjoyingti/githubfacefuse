@@ -80,3 +80,16 @@ test('refuses when the server is not configured', async () => {
   const res = await handle(post({ channel: 'Call0000000000000001' }, await idToken({})), {}, fakeFetch({}));
   assert.equal(res.status, 500);
 });
+
+test('invite link page: opens the app on Android, offers the APK download, rejects bad codes', async () => {
+  const res = await handle(new Request('https://x.workers.dev/join/AbCdEfGhJkMn2345'), env, fakeFetch({}));
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /text\/html/);
+  const html = await res.text();
+  assert.match(html, /intent:\/\/join\/AbCdEfGhJkMn2345#Intent;scheme=thongnokbe;package=com.thongnokbe.app/);
+  assert.match(html, /releases\/download\/thong-nokbe-latest\/ThongNokbeGym.apk/);
+  const bad = await handle(new Request('https://x.workers.dev/join/<script>'), env, fakeFetch({}));
+  assert.match(await bad.text(), /"ok":true/);
+  const app = await handle(new Request('https://x.workers.dev/app'), env, fakeFetch({}));
+  assert.equal(app.status, 302);
+});

@@ -10,12 +10,14 @@ The five tabs at the bottom are **Exercise · Chat · Call · Attendance · Fees
 | **Chat** | WhatsApp-style groups and 1:1 chats. Create a group, then add members **from phone contacts or by typing a number**. The creator is the **admin** and can add or remove members and **make other members admin** (or dismiss them). Messages are real-time over the internet. |
 | **Call** | Call **any app user** one-to-one, or call a **whole gym group** at once (everyone in it rings). Every call offers 📞 **Voice** or 📹 **Video**. Video calls are live, with camera on/off and front/back flip; voice calls have mute and a speaker button. The call buttons are also in every chat's top bar and on the group info page. |
 | **Attendance** | Only **admins** can mark each member **Present / Absent** for a day. **Every member can view** attendance with a **Day / Week / Month** switch: Week and Month rank everyone by days they came, and tapping a name shows their calendar. |
-| **Fees** | Fees are due on the **1st of every month**. Paid members show **green**, unpaid members show **red**. **Pay ₹X via UPI** opens GPay, PhonePe, Paytm or BHIM with the admin's UPI ID and the amount already filled in. When the UPI app reports success, the member is marked paid automatically. The admin adds their UPI ID and fee amount (the app draws the UPI QR code itself), can mark cash payments or undo a payment, and can send a **🔔 fee reminder** to one unpaid member or all of them (a private message plus a phone notification). |
+| **Fees** | Fees are due on the **1st of every month**. Paid members show **green**, unpaid members show **red**. **Pay ₹X via UPI** opens GPay, PhonePe, Paytm or BHIM with the admin's UPI ID and the amount already filled in. When the UPI app reports success, the member is marked paid automatically. The admin adds their UPI ID and fee amount (the app draws the UPI QR code itself), can mark cash payments or undo a payment, can send a **🔔 fee reminder** to one unpaid member or all of them (a private message plus a phone notification), and can send a **📢 fee notice to every member** (group message plus a notification on every member's phone). |
 | **Me** | Name, about, and log out. |
 
 **Login:** **Continue with Google** (free), then register your name and phone number once.
 
 **Only people who use the app can call or be called.** The security rules only let you ring people who share a chat with you (your gym group, or a 1:1 chat, which any app user can open with any other app user). Someone who logs out shows as *Not on the app now* and can't be called until they sign in again.
+
+**Invite links (like WhatsApp):** admins open **Group info → Invite via link** to send a link by SMS, WhatsApp or QR code. Anyone with the app who taps it sees **"Join group"**. Without the app, the link opens a page with a download button. Admins can reset the link.
 
 Members **must install the app** to be in a group. You can add someone who doesn't have the app yet by phone number. They show as *Invited*. When they register with that number, a group admin approves them with one tap.
 

@@ -91,3 +91,11 @@ jobs:
           body: |
             Download **ThongNokbeGym.apk** below and open it on your Android phone (allow "Install unknown apps" when asked).
             ${{ env.CONFIG == 'preview' && '⚠️ Preview build: no Firebase config was set, so sign-in and the online features will not work yet. Add the GOOGLE_SERVICES_JSON secret and re-run to get the full app.' || '' }}
+
+      - name: Update the permanent "latest" download link (used by invite links)
+        if: env.CONFIG == 'firebase'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view thong-nokbe-latest >/dev/null 2>&1 || gh release create thong-nokbe-latest --title "Thong Nokbe Gym — latest" --notes "Always the newest Thong Nokbe Gym APK. Download ThongNokbeGym.apk below." --latest=false
+          gh release upload thong-nokbe-latest ThongNokbeGym.apk --clobber

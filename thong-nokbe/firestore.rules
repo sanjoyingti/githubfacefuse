@@ -71,6 +71,13 @@ service cloud.firestore {
           && request.resource.data.members.toSet() == resource.data.members.toSet().difference([me()].toSet())
           && request.resource.data.admins.toSet() == resource.data.admins.toSet().difference([me()].toSet()))
         ||
+        // Someone with the group's invite link joins (like WhatsApp): they can only add themselves,
+        // and only by presenting the group's current invite code.
+        (resource.data.type == 'group' && resource.data.get('inviteCode', '') != ''
+          && changed().hasOnly(['members', 'lastJoinCode'])
+          && request.resource.data.lastJoinCode == resource.data.inviteCode
+          && request.resource.data.members.toSet() == resource.data.members.toSet().union([me()].toSet()))
+        ||
         // Someone whose number was invited asks to join; a group admin must approve.
         (resource.data.type == 'group' && myPhone() in resource.data.pendingPhones
           && changed().hasOnly(['joinRequests'])
@@ -101,6 +108,15 @@ service cloud.firestore {
               && request.resource.data.recordedBy == me());
         allow delete: if isAdminOf(chatId);
       }
+    }
+
+    // ---- Invite links: anyone signed in who has the code can look up the group's name (no listing).
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() && code.size() >= 12 && isAdminOf(request.resource.data.chatId);
+      allow update: if signedIn() && isAdminOf(resource.data.chatId) && request.resource.data.chatId == resource.data.chatId;
+      allow delete: if signedIn() && isAdminOf(resource.data.chatId);
     }
 
     // ---- Voice & video calls (signalling only; audio/video goes through Agora).

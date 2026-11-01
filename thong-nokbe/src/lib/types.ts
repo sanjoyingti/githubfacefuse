@@ -28,6 +28,8 @@ export interface Chat {
   createdBy: string;
   pendingPhones: string[]; // invited numbers that haven't joined yet
   joinRequests?: string[]; // uids of people with an invited number, waiting for an admin to approve
+  inviteCode?: string | null; // current WhatsApp-style invite link code (admins share it)
+  lastJoinCode?: string;
   lastMessage?: { text: string; senderId: string; senderName: string; at: Timestamp | null } | null;
   updatedAt?: Timestamp | null;
   upi?: UpiSettings | null;
