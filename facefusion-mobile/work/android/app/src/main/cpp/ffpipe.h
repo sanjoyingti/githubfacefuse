@@ -283,6 +283,9 @@ class Pipeline {
   // first frame that asks for them).
   bool hasOcclusionModel() const;
   bool hasParserModel() const;
+  // One line per mask model: whether it ran, on which unit, or why not. Process-wide,
+  // for the options card -- the question it answers is "is the mask actually on".
+  static std::string maskStatus();
 
   bool setSource(const ffcv::Image& sourceImage);
   int addSource(const ffcv::Image& sourceImage);

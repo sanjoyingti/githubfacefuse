@@ -41,6 +41,7 @@ Handle ncnnOpenAux(const std::string&, Placement);
 void ncnnSetAuxAssets(void*);
 void ncnnSetAuxDir(const std::string&);
 const char* ncnnAuxLastError();
+bool ncnnOnGpu(Handle);
 #endif
 
 namespace {
@@ -223,6 +224,15 @@ void setAuxDir(const std::string& dir) {
 #else
   (void)dir;
 #endif
+}
+
+bool onGpu(Handle h) {
+  if (!h) return false;
+#ifdef FFNN_HAVE_NCNN
+  HandleRec* r = static_cast<HandleRec*>(h);
+  if (r->backend == Backend::Ncnn) return ncnnOnGpu(r->inner);
+#endif
+  return false;
 }
 
 const char* auxLastError() {

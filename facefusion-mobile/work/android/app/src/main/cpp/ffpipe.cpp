@@ -2145,24 +2145,116 @@ bool allFinite(const std::vector<float>& v) {
   for (float x : v) if (!std::isfinite(x)) return false;
   return !v.empty();
 }
+
+// What maskNet last found out, per model (0 = occlusion, 1 = face parser).
+std::mutex g_maskMu;
+std::string g_maskState[2] = {"not used yet", "not used yet"};
+void setMaskState(int i, const std::string& s) {
+  std::lock_guard<std::mutex> lk(g_maskMu);
+  g_maskState[i] = s;
+}
+
+// A smooth synthetic face-sized probe: a bright ellipse on a gradient. Constant input is a
+// poor probe -- it drives a U-Net's activations toward a corner where a wrong GPU and a
+// right CPU can agree.
+std::vector<float> maskProbe(int size, bool imagenet) {
+  std::vector<float> v((size_t)3 * size * size);
+  for (int c = 0; c < 3; ++c)
+    for (int y = 0; y < size; ++y)
+      for (int x = 0; x < size; ++x) {
+        const float dx = (x - size * 0.5f) / (size * 0.3f), dy = (y - size * 0.55f) / (size * 0.4f);
+        float p = 0.25f + 0.3f * x / size + (dx * dx + dy * dy < 1.f ? 0.4f : 0.f) + 0.05f * c;
+        if (imagenet) p = (p - 0.45f) / 0.226f;
+        v[(size_t)c * size * size + (size_t)y * size + x] = p;
+      }
+  return v;
+}
+
+// Do the GPU and the CPU compute the same mask? xseg: mean absolute difference of the
+// sigmoid output; bisenet: per-pixel label agreement over 19 logit planes.
+bool masksAgree(const std::vector<float>& a, const std::vector<float>& b, int size, bool labels,
+                std::string* why) {
+  if (a.size() != b.size() || a.empty()) { *why = "output sizes differ"; return false; }
+  char buf[96];
+  if (!labels) {
+    double d = 0;
+    for (size_t i = 0; i < a.size(); ++i) d += std::fabs(a[i] - b[i]);
+    d /= (double)a.size();
+    snprintf(buf, sizeof(buf), "GPU differs from CPU by %.3f", d);
+    *why = buf;
+    return d < 0.03;
+  }
+  const size_t plane = (size_t)size * size;
+  const int L = (int)(a.size() / plane);
+  size_t same = 0;
+  for (size_t i = 0; i < plane; ++i) {
+    int ba = 0, bb = 0;
+    for (int l = 1; l < L; ++l) {
+      if (a[(size_t)l * plane + i] > a[(size_t)ba * plane + i]) ba = l;
+      if (b[(size_t)l * plane + i] > b[(size_t)bb * plane + i]) bb = l;
+    }
+    same += ba == bb;
+  }
+  const double agree = (double)same / (double)plane;
+  snprintf(buf, sizeof(buf), "GPU agrees with CPU on %.1f%% of pixels", agree * 100.0);
+  *why = buf;
+  return agree > 0.98;
+}
 }  // namespace
+
+std::string Pipeline::maskStatus() {
+  std::lock_guard<std::mutex> lk(g_maskMu);
+  return "Occlusion model: " + g_maskState[0] + "\nFace parser: " + g_maskState[1];
+}
 
 ffnn::Handle Pipeline::Impl::maskNet(const char* name, int size, ffnn::Handle& h,
                                      bool& tried) {
   if (tried) return h;
   tried = true;
-  std::vector<float> probe((size_t)3 * size * size, 0.5f);
-  for (ffnn::Placement place : {ffnn::Placement::Default, ffnn::Placement::Cpu}) {
-    h = ffnn::openAux(name, place);
-    if (!h) return nullptr;   // not installed: the same answer on every unit
-    std::vector<std::vector<float>> out;
-    if (ffnn::execute(h, {"input"}, {probe.data()}, out) && !out.empty() &&
-        allFinite(out[0]))
-      return h;
-    ffnn::release(h);
-    h = nullptr;
+  const bool parser = std::strcmp(name, "bisenet") == 0;
+  const int slot = parser ? 1 : 0;
+  const std::vector<float> probe = maskProbe(size, parser);
+  auto run = [&](ffnn::Handle x, std::vector<float>& out) {
+    std::vector<std::vector<float>> o;
+    if (!ffnn::execute(x, {"input"}, {probe.data()}, o) || o.empty() || !allFinite(o[0]))
+      return false;
+    out.swap(o[0]);
+    return true;
+  };
+
+  // The CPU is the reference. A mask model that is wrong but finite is the failure that
+  // matters here -- it silently turns the mask into "all face" -- so the GPU is only used
+  // when it computes the same mask as the CPU does on this device.
+  ffnn::Handle cpu = ffnn::openAux(name, ffnn::Placement::Cpu);
+  if (!cpu) {
+    setMaskState(slot, std::string("not loaded: ") + ffnn::auxLastError());
+    return nullptr;
   }
-  return nullptr;
+  std::vector<float> ref;
+  if (!run(cpu, ref)) {
+    ffnn::release(cpu);
+    setMaskState(slot, "loaded but does not run on the CPU");
+    return nullptr;
+  }
+  ffnn::Handle gpu = ffnn::openAux(name, ffnn::Placement::Default);
+  if (gpu && ffnn::onGpu(gpu)) {
+    std::vector<float> got;
+    std::string why = "GPU returned no usable output";
+    if (run(gpu, got) && masksAgree(got, ref, size, parser, &why)) {
+      ffnn::release(cpu);
+      h = gpu;
+      setMaskState(slot, "running on the GPU (" + why + ")");
+      return h;
+    }
+    ffnn::release(gpu);
+    h = cpu;
+    setMaskState(slot, "running on the CPU, slower (GPU rejected: " + why + ")");
+    return h;
+  }
+  if (gpu) ffnn::release(gpu);
+  h = cpu;
+  setMaskState(slot, "running on the CPU, slower (no usable GPU)");
+  return h;
 }
 
 bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
@@ -2232,6 +2324,9 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
 
 bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
   p_->maskCache.clear();
+  if (!p_->cfg.occlusionMask && !p_->n.occTried) setMaskState(0, "switched off");
+  if (!p_->cfg.regionMask && !p_->cfg.keepMouth && !p_->n.parseTried)
+    setMaskState(1, "switched off");
   if (!p_->cfg.swapEnabled) return true;
   if (!p_->haveSource) { err_ = "setSource not called"; return false; }
   // ⚠ NO CHECK, NO SWAP. See Impl::gateCleared. The message never quotes the score.

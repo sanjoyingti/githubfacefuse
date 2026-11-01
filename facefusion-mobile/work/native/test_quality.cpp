@@ -167,5 +167,6 @@ int main(int argc, char** argv) {
     printf("  mask %.0f ms  swap %.0f ms  occ=%d parse=%d\n", pipe.msGeomMask, pipe.msSwap,
            pipe.hasOcclusionModel(), pipe.hasParserModel());
   }
+  printf("%s\n", ffpipe::Pipeline::maskStatus().c_str());
   return 0;
 }

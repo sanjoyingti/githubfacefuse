@@ -414,6 +414,19 @@ fun FaceMaskerCard(
         OptionSwitch(stringResource(R.string.opt_keep_mouth), opts.keepMouth,
                      { onChange(opts.copy(keepMouth = it)) },
                      hint = stringResource(R.string.opt_keep_mouth_hint))
+        // What the native side actually did with the switches above, refreshed every second:
+        // a mask that silently is not running looks exactly like a mask that does not work.
+        var maskStatus by remember { mutableStateOf("") }
+        LaunchedEffect(Unit) {
+            while (true) {
+                maskStatus = runCatching { NativePipe.maskModelStatus() }.getOrDefault("")
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+        if (maskStatus.isNotEmpty())
+            Text(maskStatus, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+                 color = MaterialTheme.colorScheme.primary,
+                 modifier = Modifier.padding(top = 6.dp))
 
         // ---- big head turns
         OptionSwitch(stringResource(R.string.opt_pose_fade), opts.poseFade,

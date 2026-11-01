@@ -351,6 +351,11 @@ Java_com_facefusion_mobile_NativePipe_setAuxAssets(JNIEnv* env, jclass, jobject 
   ffnn::setAuxAssets(AAssetManager_fromJava(env, g_assets));
 }
 
+JNIEXPORT jstring JNICALL
+Java_com_facefusion_mobile_NativePipe_maskModelStatus(JNIEnv* env, jclass) {
+  return env->NewStringUTF(ffpipe::Pipeline::maskStatus().c_str());
+}
+
 // Bit 0: the occlusion model is loaded and ran; bit 1: the face parser. Both are opened on
 // the first frame that needs them, so this reads 0 before any swap has run.
 JNIEXPORT jint JNICALL

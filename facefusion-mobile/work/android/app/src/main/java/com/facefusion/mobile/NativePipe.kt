@@ -122,6 +122,9 @@ object NativePipe {
     /** Where the bundled mask models (assets/masks) are read from. Once per process. */
     @JvmStatic external fun setAuxAssets(assets: android.content.res.AssetManager)
 
+    /** Whether each mask model is running, on which unit, or why not -- for the UI. */
+    @JvmStatic external fun maskModelStatus(): String
+
     /** Bit 0: occlusion model running, bit 1: face parser running. */
     @JvmStatic external fun maskModelState(): Int
 

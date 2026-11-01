@@ -153,6 +153,8 @@ Handle openAux(const std::string& logicalName, Placement p = Placement::Default)
 void setAuxAssets(void* assetManager);
 void setAuxDir(const std::string& dir);
 const char* auxLastError();
+// Whether a handle runs on the GPU (ncnn Vulkan). False for CPU and for QNN handles.
+bool onGpu(Handle h);
 
 // ---------------------------------------------------------------------------
 // What this device can run, asked before any model is opened.

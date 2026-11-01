@@ -482,6 +482,7 @@ bool loadAux(ncnn::Net& net, const Spec& sp, bool gpu, std::string& err) {
 void ncnnSetAuxAssets(void* mgr) { g_auxAssets = mgr; }
 void ncnnSetAuxDir(const std::string& dir) { g_auxDir = dir; }
 const char* ncnnAuxLastError() { return g_auxErr.c_str(); }
+bool ncnnOnGpu(Handle h) { return h && static_cast<Model*>(h)->gpu; }
 
 Handle ncnnOpenAux(const std::string& logicalName, Placement p) {
   g_auxErr.clear();
