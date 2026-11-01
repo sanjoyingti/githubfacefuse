@@ -1,6 +1,6 @@
 # Thong Nokbe Gym 🏋️
 
-A simple gym app for Android and iPhone, built with React Native (Expo SDK 58). It uses big buttons, plain words and pictures, so anyone (even a kid) can use it. The logo is a person lifting a barbell (`assets/icon.png`).
+A simple gym app for Android and iPhone, built with React Native (Expo SDK 58). It uses big buttons, plain words and pictures, so anyone (even a kid) can use it. The icon is an orange dumbbell on an emerald-green background (`assets/icon.png`; regenerate with any image editor).
 
 The five tabs at the bottom are **Exercise · Chat · Call · Attendance · Fees**. Tap **Me** at the top right for your profile.
 
@@ -9,8 +9,8 @@ The five tabs at the bottom are **Exercise · Chat · Call · Attendance · Fees
 | **Exercise** | 20 exercise videos for each day: **Mon chest · Tue biceps · Wed back · Thu triceps · Fri shoulders · Sat legs** (Sunday is rest). Each video has a play button and plays inside the app (YouTube). The top card shows a **"NEW TODAY"** exercise of the day, which rotates every week. |
 | **Chat** | WhatsApp-style groups and 1:1 chats. Create a group, then add members **from phone contacts or by typing a number**. The creator is the **admin** and can add or remove members and **make other members admin** (or dismiss them). Messages are real-time over the internet. |
 | **Call** | Call **any app user** one-to-one, or call a **whole gym group** at once (everyone in it rings). Every call offers 📞 **Voice** or 📹 **Video**. Video calls are live, with camera on/off and front/back flip; voice calls have mute and a speaker button. The call buttons are also in every chat's top bar and on the group info page. |
-| **Attendance** | Only **admins** can mark each member **Present / Absent** for a day. **Every member can view** attendance: the day list, monthly totals, and a calendar per member. |
-| **Fees** | Fees are due on the **1st of every month**. Paid members show **green**, unpaid members show **red**. **Pay ₹X via UPI** opens GPay, PhonePe, Paytm or BHIM with the admin's UPI ID and the amount already filled in. When the UPI app reports success, the member is marked paid automatically. The admin adds their UPI ID and fee amount (the app draws the UPI QR code itself), and can mark cash payments or undo a payment. |
+| **Attendance** | Only **admins** can mark each member **Present / Absent** for a day. **Every member can view** attendance with a **Day / Week / Month** switch: Week and Month rank everyone by days they came, and tapping a name shows their calendar. |
+| **Fees** | Fees are due on the **1st of every month**. Paid members show **green**, unpaid members show **red**. **Pay ₹X via UPI** opens GPay, PhonePe, Paytm or BHIM with the admin's UPI ID and the amount already filled in. When the UPI app reports success, the member is marked paid automatically. The admin adds their UPI ID and fee amount (the app draws the UPI QR code itself), can mark cash payments or undo a payment, and can send a **🔔 fee reminder** to one unpaid member or all of them (a private message plus a phone notification). |
 | **Me** | Name, about, and log out. |
 
 **Login:** **Continue with Google** (free), then register your name and phone number once.

@@ -36,3 +36,24 @@ export async function markAttendance(chatId: string, date: string, adminUid: str
     { merge: true },
   );
 }
+
+/** Live attendance for every day between start and end (yyyy-mm-dd, inclusive). Works across months. */
+export function useRangeAttendance(chatId: string | undefined, start: string, end: string) {
+  const [days, setDays] = useState<Record<string, AttendanceDay['records']>>({});
+  useEffect(() => {
+    if (!chatId) return;
+    return onSnapshot(
+      query(attendanceCol(chatId), where('date', '>=', start), where('date', '<=', end)),
+      (snap) => {
+        const out: Record<string, AttendanceDay['records']> = {};
+        snap.forEach((d) => {
+          const v = d.data() as AttendanceDay;
+          out[v.date] = v.records ?? {};
+        });
+        setDays(out);
+      },
+      (e) => console.warn('listener error', e),
+    );
+  }, [chatId, start, end]);
+  return { days };
+}

@@ -41,6 +41,7 @@ export default function Login() {
         </Pressable>
         <Text style={styles.small}>New members: after choosing your Google account you'll type your name and phone number once.</Text>
       </View>
+      <Text style={styles.credit}>Developed by Sanjoy Ingti · Ph: 7002397371</Text>
     </ScrollView>
   );
 }
@@ -58,5 +59,6 @@ const styles = StyleSheet.create({
   p: { color: colors.muted, marginTop: 6, marginBottom: 18, fontSize: 16 },
   google: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, height: 60, borderRadius: 30, borderWidth: 2, borderColor: colors.border, backgroundColor: '#fff' },
   googleText: { fontSize: 19, fontWeight: '800', color: colors.text },
+  credit: { color: '#94A3B8', fontSize: 12, textAlign: 'center', marginTop: 24 },
   small: { color: colors.muted, marginTop: 14, fontSize: 14, textAlign: 'center' },
 });

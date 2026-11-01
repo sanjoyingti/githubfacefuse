@@ -8,7 +8,7 @@ import { useChats } from '../../context/ChatsProvider';
 import { GroupSwitcher, NoGroups } from '../../components/GroupSwitcher';
 import { Avatar, Button, Card, Loading } from '../../components/ui';
 import { UpiQr } from '../../components/UpiQr';
-import { clearPayment, recordPayment, useMonthPayments } from '../../lib/fees';
+import { clearPayment, recordPayment, sendFeeReminder, useMonthPayments } from '../../lib/fees';
 import { IOS_UPI_APPS, makeTxnRef, payWithUpi } from '../../lib/upi';
 import { addMonths, formatMonth, monthKey, parseMonthKey } from '../../lib/dates';
 import { displayName, useUsers } from '../../lib/users';
@@ -25,6 +25,8 @@ export default function Fees() {
   const users = useUsers(group?.members ?? []);
   const [paying, setPaying] = useState(false);
   const [utrOpen, setUtrOpen] = useState(false);
+  const [reminded, setReminded] = useState<Record<string, boolean>>({});
+  const [reminding, setReminding] = useState<string | null>(null);
 
   const members = useMemo(
     () => (group?.members ?? []).map((uid) => users[uid] ?? ({ uid, name: '…', phone: '' } as UserProfile)).sort((a, b) => Number(!!payments[a.uid]) - Number(!!payments[b.uid]) || a.name.localeCompare(b.name)),
@@ -75,6 +77,24 @@ export default function Fees() {
       );
     } else startPay();
   };
+
+  const remind = async (targets: UserProfile[]) => {
+    if (!targets.length) return;
+    setReminding(targets.length > 1 ? 'all' : targets[0].uid);
+    try {
+      for (const t of targets) {
+        await sendFeeReminder(me, t, group.name ?? 'Gym', upi?.amount, formatMonth(monthDate));
+        setReminded((r) => ({ ...r, [t.uid]: true }));
+      }
+      Alert.alert('Reminder sent 🔔', targets.length > 1 ? `Sent to ${targets.length} members who haven't paid.` : `Sent to ${targets[0].name}.`);
+    } catch (e: any) {
+      Alert.alert('Could not send', e?.message ?? String(e));
+    } finally {
+      setReminding(null);
+    }
+  };
+
+  const unpaidOthers = members.filter((m) => !payments[m.uid] && m.uid !== me.uid && m.phone);
 
   const onMember = (m: UserProfile) => {
     if (!isAdmin) return;
@@ -169,7 +189,21 @@ export default function Fees() {
           </Text>
           <Text style={{ color: colors.muted }}>Collected ₹{collected}</Text>
         </View>
-        {isAdmin && <Text style={styles.hint}>Tap a member to mark cash payments or undo a payment.</Text>}
+        {isAdmin && unpaidOthers.length > 0 && (
+          <Button
+            title={reminding === 'all' ? 'Sending…' : `🔔 Remind all unpaid (${unpaidOthers.length})`}
+            variant="outline"
+            onPress={() =>
+              Alert.alert('Send fee reminder?', `A reminder for ${formatMonth(monthDate)} will go to ${unpaidOthers.length} member(s) who haven't paid.`, [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Send', onPress: () => remind(unpaidOthers) },
+              ])
+            }
+            loading={reminding === 'all'}
+            style={{ marginBottom: 10 }}
+          />
+        )}
+        {isAdmin && <Text style={styles.hint}>Tap a member to mark cash payments or undo a payment. Tap 🔔 to remind one person.</Text>}
         {members.map((m) => {
           const p = payments[m.uid];
           return (
@@ -181,7 +215,20 @@ export default function Fees() {
                   {p ? `Paid ₹${p.amount}${p.paidAt ? ' on ' + p.paidAt.toDate().toLocaleDateString('en-IN') : ''}` : `Unpaid · ${dueLabel}`}
                 </Text>
               </View>
-              <Ionicons name={p ? 'checkmark-circle' : 'close-circle'} size={26} color={p ? colors.paid : colors.unpaid} />
+              {isAdmin && !p && m.uid !== me.uid ? (
+                <Pressable
+                  onPress={() => remind([m])}
+                  disabled={!!reminding}
+                  style={[styles.remindBtn, reminded[m.uid] && { backgroundColor: colors.paidBg, borderColor: colors.paid }]}
+                  accessibilityLabel={`Remind ${m.name}`}
+                >
+                  <Text style={{ fontWeight: '800', color: reminded[m.uid] ? colors.paid : colors.unpaid }}>
+                    {reminding === m.uid ? '…' : reminded[m.uid] ? 'Sent ✓' : '🔔 Remind'}
+                  </Text>
+                </Pressable>
+              ) : (
+                <Ionicons name={p ? 'checkmark-circle' : 'close-circle'} size={26} color={p ? colors.paid : colors.unpaid} />
+              )}
             </Pressable>
           );
         })}
@@ -249,6 +296,7 @@ const styles = StyleSheet.create({
   cardTitle: { color: colors.muted, fontWeight: '700', marginBottom: 6 },
   totals: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: 8 },
   hint: { color: colors.muted, fontSize: 12, marginBottom: 8 },
+  remindBtn: { borderWidth: 2, borderColor: colors.unpaid, borderRadius: 18, paddingHorizontal: 10, height: 36, justifyContent: 'center', backgroundColor: '#fff' },
   memberRow: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 14, marginBottom: 8, borderLeftWidth: 5 },
   memberName: { fontWeight: '700', color: colors.text },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: 20 },

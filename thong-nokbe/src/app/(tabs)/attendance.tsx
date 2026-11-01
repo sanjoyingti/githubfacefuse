@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useMe } from '../../context/AuthProvider';
 import { useChats } from '../../context/ChatsProvider';
 import { GroupSwitcher, NoGroups } from '../../components/GroupSwitcher';
+import { AttendanceSummary } from '../../components/AttendanceSummary';
 import { Avatar, Button, Card, Loading } from '../../components/ui';
 import { markAttendance, useMonthAttendance } from '../../lib/attendance';
 import { addDays, dayKey, daysInMonth, formatDayLong, formatMonth, parseDayKey } from '../../lib/dates';
@@ -17,6 +18,9 @@ export default function Attendance() {
   const [date, setDate] = useState(dayKey());
   const month = date.slice(0, 7);
   const { days } = useMonthAttendance(group?.id, month);
+  const [mode, setMode] = useState<'day' | 'week' | 'month'>('day');
+  const [calMonth, setCalMonth] = useState<string | null>(null);
+  const { days: calDays } = useMonthAttendance(group?.id, calMonth ?? month);
   const users = useUsers(group?.members ?? []);
   const [historyFor, setHistoryFor] = useState<UserProfile | null>(null);
 
@@ -59,6 +63,33 @@ export default function Attendance() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <GroupSwitcher />
+      <View style={styles.tabs}>
+        {(
+          [
+            ['day', '📅 Day'],
+            ['week', '📊 Week'],
+            ['month', '🗓 Month'],
+          ] as const
+        ).map(([k, label]) => (
+          <Pressable key={k} onPress={() => setMode(k)} style={[styles.tab, mode === k && styles.tabOn]}>
+            <Text style={[styles.tabText, mode === k && { color: '#fff' }]}>{label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {mode !== 'day' ? (
+        <AttendanceSummary
+          key={mode}
+          chatId={group.id}
+          members={members}
+          meUid={me.uid}
+          period={mode}
+          onPick={(m, mo) => {
+            setCalMonth(mo);
+            setHistoryFor(m);
+          }}
+        />
+      ) : (
+      <>
       <View style={styles.dateBar}>
         <Pressable onPress={() => setDate(dayKey(addDays(parseDayKey(date), -1)))} hitSlop={12}>
           <Ionicons name="chevron-back" size={26} color={colors.text} />
@@ -117,7 +148,17 @@ export default function Attendance() {
           })}
         </Card>
       </ScrollView>
-      <HistoryModal user={historyFor} month={month} days={days} onClose={() => setHistoryFor(null)} />
+      </>
+      )}
+      <HistoryModal
+        user={historyFor}
+        month={calMonth ?? month}
+        days={calMonth ? calDays : days}
+        onClose={() => {
+          setHistoryFor(null);
+          setCalMonth(null);
+        }}
+      />
     </View>
   );
 }
@@ -203,6 +244,10 @@ function HistoryModal({
 }
 
 const styles = StyleSheet.create({
+  tabs: { flexDirection: 'row', gap: 8, backgroundColor: '#fff', paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4 },
+  tab: { flex: 1, height: 42, borderRadius: 21, borderWidth: 2, borderColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
+  tabOn: { backgroundColor: colors.primary },
+  tabText: { fontWeight: '900', color: colors.primary, fontSize: 15 },
   dateBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 10 },
   dateText: { fontWeight: '900', color: colors.text, fontSize: 17 },
   summary: { flexDirection: 'row', backgroundColor: '#fff', borderRadius: 16, paddingVertical: 14, marginBottom: 12 },

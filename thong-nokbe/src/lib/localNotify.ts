@@ -27,8 +27,8 @@ export function setupNotifications(): Promise<boolean> {
 }
 
 /** Shows a notification only when the app is not on screen. */
-export async function notifyIfAway(title: string, body: string, data: Record<string, string>) {
-  if (AppState.currentState === 'active') return;
+export async function notifyIfAway(title: string, body: string, data: Record<string, string>, evenIfOpen = false) {
+  if (AppState.currentState === 'active' && !evenIfOpen) return;
   if (!(await setupNotifications())) return;
   await Notifications.scheduleNotificationAsync({ content: { title, body, data, sound: 'default' }, trigger: null }).catch(() => {});
 }

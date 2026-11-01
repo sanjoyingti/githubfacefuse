@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc } from '@react-native-firebase/firestore';
 import { db } from './firebase';
-import type { FeePayment } from './types';
+import { getOrCreateDirectChat, sendMessage } from './chats';
+import type { FeePayment, UserProfile } from './types';
 
 const paymentsCol = (chatId: string, month: string) => collection(db, 'chats', chatId, 'fees', month, 'payments');
 
@@ -46,4 +47,19 @@ export async function recordPayment(
 /** Admin only: mark a member as unpaid again. */
 export async function clearPayment(chatId: string, month: string, uid: string) {
   await deleteDoc(doc(paymentsCol(chatId, month), uid));
+}
+
+export const FEE_REMINDER_PREFIX = '🔔 Gym fee reminder';
+
+/**
+ * Admin → one member: a private message from the admin. The member's phone shows it as a notification
+ * (while the app is open or running in the background) and it stays in their chats.
+ */
+export async function sendFeeReminder(admin: UserProfile, member: UserProfile, groupName: string, amount: number | undefined, monthLabel: string) {
+  const chatId = await getOrCreateDirectChat(admin, member);
+  const text =
+    `${FEE_REMINDER_PREFIX} (${groupName}): Hi ${member.name}, your gym fee` +
+    (amount ? ` of ₹${amount}` : '') +
+    ` for ${monthLabel} is not paid yet. Please pay from the Fees tab. Thank you! – ${admin.name}`;
+  await sendMessage(chatId, admin, text);
 }

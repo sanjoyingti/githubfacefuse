@@ -59,3 +59,14 @@ export function weekOfYear(d: Date = new Date()): number {
   const start = new Date(d.getFullYear(), 0, 1);
   return Math.floor((d.getTime() - start.getTime()) / (7 * 24 * 3600 * 1000));
 }
+
+/** Monday of the week containing d. */
+export function startOfWeek(d: Date): Date {
+  const c = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  c.setDate(c.getDate() - ((c.getDay() + 6) % 7));
+  return c;
+}
+
+export function formatShort(d: Date): string {
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+}

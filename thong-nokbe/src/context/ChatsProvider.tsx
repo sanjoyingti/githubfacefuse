@@ -3,6 +3,7 @@ import { collection, onSnapshot, query, where } from '@react-native-firebase/fir
 import { db } from '../lib/firebase';
 import { toChat } from '../lib/chats';
 import { notifyIfAway, scheduleFeeReminder } from '../lib/localNotify';
+import { FEE_REMINDER_PREFIX } from '../lib/fees';
 import type { Chat } from '../lib/types';
 import { useAuth } from './AuthProvider';
 
@@ -47,7 +48,8 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
           if (prev && at > (prev[c.id] ?? 0) && c.lastMessage && c.lastMessage.senderId !== user.uid) {
             const title = c.type === 'group' ? c.name ?? 'Group' : c.lastMessage.senderName;
             const body = c.type === 'group' ? `${c.lastMessage.senderName}: ${c.lastMessage.text}` : c.lastMessage.text;
-            notifyIfAway(title, body, { kind: 'message', chatId: c.id });
+            const isFeeReminder = c.lastMessage.text.startsWith(FEE_REMINDER_PREFIX);
+            notifyIfAway(isFeeReminder ? '🔔 Gym fee reminder' : title, isFeeReminder ? c.lastMessage.text : body, { kind: 'message', chatId: c.id }, isFeeReminder);
           }
         }
         lastSeen.current = next;
