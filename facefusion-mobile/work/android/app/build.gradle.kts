@@ -619,6 +619,18 @@ android {
     }
 
     signingConfigs {
+        // A FIXED debug key, committed on purpose (it is the standard public debug key
+        // format, password "android", and protects nothing). Every debug APK -- local or
+        // built by .github/workflows/build-apk.yml -- then has the same signature, so a
+        // newer release installs as an update instead of needing an uninstall.
+        rootProject.file("debug.keystore").takeIf { it.isFile }?.let { ks ->
+            getByName("debug") {
+                storeFile = ks
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         if (keystoreProps.getProperty("storeFile") != null) {
             create("release") {
                 storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))

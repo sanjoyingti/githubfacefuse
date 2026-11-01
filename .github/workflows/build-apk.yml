@@ -1,0 +1,68 @@
+# Builds the FaceFusion Mobile APK on GitHub's servers and publishes it as a Release, so it
+# can be downloaded from the repository's Releases page without Android Studio.
+#
+# Runs when this file changes on a push, and on demand: Actions tab -> "Build APK release"
+# -> Run workflow. Each run creates a new release tagged v0.9.41-motion-<run number>.
+name: Build APK release
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to create the release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: facefusion-mobile/work/android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK, NDK and CMake
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;34.0.0" "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+
+      # The Qualcomm AI Runtime zip (~2.3 GB) the build downloads once; cached between runs.
+      - uses: actions/cache@v4
+        with:
+          path: facefusion-mobile/work/android/.qairt-cache
+          key: qairt-2.49.0.260730
+
+      - name: Build the APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v0.9.41-motion-${GITHUB_RUN_NUMBER}"
+          apk="FaceFusion-0.9.41-motion.apk"
+          cp app/build/outputs/apk/debug/*.apk "$apk"
+          cat > notes.md <<'NOTES'
+          FaceFusion Mobile 0.9.41 with the occlusion mask (food, hands and cups in front of the face stay as filmed), "keep original mouth inside", fading the swap out on big head turns, motion smoothing for video/Live and rotated-face detection. The switches are under the gear on the face_swapper chip.
+
+          **How to install:** download `FaceFusion-0.9.41-motion.apk` below on your Android phone, tap it, allow installing from this source if Android asks, then tap Install. It appears as "FaceFusion Debug" next to any existing FaceFusion app. Needs a 64-bit (arm64) phone with Android 12 or newer.
+
+          On first launch the app downloads its face models (Settings -> Models).
+
+          Not yet tested on a phone; built automatically from this commit.
+          NOTES
+          gh release create "$tag" "$apk" \
+            --target "$GITHUB_SHA" \
+            --title "FaceFusion Mobile 0.9.41 + occlusion & motion (build ${GITHUB_RUN_NUMBER})" \
+            --notes-file notes.md
