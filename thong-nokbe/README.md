@@ -36,6 +36,29 @@ Members **must install the app** to be in a group. You can add someone who doesn
   The tests are in `rules-tests/` and run against the Firestore emulator.
 * **Videos**: `src/data/exerciseList.json` holds the 120 exercises. `scripts/fetch-exercise-videos.mjs` finds an embeddable YouTube tutorial for each one (all 120 are different videos) and writes `src/data/exerciseVideos.json`. Run `node scripts/fetch-exercise-videos.mjs --force` any time to refresh them.
 
+## Quick start: connect the app to Firebase (about 15 minutes)
+
+The downloadable APK only signs in once it's connected to **your** Firebase project. Until then it shows "Setup not finished".
+
+1. Go to <https://console.firebase.google.com> → **Add project** → name it `thong-nokbe-gym` → Create.
+2. Click the **⚙️ → Project settings → Usage and billing** and switch to the **Blaze** plan. SMS sign-in needs it, and it has a free quota.
+3. **Build → Authentication → Get started → Sign-in method → Phone → Enable → Save.**
+   *Tip:* under "Phone numbers for testing" you can add your own number with a fixed code (e.g. `123456`) to try the app without waiting for SMS.
+4. **Build → Firestore Database → Create database** (pick region `asia-south1`, production mode). Then **Build → Storage → Get started**.
+5. **⚙️ Project settings → Your apps → Android icon**:
+   * Package name: `com.thongnokbe.app`
+   * Then **Add fingerprint** twice and paste these (they match the APKs built by GitHub):
+     * SHA-1: `5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25`
+     * SHA-256: `FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C`
+   * Click **Download google-services.json**.
+6. On GitHub open **this repo → Settings → Secrets and variables → Actions → New repository secret**:
+   * Name `GOOGLE_SERVICES_JSON`, value: open `google-services.json` in a text editor, copy **everything**, paste.
+   * Name `AGORA_APP_ID`, value: your Agora App ID (from <https://console.agora.io>, project in "Secured mode").
+7. Go to **Actions → Thong Nokbe Gym APK → Run workflow**, or push any change. In about 15 minutes a new release appears under **Releases** with the working APK.
+8. Deploy the database rules and the server functions once (step 4 below), so chat, calls, attendance and fees are allowed and protected.
+
+> These fingerprints belong to React Native's shared debug key, which is fine for your gym's own use. Before publishing on the Play Store, make your own signing key with `npx eas-cli credentials` and add its fingerprints in Firebase too.
+
 ## Setup (one time)
 
 1. **Firebase project** at <https://console.firebase.google.com>:

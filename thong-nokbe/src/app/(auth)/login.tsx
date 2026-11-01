@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Alert, Image, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { signInWithPhoneNumber, type ConfirmationResult } from '@react-native-firebase/auth';
 import { auth } from '../../lib/firebase';
+import { friendlyAuthError, isServerNotConnected, NOT_CONNECTED_MESSAGE } from '../../lib/authErrors';
 import { normalizePhone, formatPhone } from '../../lib/phone';
 import { Button, Input } from '../../components/ui';
 import { APP_NAME, colors } from '../../theme';
@@ -23,7 +24,7 @@ export default function Login() {
       setSentTo(n);
       setStep('code');
     } catch (e: any) {
-      Alert.alert('Could not send code', e?.message ?? String(e));
+      Alert.alert('Could not send code', friendlyAuthError(e));
     } finally {
       setBusy(false);
     }
@@ -36,7 +37,7 @@ export default function Login() {
       await confirmation.current.confirm(code.trim());
       // AuthProvider takes it from here.
     } catch (e: any) {
-      Alert.alert('Wrong code', e?.message ?? 'Please check the 6-digit code and try again.');
+      Alert.alert('Could not sign in', friendlyAuthError(e));
       setBusy(false);
     }
   };
@@ -47,6 +48,12 @@ export default function Login() {
         <Image source={require('../../../assets/logo.png')} style={styles.logo} />
         <Text style={styles.title}>{APP_NAME}</Text>
         <Text style={styles.subtitle}>🏋️ Exercise · 💬 Chat · 📞 Call · ✅ Attendance · 💰 Fees</Text>
+        {isServerNotConnected() && (
+          <View style={styles.warn}>
+            <Text style={styles.warnTitle}>⚠️ Setup not finished</Text>
+            <Text style={styles.warnText}>{NOT_CONNECTED_MESSAGE}</Text>
+          </View>
+        )}
         <View style={styles.card}>
           {step === 'phone' ? (
             <>
@@ -87,6 +94,9 @@ const styles = StyleSheet.create({
   logo: { alignSelf: 'center', width: 150, height: 150 },
   title: { color: '#fff', fontSize: 32, fontWeight: '900', textAlign: 'center', marginTop: 8 },
   subtitle: { color: '#a7f3d0', textAlign: 'center', marginTop: 6, marginBottom: 28, fontSize: 15, lineHeight: 22 },
+  warn: { backgroundColor: '#FEF3C7', borderRadius: 16, padding: 14, marginBottom: 14 },
+  warnTitle: { fontWeight: '900', fontSize: 16, color: '#92400E' },
+  warnText: { color: '#92400E', marginTop: 4, fontSize: 15 },
   card: { backgroundColor: '#fff', borderRadius: 20, padding: 20 },
   h: { fontSize: 22, fontWeight: '900', color: colors.text },
   step: { color: colors.primary, fontWeight: '900', fontSize: 13, marginBottom: 4 },
