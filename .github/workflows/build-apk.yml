@@ -46,7 +46,20 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon :app:assembleDebug
 
+      # Always available, even if releases cannot be created: the APK as a downloadable
+      # artifact on the run's page (Actions tab -> the run -> Artifacts).
+      - name: Upload the APK as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceFusion-0.9.41-motion-apk
+          path: facefusion-mobile/work/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+
+      # Needs "Read and write permissions" for workflows (Settings -> Actions -> General ->
+      # Workflow permissions). If that is set to read-only, this step is skipped with a
+      # warning instead of failing the build; the artifact above still has the APK.
       - name: Publish the release
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
