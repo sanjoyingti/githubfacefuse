@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Builds 9 and 10 (crash fixes, safe mode, delete guard, background and battery fixes) are included in this build; they were built but not published because releases were blocked at the time.
+
           Build 10: the app can only ever delete its own private working files (a hard guard on every delete; your photos and videos are only read, never changed or deleted), long runs stop cleanly at Android's 6-hour background limit instead of crashing, the wake lock covers runs up to 12 hours, and the live preview picture is skipped while the app is in the background to save battery.
 
           Build 9 fixed the crash when a target video is added or a swap starts: the pipeline can no longer be released or reloaded while a preview frame is still running (one lock around every native call), the parallel mask thread from build 7 is removed, native errors now show as a message instead of closing the app, and after any crash the app restarts in safe mode with your last video reloaded.
