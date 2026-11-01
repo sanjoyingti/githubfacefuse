@@ -46,46 +46,46 @@ Do this **once, on a computer**. It takes about 25 minutes. You need your Gmail 
 
 ---
 
-## Part B: Agora for voice and video calls
+## Part B: Calls (Agora + a free Cloudflare "call pass" server)
 
-1. Open **https://console.agora.io** → sign up (Google login works). No card is needed.
-2. **Projects → Create a new project** → name `Thong Nokbe Gym`.
-3. Authentication: choose **Testing mode: APP ID** → **Submit**.
-4. Copy the **App ID**.
+**B1. Agora (free 10,000 minutes a month, no card)**
+1. **https://console.agora.io** → **Google** → **Create a new account** → tick terms + **I am human** → **Continue**.
+2. Choose **Realtime Communications Builder**. **Skip "Add a Card"**.
+3. **New Project** → name `Thong Nokbe Gym` → any use case → **Submit** → open it with **Configure**.
+4. Keep this page open. You'll copy the **App ID** and the **Primary Certificate** in B2.
+
+**B2. Cloudflare Worker (free, no card)**
+This small server keeps the Agora certificate secret. It gives a call pass only to people signed in to your app who are part of that call.
+1. Open **https://dash.cloudflare.com/sign-up** → sign up (email + password) → confirm the email they send.
+2. Left menu **Compute (Workers)** → **Workers & Pages** → **Create** → **Start with Hello World!** (or **Create Worker**).
+3. Name it `thong-nokbe-calls` → **Deploy**.
+4. Tap **Edit code**. Delete all the code in the editor.
+5. Open **https://raw.githubusercontent.com/sanjoyingti/githubfacefuse/ccr-a6556477-keal6c/thong-nokbe/token-server/worker.js** → select all → copy → paste into the editor → **Deploy**.
+6. Go back to the worker → **Settings → Variables and Secrets → + Add**, three times:
+   * Type **Text**, name `FIREBASE_PROJECT_ID`, value `roid-266a2`
+   * Type **Text**, name `AGORA_APP_ID`, value: your Agora **App ID**
+   * Type **Secret**, name `AGORA_APP_CERTIFICATE`, value: your Agora **Primary Certificate**
+
+   → **Deploy**.
+7. Copy the worker's address. It looks like `https://thong-nokbe-calls.YOURNAME.workers.dev`.
+   Open it in the browser. It should say `"ok": true`.
+8. Send Claude that address. It's not a secret. Claude adds it to the app and builds the APK.
 
 ---
 
-## Part C: GitHub builds the app
+## Part C: Give the app its Firebase file
 
-1. Open **https://github.com/sanjoyingti/githubfacefuse** → **Settings** → **Secrets and variables → Actions**.
-2. **New repository secret**:
-   * Name: `GOOGLE_SERVICES_JSON`
-   * Value: open **google-services.json** with Notepad → **Ctrl+A**, **Ctrl+C** → paste → **Add secret**.
-3. **New repository secret**:
-   * Name: `AGORA_APP_ID`
-   * Value: your Agora App ID → **Add secret**.
-4. Tell Claude **"secrets added"**. Claude starts the build and sends you the download link (about 15 minutes).
+Send **google-services.json** (Part A step 5) to Claude in the chat. It's not a password: it's built into every copy of the app anyway.
+Claude adds it to the project, and GitHub builds the APK with it.
 
 ---
 
-## Part D: Upload the security rules (one time, copy & paste)
+## Part D: Publish the security rules (one time, 2 minutes on the phone)
 
-These rules decide who can see and change what. For example, only admins mark attendance.
-Until they're uploaded, the app can't read or save anything.
+These rules decide who can see and change what. For example, only admins mark attendance. Until they're published, the app can't save anything.
 
-1. Open **https://shell.cloud.google.com** with the same Gmail. Wait for the black terminal with a `$`.
-2. Paste this and press **Enter**:
-   ```bash
-   git clone -b ccr-a6556477-keal6c https://github.com/sanjoyingti/githubfacefuse.git
-   cd githubfacefuse/thong-nokbe
-   npx -y firebase-tools@latest login --no-localhost
-   ```
-   Open the link it shows → choose your Gmail → **Allow** → copy the code → paste it in the terminal → **Enter**.
-3. Paste this, **replacing `YOUR-PROJECT-ID`** (Part A step 5), and press **Enter**:
-   ```bash
-   npx -y firebase-tools@latest deploy --only firestore --project YOUR-PROJECT-ID
-   ```
-   Wait for **Deploy complete!** This is free on the Spark plan.
+1. Open **https://raw.githubusercontent.com/sanjoyingti/githubfacefuse/ccr-a6556477-keal6c/thong-nokbe/firestore.rules** → long-press → **Select all** → **Copy**.
+2. Firebase → **Firestore** → **Rules** tab → select and delete the old text → **Paste** → **Publish**.
 
 ---
 
@@ -108,4 +108,4 @@ Until they're uploaded, the app can't read or save anything.
 * Login is with **Google** instead of an SMS code.
 * Message and call alerts appear while the app is open or running in the background. If the app is fully closed, nothing pops up until it's opened.
 * The fee reminder is an alarm on each phone on the **1st of every month at 9 AM**.
-* Calls use Agora's free **Testing mode**. Each call room has a long random name only the people in that call can see.
+* Calls use Agora's free minutes. A free Cloudflare Worker hands out call passes and keeps the Agora certificate secret.

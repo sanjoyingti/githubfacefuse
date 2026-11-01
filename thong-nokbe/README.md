@@ -48,8 +48,8 @@ Members **must install the app** to be in a group. You can add someone who doesn
   * Alerts for messages and calls are local notifications (`expo-notifications`), shown while the app is open or running in the background.
   * The fee reminder is a monthly local alarm (1st, 9 AM).
   * The UPI QR is generated in the app from the UPI ID (`react-native-qrcode-svg`).
-* **Calls:** Agora in *Testing mode (App ID only)*, with 10,000 free minutes a month. The room name is the call's random Firestore id, which only invited people can read.
-* **Build:** `.github/workflows/thong-nokbe-apk.yml` builds the APK from the `GOOGLE_SERVICES_JSON` and `AGORA_APP_ID` repository secrets and publishes it as a GitHub Release.
+* **Calls:** Agora (10,000 free minutes a month). A free Cloudflare Worker (`token-server/worker.js`) keeps the Agora certificate secret and issues a call token only after checking the Firebase sign-in token and that the person can read the call in Firestore. Tests: `node --test token-server/worker.test.mjs`.
+* **Build:** `.github/workflows/thong-nokbe-apk.yml` builds the APK (using `google-services.json`) and publishes it as a GitHub Release.
 
 ## Checks
 

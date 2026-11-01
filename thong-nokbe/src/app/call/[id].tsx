@@ -5,9 +5,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { onSnapshot } from '@react-native-firebase/firestore';
 import { ChannelProfileType, ClientRoleType, createAgoraRtcEngine, RtcSurfaceView, type IRtcEngine } from 'react-native-agora';
 import { useMe } from '../../context/AuthProvider';
-import { agoraUid, callRef, leaveCall } from '../../lib/calls';
+import { agoraUid, callRef, getCallPass, leaveCall, type CallPass } from '../../lib/calls';
 import { useUsers } from '../../lib/users';
-import { AGORA_APP_ID } from '../../config';
 import { colors } from '../../theme';
 import type { Call, CallKind } from '../../lib/types';
 import { Avatar } from '../../components/ui';
@@ -64,11 +63,6 @@ export default function CallScreen() {
   // Join the call room (room name = call id) once we know if it's voice or video.
   useEffect(() => {
     if (!id || !kind) return;
-    if (!AGORA_APP_ID) {
-      Alert.alert('Calling not set up', 'Set EXPO_PUBLIC_AGORA_APP_ID (see README) and rebuild the app.');
-      hangUp();
-      return;
-    }
     const isVideo = kind === 'video';
     let cancelled = false;
     (async () => {
@@ -77,14 +71,23 @@ export default function CallScreen() {
           isVideo ? [PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, PermissionsAndroid.PERMISSIONS.CAMERA] : [PermissionsAndroid.PERMISSIONS.RECORD_AUDIO],
         );
       }
-      const myUid = agoraUid(me.uid);
-      // Free version: Agora project in "Testing mode (App ID)", so no server-issued token is needed.
-      // The room name is the call's random 20-character id, which only the people in the call can read.
-      const token = '';
+      // Get this call's pass from the free call-pass server (it keeps the Agora secret).
+      let pass: CallPass;
+      try {
+        pass = await getCallPass(id);
+      } catch (err: any) {
+        if (!cancelled) {
+          Alert.alert("Can't join the call", err?.message ?? String(err));
+          hangUp();
+        }
+        return;
+      }
+      const myUid = pass.uid;
+      const token = pass.token;
       if (cancelled) return;
       const e = createAgoraRtcEngine();
       engine.current = e;
-      e.initialize({ appId: AGORA_APP_ID, channelProfile: ChannelProfileType.ChannelProfileCommunication });
+      e.initialize({ appId: pass.appId, channelProfile: ChannelProfileType.ChannelProfileCommunication });
       e.registerEventHandler({
         onJoinChannelSuccess: () => setJoined(true),
         onUserJoined: (_c, uid) => setRemoteUids((l) => (l.includes(uid) ? l : [...l, uid])),

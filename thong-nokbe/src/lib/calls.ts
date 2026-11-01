@@ -1,5 +1,7 @@
 import { addDoc, arrayRemove, arrayUnion, collection, doc, getDoc, runTransaction, serverTimestamp, updateDoc } from '@react-native-firebase/firestore';
-import { db } from './firebase';
+import { getIdToken } from '@react-native-firebase/auth';
+import { auth, db } from './firebase';
+import { CALL_SERVER_URL } from '../config';
 import { getOrCreateDirectChat, sendMessage } from './chats';
 import type { Call, CallKind, Chat, UserProfile } from './types';
 import { APP_NAME } from '../theme';
@@ -81,4 +83,38 @@ export async function leaveCall(callId: string, me: UserProfile) {
 export async function getCall(callId: string): Promise<Call | null> {
   const s = await getDoc(callRef(callId));
   return s.exists() ? ({ id: s.id, ...(s.data() as Omit<Call, 'id'>) } as Call) : null;
+}
+
+export interface CallPass {
+  appId: string;
+  token: string;
+  uid: number;
+}
+
+/**
+ * Asks the free call-pass server for this call's Agora pass. The server checks the person is signed in
+ * and is part of the call (via the database rules) before handing it out; the Agora secret stays there.
+ */
+export async function getCallPass(callId: string): Promise<CallPass> {
+  if (!CALL_SERVER_URL) throw new Error('Calling is not set up yet (call-pass server address missing). See SETUP-GUIDE Part B.');
+  const user = auth.currentUser;
+  if (!user) throw new Error('Please sign in again.');
+  const idToken = await getIdToken(user);
+  let res: Response;
+  try {
+    res = await fetch(CALL_SERVER_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({ channel: callId }),
+    });
+  } catch {
+    throw new Error('No internet connection. Check mobile data or Wi-Fi and try again.');
+  }
+  const body = (await res.json().catch(() => ({}))) as Partial<CallPass> & { error?: string };
+  if (!res.ok || !body.token || !body.appId || !body.uid) {
+    if (res.status === 410) throw new Error('This call has already ended.');
+    if (res.status === 403) throw new Error("You're not part of this call.");
+    throw new Error(body.error ?? `Call server error (${res.status}).`);
+  }
+  return body as CallPass;
 }

@@ -5,7 +5,6 @@
 #   GOOGLE_SERVICES_JSON – optional: overrides thong-nokbe/google-services.json (committed; it is not a secret).
 #                          Without it a stand-in config is used: the APK installs and opens,
 #                          but Google sign-in, chat, calls, attendance and fees won't work.
-#   AGORA_APP_ID         – Agora App ID for voice/video calls.
 #
 # Runs on every push that changes thong-nokbe/ (or this file), or manually from the Actions tab.
 name: Thong Nokbe Gym APK
@@ -31,7 +30,6 @@ jobs:
         working-directory: thong-nokbe
     env:
       GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
-      EXPO_PUBLIC_AGORA_APP_ID: ${{ secrets.AGORA_APP_ID }}
       NODE_ENV: production
     steps:
       - uses: actions/checkout@v4
