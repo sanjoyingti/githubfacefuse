@@ -727,14 +727,6 @@ void Pipeline::updateConfig(const Config& c) {
 
 ContentVerdict Pipeline::checkContent(const ffcv::Image& frame) {
   ContentVerdict v;
-  // NSFW gate DORMANT (developer override): always allow and clear the pipeline.
-  // Model is never run. Rest of the function is left intact for easy re-enable.
-  (void)frame;
-  v.ok = true;
-  v.score = 0.f;
-  v.blocked = false;
-  if (p_) p_->gateCleared = true;
-  return v;
   if (!p_ || !p_->n.nsfw) { err_ = "content gate not loaded"; return v; }
 
   // vision.py:fit_contain_frame -- scale to FIT, then pad CENTRED.
@@ -2243,8 +2235,7 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
   if (!p_->cfg.swapEnabled) return true;
   if (!p_->haveSource) { err_ = "setSource not called"; return false; }
   // ⚠ NO CHECK, NO SWAP. See Impl::gateCleared. The message never quotes the score.
-  // NSFW gate DORMANT: clearance check disabled.
-  if (false && !p_->gateCleared) {
+  if (!p_->gateCleared) {
     err_ = "content check has not run for this pipeline";
     return false;
   }
@@ -2413,8 +2404,7 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
   if (!cfg.faceEnhance) return true;
   // Same rule as swapAll and editFaces: with the swapper off this stage alone changes
   // the frame, so it may not run on a pipeline no check has cleared.
-  // NSFW gate DORMANT: clearance check disabled.
-  if (false && !p_->gateCleared) {
+  if (!p_->gateCleared) {
     err_ = "content check has not run for this pipeline";
     return false;
   }
@@ -2665,8 +2655,7 @@ bool Pipeline::editFaces(ffcv::Image& frame, const std::vector<Face>& faces) {
   static_assert(ffportrait::kSliderCount == 14, "Config::faceEditor is 14 sliders");
   // The swap's own rule, because with the swapper off this stage is the one that changes
   // the frame: no check, no edit. See Impl::gateCleared.
-  // NSFW gate DORMANT: clearance check disabled.
-  if (false && !p_->gateCleared) {
+  if (!p_->gateCleared) {
     err_ = "content check has not run for this pipeline";
     return false;
   }
@@ -2737,8 +2726,7 @@ bool Pipeline::animate(const ffcv::Image& driver, ffcv::Image& out) {
   Impl::Portrait& P = p_->portrait;
   if (!P.ready) { err_ = "setPortrait not called"; return false; }
   // No check, no frame: the rule every stage that changes a picture follows.
-  // NSFW gate DORMANT: clearance check disabled.
-  if (false && !p_->gateCleared) {
+  if (!p_->gateCleared) {
     err_ = "content check has not run for this pipeline";
     return false;
   }

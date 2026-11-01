@@ -8,13 +8,6 @@ import java.io.File
 /**
  * The NSFW content gate, with upstream's policy.
  *
- * ⚠ DORMANT / DISABLED (developer override).
- * All public inspection entry points now always return ALLOW and never run the
- * NSFW model. The rest of the original implementation is left intact so the
- * gate can be re-enabled later by restoring the original bodies of
- * inspectStill / inspectClip / inspectPixels.
- *
- * Original behaviour (commented for reference):
  * It **blocks**: FaceFusion's `content_analyser.py` refuses to process flagged content and
  * so does this port (decided 2026-08-24). Everything here is upstream's rule, ported:
  *
@@ -53,9 +46,6 @@ object ContentGate {
      */
     const val QUANTISED_BIAS = 0.087f
 
-    /** Master switch: when true the gate never blocks and never runs the model. */
-    private const val DORMANT = true
-
     enum class Verdict { ALLOW, BLOCK, ERROR }
 
     data class Result(
@@ -89,18 +79,12 @@ object ContentGate {
      * still path and both video paths cannot drift apart on how NaN is treated.
      */
     private fun inspectPixels(bgr: ByteArray, w: Int, h: Int): Result {
-        if (DORMANT) {
-            return Result(Verdict.ALLOW, 0f, detail = "content gate dormant")
-        }
         val score = NativePipe.contentScore(bgr, w, h)
         return Result(judge(score), score,
                       detail = if (score.isNaN()) NativePipe.lastError() else "")
     }
 
     fun inspectStill(bitmap: Bitmap): Result {
-        if (DORMANT) {
-            return Result(Verdict.ALLOW, 0f, detail = "content gate dormant")
-        }
         val soft = bitmap.asArgb8888()
             ?: return Result(Verdict.ERROR, Float.NaN, detail = "cannot read image")
         val px = IntArray(soft.width * soft.height)
@@ -130,9 +114,6 @@ object ContentGate {
      * told no about a good file.
      */
     fun inspectClip(file: File): Result {
-        if (DORMANT) {
-            return Result(Verdict.ALLOW, 0f, detail = "content gate dormant")
-        }
         return sampleByRetriever(file) ?: sampleByDecoder(file)
     }
 
