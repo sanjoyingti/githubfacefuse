@@ -457,24 +457,30 @@ bool loadAux(ncnn::Net& net, const Spec& sp, bool gpu, std::string& err) {
   if (g_lowMem) net.opt.use_winograd_convolution = false;
 
   const std::string stem = std::string(sp.stem) + ".ncnn.";
+  // Which step failed, not just "not found": a .param this ncnn cannot PARSE (a layer
+  // option newer than the library) reads exactly like a missing file otherwise.
+  std::string why = "no asset manager or aux directory set";
 #if defined(__ANDROID__) && NCNN_PLATFORM_API
   if (g_auxAssets) {
     AAssetManager* mgr = static_cast<AAssetManager*>(g_auxAssets);
     const std::string a = "masks/" + stem;
-    if (net.load_param(mgr, (a + "param").c_str()) == 0 &&
-        net.load_model(mgr, (a + "bin").c_str()) == 0)
-      return true;
+    const int rp = net.load_param(mgr, (a + "param").c_str());
+    const int rm = rp == 0 ? net.load_model(mgr, (a + "bin").c_str()) : 0;
+    if (rp == 0 && rm == 0) return true;
+    why = rp != 0 ? "cannot read or parse assets/" + a + "param"
+                  : "cannot read assets/" + a + "bin";
     net.clear();
   }
 #endif
   if (!g_auxDir.empty()) {
     const std::string base = g_auxDir + "/" + stem;
-    if (net.load_param((base + "param").c_str()) == 0 &&
-        net.load_model((base + "bin").c_str()) == 0)
-      return true;
+    const int rp = net.load_param((base + "param").c_str());
+    const int rm = rp == 0 ? net.load_model((base + "bin").c_str()) : 0;
+    if (rp == 0 && rm == 0) return true;
+    why = rp != 0 ? "cannot read or parse " + base + "param" : "cannot read " + base + "bin";
     net.clear();
   }
-  err = "ncnn: " + std::string(sp.stem) + " not found in assets/masks or the aux directory";
+  err = "ncnn: " + why;
   return false;
 }
 }  // namespace

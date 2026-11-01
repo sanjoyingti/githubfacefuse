@@ -182,8 +182,22 @@ val qnnStage by tasks.registering {
     }
 }
 
+// The bundled mask models must not contain pnnx runtime expressions (`6="..."`): the ncnn
+// staged in ../ncnn cannot parse them, and the app then silently runs without the mask.
+// work/masks/freeze_reshape.py removes them; this keeps a regenerated model from slipping in.
+val checkMaskModels by tasks.registering {
+    doLast {
+        fileTree("src/main/assets/masks") { include("*.param") }.forEach { f ->
+            val bad = f.readLines().filter { "=\"" in it }
+            if (bad.isNotEmpty())
+                throw GradleException("${f.name} has ${bad.size} runtime expression(s) the " +
+                    "bundled ncnn cannot load; run work/masks/freeze_reshape.py. First: ${bad[0].trim()}")
+        }
+    }
+}
+
 tasks.named("preBuild") {
-    dependsOn(qnnStage)
+    dependsOn(qnnStage, checkMaskModels)
 }
 
 // Optional matching native binaries for Kotlin/UI-only builds without the Qualcomm SDK.

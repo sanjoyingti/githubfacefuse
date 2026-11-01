@@ -62,6 +62,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 4 fixes the occlusion model not loading ("Occlusion model: not loaded" in the status line).
+
           The content check is ON, as in the original app: photos and videos flagged as nudity are refused before any processing.
 
           Not yet tested on a phone; built automatically from this commit.
