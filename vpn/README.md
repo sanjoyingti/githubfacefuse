@@ -74,10 +74,11 @@ When it finishes (about 1–2 minutes), it prints a **QR code**.
 
 To check it worked, open the Chrome address bar and search "what is my ip". It should show your server's country.
 
-> You can't scan the screen with the phone it's displayed on. Show the QR on another screen
-> (a laptop, or ask a friend), **or** copy the config file instead: run
-> `sudo cat /etc/wireguard/clients/phone.conf`, copy the text, save it as `phone.conf`
-> on the phone, then WireGuard → **+** → **Import from file**.
+> **Only have one phone (no PC)?** You can't scan your own screen, so download the file instead:
+> 1. In Cloud Shell type `exit` to leave the server.
+> 2. Run: `ssh ubuntu@YOUR_IP sudo cat /etc/wireguard/clients/phone.conf > phone.conf`
+> 3. Cloud Shell menu (⚙ / ☰ at the top of the shell) → **Download** → type `phone.conf` → Download.
+> 4. WireGuard app → **+** → **Import from file or archive** → Downloads → `phone.conf`.
 
 ---
 
