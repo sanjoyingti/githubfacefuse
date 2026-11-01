@@ -104,12 +104,15 @@ object NativePipe {
     @JvmStatic external fun setQuality(
         occlusion: Boolean, region: Boolean, keepMouth: Boolean, keepLips: Boolean,
         poseFadeStart: Float, smooth: Boolean, recover: Boolean, rotated: Boolean,
+        colorMatch: Float, expressionRestore: Boolean, expressionFactor: Float,
     )
 
     fun pushQuality(opts: SwapOptions) {
         setQuality(opts.occlusionMask, opts.regionMask, opts.keepMouth, opts.keepLips,
                    if (opts.poseFade) opts.poseFadeStart else 90f,
-                   opts.motionSmooth, opts.motionSmooth, opts.detectRotated)
+                   opts.motionSmooth, opts.motionSmooth, opts.detectRotated,
+                   if (opts.colorMatch) opts.colorMatchStrength else 0f,
+                   opts.expressionRestore, opts.expressionFactor)
     }
 
     /**

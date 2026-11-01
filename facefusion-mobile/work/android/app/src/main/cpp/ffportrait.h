@@ -104,5 +104,14 @@ void editKeypoints(const Motion& m, const float* sliders, const float* landmark6
  */
 void animateKeypoints(const Motion& photo, const Motion& driverFirst, const Motion& driver,
                       const Mlps& mlps, float* source, float* target);
+/**
+ * expression_restorer's keypoints (processors/modules/expression_restorer.py:apply_restore):
+ * the SWAPPED face keeps its pose, scale and translation and takes the ORIGINAL face's
+ * expression, except keypoints 0, 4, 5, 8 and 9, which stay the swapped face's; `factor`
+ * blends the two expressions (upstream maps its 0-100 slider to 0-1.2). `target` is the
+ * swapped face as it is and `source` the restored one, in the generator's naming.
+ */
+void restoreKeypoints(const Motion& swapped, const Motion& original, float factor,
+                      float* source, float* target);
 
 }  // namespace ffportrait

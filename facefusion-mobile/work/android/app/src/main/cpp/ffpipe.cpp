@@ -270,6 +270,10 @@ struct Pipeline::Impl {
     ffcv::MatF mask;
   };
   std::vector<CachedMask> maskCache;
+  // The frame as it was BEFORE swapAll, for the expression restorer (which needs the
+  // original face's expression). Only kept when the restorer will run.
+  ffcv::Image preSwap;
+  bool havePreSwap = false;
   const ffcv::MatF* cachedMask(const Face& f) const {
     for (const auto& c : maskCache)
       if (std::memcmp(c.lm5, f.landmark5_68, sizeof(c.lm5)) == 0) return &c.mask;
@@ -718,6 +722,9 @@ void Pipeline::updateConfig(const Config& c) {
   live.regionMask        = c.regionMask;
   live.keepMouth         = c.keepMouth;
   live.keepLips          = c.keepLips;
+  live.colorMatch        = c.colorMatch;
+  live.expressionRestore = c.expressionRestore;
+  live.expressionRestoreFactor = c.expressionRestoreFactor;
   live.poseFadeStart     = c.poseFadeStart;
   live.motionSmooth      = c.motionSmooth;
   live.lowScoreRecovery  = c.lowScoreRecovery;
@@ -2333,6 +2340,7 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
 
 bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
   p_->maskCache.clear();
+  p_->havePreSwap = false;   // set again below only when THIS frame is swapped
   if (!p_->cfg.occlusionMask && !p_->n.occTried) setMaskState(0, "switched off");
   if (!p_->cfg.regionMask && !p_->cfg.keepMouth && !p_->cfg.keepLips && !p_->n.parseTried)
     setMaskState(1, "switched off");
@@ -2347,6 +2355,8 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
   const int SS = cfg.swapSize;                       // what the GRAPH takes: always 256
   const int PB = cfg.pixelBoost < 1 ? 1 : cfg.pixelBoost;
   const int CS = SS * PB;                            // what the FACE is warped at
+  p_->havePreSwap = cfg.expressionRestore && hasFaceEditor() && !faces.empty();
+  if (p_->havePreSwap) p_->preSwap = frame;
 
   float tmpl[10];
   const float* T = ffcv::warpTemplate(1);            // arcface_128, both swappers
@@ -2492,6 +2502,14 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       p_->maskCache.push_back(std::move(cm));
       useMask = &faceMask;
       msGeomMask += nowMs() - t0;
+    }
+
+    // SKIN TONE: the swapped face takes the target face's colour statistics, measured
+    // over the pixels this face will actually be pasted on.
+    if (cfg.colorMatch > 0.f) {
+      t0 = nowMs();
+      ffmotion::matchColor(crop, outCrop, *useMask, cfg.colorMatch);
+      msGeom += nowMs() - t0;
     }
 
     t0 = nowMs();
@@ -2752,8 +2770,71 @@ bool Pipeline::lpRender(const std::vector<float>& fv, const float* source, const
 }
 
 // face_editor/core.py:edit_face.
+bool Pipeline::restoreExpression(ffcv::Image& frame, const std::vector<Face>& faces) {
+  const Config& cfg = p_->cfg;
+  if (p_->preSwap.w != frame.w || p_->preSwap.h != frame.h) return true;
+  const int noPadding[4] = {0, 0, 0, 0};
+  const ffcv::MatF box = ffcv::createBoxMask(kLpCrop, kLpCrop, cfg.maskBlur, noPadding);
+  // numpy.interp(factor, [0, 100], [0, 1.2]) with the factor stored as 0..1.
+  const float factor = std::fmin(1.f, std::fmax(0.f, cfg.expressionRestoreFactor)) * 1.2f;
+
+  const Face* only = nullptr;
+  if (!p_->haveReference && cfg.swapLargestOnly) {
+    float best = -1.f;
+    for (const Face& f : faces) {
+      float a = (f.box[2] - f.box[0]) * (f.box[3] - f.box[1]);
+      if (a > best) { best = a; only = &f; }
+    }
+  }
+  std::vector<float> in, inOrig, fv;
+  for (size_t fi = 0; fi < faces.size(); ++fi) {
+    const Face& f = faces[fi];
+    // The faces swapAll changed, and only those.
+    if (only && &f != only) continue;
+    if (p_->haveReference &&
+        faceDistance(f.embeddingNorm, p_->refEmbeddingNorm) >= cfg.referenceDistance)
+      continue;
+    if (p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance) == kNoSource) continue;
+    if (f.poseFade < 0.02f) continue;
+
+    double t0 = nowMs();
+    ffcv::Affine am, amOrig;
+    lpCrop(frame, f, &am, &in);
+    lpCrop(p_->preSwap, f, &amOrig, &inOrig);
+    msGeom += nowMs() - t0;
+
+    t0 = nowMs();
+    ffportrait::Motion swapped, original;
+    if (!lpFeature(in, &fv) || !lpMotion(in, &swapped) || !lpMotion(inOrig, &original))
+      return false;
+    msEdit += nowMs() - t0;
+
+    float source[ffportrait::kKeypoints * 3], target[ffportrait::kKeypoints * 3];
+    ffportrait::restoreKeypoints(swapped, original, factor, source, target);
+
+    // The same mask the swap used, in this crop's geometry: occlusion and the mouth
+    // switches are measured on the ORIGINAL face, so a kept mouth or a hand stays kept.
+    ffcv::MatF mask = box;
+    if (p_->wantsMaskModels()) {
+      t0 = nowMs();
+      const ffcv::Image oc =
+          ffcv::warpAffine(p_->preSwap, am, kLpCrop, kLpCrop, ffcv::BORDER_REPLICATE);
+      if (!p_->applyMaskModels(oc, mask, err_)) return false;
+      msGeomMask += nowMs() - t0;
+    }
+    if (f.poseFade < 0.999f)
+      for (float& v : mask.data) v *= f.poseFade;
+    if (!lpRender(fv, source, target, am, mask, frame)) return false;
+  }
+  return true;
+}
+
 bool Pipeline::editFaces(ffcv::Image& frame, const std::vector<Face>& faces) {
   if (!hasFaceEditor()) return true;   // absent is not a failure, matches enhance
+  if (p_->havePreSwap) {
+    p_->havePreSwap = false;
+    if (p_->cfg.expressionRestore && !restoreExpression(frame, faces)) return false;
+  }
   const Config& cfg = p_->cfg;
   if (!cfg.faceEdit || !ffportrait::anyEdit(cfg.faceEditor)) return true;
   static_assert(ffportrait::kSliderCount == 14, "Config::faceEditor is 14 sliders");

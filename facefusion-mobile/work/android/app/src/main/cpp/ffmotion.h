@@ -56,6 +56,14 @@ void unrotatePoint(int degreesCw, int w, int h, float xr, float yr, float* x, fl
 // Intersection over union of two [x0,y0,x1,y1] boxes.
 float iou(const float* a, const float* b);
 
+// Reinhard colour transfer (DeepFaceLab "rct") in CIE Lab: `swapped` (CS x CS x 3, BGR
+// 0..255 floats) takes the per-channel mean and spread of `target` (the original face crop,
+// same geometry), both measured where `mask` > 0.5. `strength` 0..1 blends the result with
+// the unmatched face. The spread ratio is clamped to [0.6, 1.6] so a dark or flat crop
+// cannot blow the face out.
+void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF& mask,
+                float strength);
+
 // Bilinear resize of a single-channel float mask.
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h);
 

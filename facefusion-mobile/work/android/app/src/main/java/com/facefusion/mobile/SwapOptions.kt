@@ -214,7 +214,43 @@ data class SwapOptions(
     val motionSmooth: Boolean = true,
     // Also look for faces rotated 90/180/270 degrees.
     val detectRotated: Boolean = false,
+    // Match the swapped face's skin tone and lighting to the target (Reinhard colour transfer).
+    val colorMatch: Boolean = true,
+    val colorMatchStrength: Float = 0.6f,
+    // Put the target's own expression (closed eyes, mouth shape) back on the swapped face
+    // (FaceFusion's expression_restorer, LivePortrait). Needs the face editor models.
+    val expressionRestore: Boolean = false,
+    val expressionFactor: Float = 0.8f,
 ) {
+    /**
+     * The most realistic settings this app has, applied in one tap ("Most realistic").
+     * Keeps the user's swapper model, sources and output choices. Slower than the defaults:
+     * pixel boost 512 is four swapper runs per face, and the restorer and the mask models
+     * add their own per-face cost.
+     */
+    fun realisticPreset(): SwapOptions = copy(
+        weight = 0.5f,
+        pixelBoost = 2,
+        maskBlur = 0.4f,
+        maskPadding = listOf(0, 0, 0, 0),
+        occlusionMask = true,
+        regionMask = false,
+        keepMouth = true,
+        keepLips = false,
+        poseFade = true,
+        poseFadeStart = 60f,
+        motionSmooth = true,
+        detectorScore = 0.35f,
+        landmarkerScore = 0.5f,
+        trackPeriod = 0,
+        colorMatch = true,
+        colorMatchStrength = 0.6f,
+        expressionRestore = true,
+        expressionFactor = 0.8f,
+        faceEnhance = true,
+        enhanceBlend = 0.5f,
+    )
+
     val pixelBoostLabel get() = "${256 * pixelBoost}x${256 * pixelBoost}"
 
     /** Whether this run swaps faces, and therefore needs a source. See [swapEnabled]. */
@@ -265,6 +301,10 @@ data class SwapOptions(
             .putFloat(K_POSE_FADE_START, poseFadeStart)
             .putBoolean(K_MOTION_SMOOTH, motionSmooth)
             .putBoolean(K_ROTATED, detectRotated)
+            .putBoolean(K_COLOR_MATCH, colorMatch)
+            .putFloat(K_COLOR_MATCH_STRENGTH, colorMatchStrength)
+            .putBoolean(K_EXPRESSION, expressionRestore)
+            .putFloat(K_EXPRESSION_FACTOR, expressionFactor)
             .apply()
     }
 
@@ -297,6 +337,10 @@ data class SwapOptions(
         private const val K_POSE_FADE_START = "pose_fade_start"
         private const val K_MOTION_SMOOTH = "motion_smooth"
         private const val K_ROTATED = "detect_rotated"
+        private const val K_COLOR_MATCH = "color_match"
+        private const val K_COLOR_MATCH_STRENGTH = "color_match_strength"
+        private const val K_EXPRESSION = "expression_restore"
+        private const val K_EXPRESSION_FACTOR = "expression_restore_factor"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -371,6 +415,12 @@ data class SwapOptions(
                 poseFadeStart = p.getFloat(K_POSE_FADE_START, d.poseFadeStart).coerceIn(30f, 85f),
                 motionSmooth = p.getBoolean(K_MOTION_SMOOTH, d.motionSmooth),
                 detectRotated = p.getBoolean(K_ROTATED, d.detectRotated),
+                colorMatch = p.getBoolean(K_COLOR_MATCH, d.colorMatch),
+                colorMatchStrength = p.getFloat(K_COLOR_MATCH_STRENGTH, d.colorMatchStrength)
+                    .coerceIn(0f, 1f),
+                expressionRestore = p.getBoolean(K_EXPRESSION, d.expressionRestore),
+                expressionFactor = p.getFloat(K_EXPRESSION_FACTOR, d.expressionFactor)
+                    .coerceIn(0f, 1f),
             )
         }
     }

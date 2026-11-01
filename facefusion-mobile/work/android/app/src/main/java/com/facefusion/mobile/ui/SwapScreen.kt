@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import com.facefusion.mobile.FaceDetectorCard
 import com.facefusion.mobile.FaceMaskerCard
 import com.facefusion.mobile.FaceSwapperCard
+import com.facefusion.mobile.RealismCard
 import com.facefusion.mobile.BatchItem
 import com.facefusion.mobile.BatchState
 import com.facefusion.mobile.ModelDownload
@@ -1684,6 +1685,8 @@ fun SwapScreen(
                             // finds.
                         }
                         else -> {
+                            RealismCard(opts, onOptsChange, openCard == "realism",
+                                        { onToggleCard("realism") })
                             FaceSwapperCard(opts, onOptsChange, openCard == "swapper",
                                             { onToggleCard("swapper") },
                                             hyperswap1bAvailable = hasHyperswap1b,

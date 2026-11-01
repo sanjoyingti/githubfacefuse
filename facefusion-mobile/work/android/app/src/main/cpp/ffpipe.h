@@ -61,6 +61,15 @@ struct Config {
   // For eating: the swapper draws lips in the shape of the source photo's mouth, which does
   // not fit a mouth wrapped around something. Implies the parser runs.
   bool keepLips = false;
+  // Skin-tone matching: Reinhard colour transfer (in Lab) of the swapped face onto the
+  // target's face colours, as DeepFaceLab's "rct" -- the swapped face takes the scene's
+  // lighting and skin tone instead of the source photo's. 0 = off, 1 = full transfer.
+  float colorMatch = 0.6f;
+  // --processors expression_restorer: LivePortrait puts the ORIGINAL face's expression
+  // (closed eyes, mouth shape) back on the swapped face. Needs the face editor models.
+  // Upstream's --expression-restorer-factor 0-100 is this x100; it maps to 0-1.2.
+  bool expressionRestore = false;
+  float expressionRestoreFactor = 0.8f;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;
@@ -603,6 +612,8 @@ class Pipeline {
   // LivePortrait's shared steps: the ffhq_512 crop at 256, the two extractors, and the
   // generator from hourglassInput to the pasted face.
   bool lpCrop(const ffcv::Image& frame, const Face& f, ffcv::Affine* am, std::vector<float>* in);
+  // expression_restorer, run by editFaces on the frame swapAll just produced.
+  bool restoreExpression(ffcv::Image& frame, const std::vector<Face>& faces);
   bool lpFeature(const std::vector<float>& in, std::vector<float>* fv);
   bool lpMotion(const std::vector<float>& in, ffportrait::Motion* m);
   bool lpRender(const std::vector<float>& fv, const float* source, const float* target,

@@ -139,6 +139,96 @@ float iou(const float* a, const float* b) {
   return ua > 0.f ? inter / ua : 0.f;
 }
 
+namespace {
+// sRGB (0..255, BGR order in) <-> CIE Lab (D65), the conversion cv2.COLOR_BGR2LAB uses.
+inline float srgbToLinear(float c) {
+  c /= 255.f;
+  return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+inline float linearToSrgb(float c) {
+  c = c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.f / 2.4f) - 0.055f;
+  return c * 255.f;
+}
+inline float labF(float t) {
+  return t > 0.008856f ? std::cbrt(t) : 7.787f * t + 16.f / 116.f;
+}
+inline float labFInv(float t) {
+  const float t3 = t * t * t;
+  return t3 > 0.008856f ? t3 : (t - 16.f / 116.f) / 7.787f;
+}
+void bgrToLab(float b, float g, float r, float* lab) {
+  const float R = srgbToLinear(r), G = srgbToLinear(g), B = srgbToLinear(b);
+  const float X = (0.412453f * R + 0.357580f * G + 0.180423f * B) / 0.950456f;
+  const float Y = 0.212671f * R + 0.715160f * G + 0.072169f * B;
+  const float Z = (0.019334f * R + 0.119193f * G + 0.950227f * B) / 1.088754f;
+  const float fx = labF(X), fy = labF(Y), fz = labF(Z);
+  lab[0] = 116.f * fy - 16.f;
+  lab[1] = 500.f * (fx - fy);
+  lab[2] = 200.f * (fy - fz);
+}
+void labToBgr(const float* lab, float* bgr) {
+  const float fy = (lab[0] + 16.f) / 116.f, fx = fy + lab[1] / 500.f, fz = fy - lab[2] / 200.f;
+  const float X = labFInv(fx) * 0.950456f, Y = labFInv(fy), Z = labFInv(fz) * 1.088754f;
+  const float R = 3.240479f * X - 1.537150f * Y - 0.498535f * Z;
+  const float G = -0.969256f * X + 1.875992f * Y + 0.041556f * Z;
+  const float B = 0.055648f * X - 0.204043f * Y + 1.057311f * Z;
+  auto clamp = [](float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); };
+  bgr[0] = linearToSrgb(clamp(B));
+  bgr[1] = linearToSrgb(clamp(G));
+  bgr[2] = linearToSrgb(clamp(R));
+}
+}  // namespace
+
+void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF& mask,
+                float strength) {
+  if (strength <= 0.f) return;
+  if (strength > 1.f) strength = 1.f;
+  const int W = swapped.w, H = swapped.h;
+  if (target.w != W || target.h != H || mask.w != W || mask.h != H) return;
+  const size_t n = (size_t)W * H;
+  std::vector<float> lt(n * 3), ls(n * 3);
+  double st[3] = {}, ss[3] = {}, qt[3] = {}, qs[3] = {};
+  size_t cnt = 0;
+  for (int y = 0; y < H; ++y) {
+    const uint8_t* tr = target.row(y);
+    const float* sr = swapped.row(y);
+    const float* mr = mask.row(y);
+    for (int x = 0; x < W; ++x) {
+      const size_t i = ((size_t)y * W + x) * 3;
+      bgrToLab(tr[x * 3], tr[x * 3 + 1], tr[x * 3 + 2], &lt[i]);
+      bgrToLab(sr[x * 3], sr[x * 3 + 1], sr[x * 3 + 2], &ls[i]);
+      if (mr[x] > 0.5f) {
+        for (int c = 0; c < 3; ++c) {
+          st[c] += lt[i + c]; qt[c] += (double)lt[i + c] * lt[i + c];
+          ss[c] += ls[i + c]; qs[c] += (double)ls[i + c] * ls[i + c];
+        }
+        ++cnt;
+      }
+    }
+  }
+  if (cnt < 64) return;   // too little face to measure
+  float mt[3], ms[3], ratio[3];
+  for (int c = 0; c < 3; ++c) {
+    mt[c] = (float)(st[c] / cnt);
+    ms[c] = (float)(ss[c] / cnt);
+    const double vt = std::max(0.0, qt[c] / cnt - (double)mt[c] * mt[c]);
+    const double vs = std::max(0.0, qs[c] / cnt - (double)ms[c] * ms[c]);
+    float r = vs > 1e-6 ? (float)std::sqrt(vt / vs) : 1.f;
+    ratio[c] = r < 0.6f ? 0.6f : (r > 1.6f ? 1.6f : r);
+  }
+  for (int y = 0; y < H; ++y) {
+    float* sr = swapped.row(y);
+    for (int x = 0; x < W; ++x) {
+      const size_t i = ((size_t)y * W + x) * 3;
+      float lab[3], bgr[3];
+      for (int c = 0; c < 3; ++c) lab[c] = (ls[i + c] - ms[c]) * ratio[c] + mt[c];
+      labToBgr(lab, bgr);
+      for (int c = 0; c < 3; ++c)
+        sr[x * 3 + c] = sr[x * 3 + c] * (1.f - strength) + bgr[c] * strength;
+    }
+  }
+}
+
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h) {
   if (src.w == w && src.h == h) return src;
   ffcv::MatF dst(w, h, 1);

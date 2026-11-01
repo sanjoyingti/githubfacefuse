@@ -14,6 +14,17 @@
     <string name="opt_keep_mouth_hint">Teeth, tongue and whatever is in the mouth stay as filmed. Best for eating and talking.</string>
     <string name="opt_keep_lips">Keep original lips too</string>
     <string name="opt_keep_lips_hint">The lips also stay as filmed, so the whole mouth is the real one. Most natural while eating or with the mouth wide open; the lips are then the original person\'s, not the source face\'s.</string>
+    <string name="opt_realism">Realism</string>
+    <string name="opt_realism_off">off</string>
+    <string name="opt_realistic_preset">Most realistic</string>
+    <string name="opt_realistic_preset_hint">Sets everything for the most natural result: 512 pixel boost, occlusion mask, real mouth inside, skin-tone matching, expression restorer, face enhancer at half strength, head-turn fade, motion smoothing. Slower. Keeps your model, faces and output settings.</string>
+    <string name="opt_color_match">Match skin tone</string>
+    <string name="opt_color_match_short">skin tone</string>
+    <string name="opt_color_match_hint">The swapped face takes the skin tone and lighting of the video, so it does not look pasted on.</string>
+    <string name="opt_expression">Expression restorer</string>
+    <string name="opt_expression_short">expression</string>
+    <string name="opt_expression_hint">Puts the original expression back on the swapped face: closed eyes, blinking, mouth shape. Uses the face editor models (download them in Settings, Models). Adds time per face.</string>
+    <string name="opt_strength">Strength</string>
     <string name="opt_pose_fade">Fade out on big head turns</string>
     <string name="opt_pose_fade_hint">When the head turns too far left, right, up or down for the swapper, the original face shows through smoothly instead of a stretched one.</string>
     <string name="opt_pose_fade_start">Start fading at</string>

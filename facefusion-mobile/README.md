@@ -151,6 +151,13 @@ Settings for these live in the **gear on the `face_swapper` chip**: the mask opt
   still swapped when it overlaps the face from the last frames. With **Fast video** on, a
   fast head move now forces a real detection on the next frame instead of tracking a box
   that lags behind.
+- **Realism card** (first in the gear dialog): **Most realistic** sets everything for the
+  most natural result in one tap (512 pixel boost, occlusion mask, real mouth inside,
+  skin-tone matching, expression restorer, enhancer at half strength). **Match skin tone**
+  is Reinhard colour transfer in Lab, as DeepFaceLab's "rct". **Expression restorer** is
+  FaceFusion's expression_restorer: LivePortrait puts the target's own expression (closed
+  eyes, blinks, mouth shape) back on the swapped face; it needs the face editor models.
+- **Keep original lips too** (off): the whole mouth stays as filmed, for eating scenes.
 - **Find rotated faces** (off). Also looks for faces turned 90°, 180° or 270° (someone
   lying down), only on frames where nothing was found upright.
 

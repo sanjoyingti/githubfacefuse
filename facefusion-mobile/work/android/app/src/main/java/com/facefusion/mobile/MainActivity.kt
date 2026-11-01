@@ -4121,6 +4121,7 @@ class MainActivity : ComponentActivity() {
                 // The mask models are ~26 GFLOP each per face: real-time camera frames
                 // cannot afford them. "Use my settings" keeps whatever the user chose.
                 occlusionMask = false, regionMask = false, keepMouth = false, keepLips = false,
+                expressionRestore = false,
             )).copy(largestOnly = liveLargestOnly,
                     // Swap-only, whatever the Swap screen has on: ~150 ms a face for the
                     // editor is single-digit fps, and the animator moves a still.

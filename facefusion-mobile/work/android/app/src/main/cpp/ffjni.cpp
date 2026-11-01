@@ -121,6 +121,9 @@ float g_faceEditor[14] = {};
  */
 struct Quality {
   bool occlusion = true, region = false, keepMouth = false, keepLips = false;
+  float colorMatch = 0.6f;
+  bool expressionRestore = false;
+  float expressionFactor = 0.8f;
   float poseFadeStart = 60.f;
   bool smooth = true, recover = true, rotated = false;
 };
@@ -136,6 +139,9 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.regionMask = g_quality.region;
   cfg.keepMouth = g_quality.keepMouth;
   cfg.keepLips = g_quality.keepLips;
+  cfg.colorMatch = g_quality.colorMatch;
+  cfg.expressionRestore = g_quality.expressionRestore;
+  cfg.expressionRestoreFactor = g_quality.expressionFactor;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -324,7 +330,16 @@ Java_com_facefusion_mobile_NativePipe_setQuality(JNIEnv*, jclass, jboolean occlu
                                                  jboolean region, jboolean keepMouth,
                                                  jboolean keepLips,
                                                  jfloat poseFadeStart, jboolean smooth,
-                                                 jboolean recover, jboolean rotated) {
+                                                 jboolean recover, jboolean rotated,
+                                                 jfloat colorMatch,
+                                                 jboolean expressionRestore,
+                                                 jfloat expressionFactor) {
+  auto unit = [](float v, float dflt) {
+    return std::isfinite(v) ? std::fmin(1.f, std::fmax(0.f, v)) : dflt;
+  };
+  g_quality.colorMatch = unit(colorMatch, 0.6f);
+  g_quality.expressionRestore = expressionRestore == JNI_TRUE;
+  g_quality.expressionFactor = unit(expressionFactor, 0.8f);
   g_quality.occlusion = occlusion == JNI_TRUE;
   g_quality.region = region == JNI_TRUE;
   g_quality.keepMouth = keepMouth == JNI_TRUE;

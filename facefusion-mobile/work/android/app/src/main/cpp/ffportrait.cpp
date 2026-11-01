@@ -455,6 +455,22 @@ void editKeypoints(const Motion& m, const float* s, const float* lm68, const Mlp
 }
 
 
+void restoreKeypoints(const Motion& sw, const Motion& orig, float factor, float* source,
+                      float* target) {
+  constexpr int N = kKeypoints * 3;
+  float r[9], tmp[N], e[N];
+  rotation(sw.pitch, sw.yaw, sw.roll, r);
+  rotate(sw.points, r, tmp);
+  std::memcpy(e, orig.expression, sizeof(e));
+  for (int k : {0, 4, 5, 8, 9})
+    for (int a = 0; a < 3; ++a) e[k * 3 + a] = sw.expression[k * 3 + a];
+  for (int i = 0; i < N; ++i) {
+    const float ex = e[i] * factor + sw.expression[i] * (1.f - factor);
+    source[i] = sw.scale * (tmp[i] + ex) + sw.translation[i % 3];
+    target[i] = sw.scale * (tmp[i] + sw.expression[i]) + sw.translation[i % 3];
+  }
+}
+
 void animateKeypoints(const Motion& s, const Motion& d0, const Motion& d, const Mlps& mlps,
                       float* source, float* target) {
   constexpr int N = kKeypoints * 3;

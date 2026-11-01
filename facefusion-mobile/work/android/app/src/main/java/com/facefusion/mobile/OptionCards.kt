@@ -300,6 +300,50 @@ fun OptionSwitch(
 
 // ---------------------------------------------------------------- the groups
 
+/**
+ * Realism: the one-tap preset, skin-tone matching and the expression restorer. First in the
+ * face_swapper dialog because the preset is the one thing most people want from it.
+ */
+@Composable
+fun RealismCard(
+    opts: SwapOptions,
+    onChange: (SwapOptions) -> Unit,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    val summary = listOf(
+        if (opts.colorMatch) stringResource(R.string.opt_color_match_short) else null,
+        if (opts.expressionRestore) stringResource(R.string.opt_expression_short) else null,
+    ).filterNotNull().joinToString(" · ").ifEmpty { stringResource(R.string.opt_realism_off) }
+    OptionCard(stringResource(R.string.opt_realism), summary, expanded, onToggle) {
+        val preset = opts.realisticPreset()
+        Button(
+            onClick = { onChange(preset) },
+            enabled = opts != preset,
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        ) { Text(stringResource(R.string.opt_realistic_preset)) }
+        Text(stringResource(R.string.opt_realistic_preset_hint),
+             style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(top = 4.dp))
+
+        OptionSwitch(stringResource(R.string.opt_color_match), opts.colorMatch,
+                     { onChange(opts.copy(colorMatch = it)) },
+                     hint = stringResource(R.string.opt_color_match_hint))
+        if (opts.colorMatch)
+            OptionSlider(stringResource(R.string.opt_strength), opts.colorMatchStrength,
+                         { onChange(opts.copy(colorMatchStrength = it)) })
+
+        OptionSwitch(stringResource(R.string.opt_expression), opts.expressionRestore,
+                     { onChange(opts.copy(expressionRestore = it)) },
+                     hint = stringResource(R.string.opt_expression_hint))
+        if (opts.expressionRestore)
+            OptionSlider(stringResource(R.string.opt_strength), opts.expressionFactor,
+                         { onChange(opts.copy(expressionFactor = it)) },
+                         format = { "${(it * 100).roundToInt()}" })
+    }
+}
+
 @Composable
 fun FaceSwapperCard(
     opts: SwapOptions,
