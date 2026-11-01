@@ -49,8 +49,9 @@ export function useContacts() {
     [],
   );
 
+  // Re-check every time the picker opens, so friends who just installed the app show as "on the app".
   useEffect(() => {
-    if (!cached) run();
+    run();
   }, [run]);
 
   return { loading: !state, rows: state?.rows ?? [], permissionDenied: !!state?.denied, error, reload: run };

@@ -76,8 +76,9 @@ test('invites: invited number can ask to join, only an admin can let them in', a
   const q = query(collection(as(INVITEE), 'chats'), where('pendingPhones', 'array-contains', INVITEE.phone));
   const snap = await assertSucceeds(getDocs(q));
   if (snap.size !== 1) throw new Error('invitee should see 1 group');
-  // can't add themselves as a member
-  await assertFails(updateDoc(doc(as(INVITEE), 'chats/g1'), { members: arrayUnion(INVITEE.uid), pendingPhones: arrayRemove(INVITEE.phone) }));
+  // can't add anyone else, can't touch admins
+  await assertFails(updateDoc(doc(as(INVITEE), 'chats/g1'), { members: arrayUnion(INVITEE.uid, 'someone'), pendingPhones: arrayRemove(INVITEE.phone) }));
+  await assertFails(updateDoc(doc(as(INVITEE), 'chats/g1'), { members: arrayUnion(INVITEE.uid), admins: arrayUnion(INVITEE.uid), pendingPhones: arrayRemove(INVITEE.phone) }));
   // someone whose number wasn't invited can't even ask
   await assertFails(updateDoc(doc(as(OUTSIDER), 'chats/g1'), { joinRequests: arrayUnion(OUTSIDER.uid) }));
   // invited number asks
@@ -180,4 +181,16 @@ test('invite links: admin makes a link, anyone signed in can join with the curre
   // after a reset the old code stops working
   await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { inviteCode: 'NewCode123456789' }));
   await assertFails(updateDoc(doc(as(INVITEE), 'chats/g1'), { members: arrayUnion(INVITEE.uid), lastJoinCode: 'Code1234567890AB' }));
+});
+
+test('auto-join: a number the admin added joins by itself after registering; others cannot', async () => {
+  // someone whose number was NOT added can't join this way
+  await assertFails(updateDoc(doc(as(OUTSIDER), 'chats/g1'), { members: arrayUnion(OUTSIDER.uid), pendingPhones: arrayRemove(OUTSIDER.phone) }));
+  // the invited number joins and removes only its own number
+  await assertSucceeds(updateDoc(doc(as(INVITEE), 'chats/g1'), { members: arrayUnion(INVITEE.uid), pendingPhones: arrayRemove(INVITEE.phone) }));
+  let snap;
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    snap = (await getDoc(doc(ctx.firestore(), 'chats/g1'))).data();
+  });
+  if (!snap.members.includes(INVITEE.uid) || snap.pendingPhones.includes(INVITEE.phone)) throw new Error('not joined');
 });

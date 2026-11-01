@@ -19,7 +19,7 @@ The five tabs at the bottom are **Exercise · Chat · Call · Attendance · Fees
 
 **Invite links (like WhatsApp):** admins open **Group info → Invite via link** to send a link by SMS, WhatsApp or QR code. Anyone with the app who taps it sees **"Join group"**. Without the app, the link opens a page with a download button. Admins can reset the link.
 
-Members **must install the app** to be in a group. You can add someone who doesn't have the app yet by phone number. They show as *Invited*. When they register with that number, a group admin approves them with one tap.
+Members **must install the app** to be in a group. You can add someone who doesn't have the app yet by phone number. They show as *Invited* and **join the group automatically** as soon as they register with that number.
 
 ## How it's built
 
@@ -43,8 +43,7 @@ Members **must install the app** to be in a group. You can add someone who doesn
 ## Free version: how it works
 
 * **Login:** Google Sign-In (Firebase Auth, free). After the first sign-in each person registers their name and phone number.
-  A number can belong to one account only (`phoneIndex` collection). Numbers aren't SMS-verified, so people whose number a group invited
-  must be **approved by a group admin** (`joinRequests`).
+  A number can belong to one account only (`phoneIndex` collection). Numbers aren't SMS-verified; a number an admin added to a group (`pendingPhones`) joins automatically when someone registers with it.
 * **Data:** Cloud Firestore on the free Spark plan. Rules in `firestore.rules`, indexes in `firestore.indexes.json`. Deploy with `firebase deploy --only firestore`.
 * **No paid server parts:** there are no Cloud Functions and no Cloud Storage.
   * Alerts for messages and calls are local notifications (`expo-notifications`), shown while the app is open or running in the background.

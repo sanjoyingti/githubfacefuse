@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, onSnapshot, query, where } from '@react-native-firebase/firestore';
 import { db } from '../lib/firebase';
-import { toChat } from '../lib/chats';
+import { joinInvitedGroup, toChat } from '../lib/chats';
 import { notifyIfAway, scheduleFeeReminder } from '../lib/localNotify';
 import { FEE_NOTICE_PREFIX, FEE_REMINDER_PREFIX } from '../lib/fees';
 import type { Chat } from '../lib/types';
@@ -22,7 +22,7 @@ const Ctx = createContext<ChatsState | null>(null);
 
 /** Live list of every chat the user belongs to + which gym group the Attendance/Fees tabs show. */
 export function ChatsProvider({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [chats, setChats] = useState<Chat[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedGroupId, setSelected] = useState<string | null>(null);
@@ -73,6 +73,18 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
       () => {},
     );
   }, [user]);
+
+  // If an admin adds my phone number to a group, join it right away.
+  const myPhone = profile?.phone;
+  useEffect(() => {
+    if (!user || !profile || !myPhone) return;
+    return onSnapshot(
+      query(collection(db, 'chats'), where('pendingPhones', 'array-contains', myPhone)),
+      (snap) => snap.docs.forEach((d) => joinInvitedGroup(d.id, toChat(d.id, d.data()), profile).catch(() => {})),
+      () => {},
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.uid, myPhone]);
 
   const groups = useMemo(() => chats.filter((c) => c.type === 'group'), [chats]);
 

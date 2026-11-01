@@ -174,7 +174,7 @@ export default function GroupInfo() {
 
       {chat.pendingPhones.length > 0 && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Invited · waiting to install {APP_NAME}</Text>
+          <Text style={styles.sectionTitle}>Invited · they join automatically after installing {APP_NAME}</Text>
           {chat.pendingPhones.map((p) => (
             <View key={p} style={styles.member}>
               <Avatar name="?" size={42} color="#94A3B8" />

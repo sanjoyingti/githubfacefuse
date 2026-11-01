@@ -127,12 +127,18 @@ export async function getOrCreateDirectChat(me: UserProfile, other: UserProfile)
  */
 export async function requestInvitedGroups(me: UserProfile) {
   const snap = await getDocs(query(collection(db, 'chats'), where('pendingPhones', 'array-contains', me.phone)));
-  for (const d of snap.docs) {
-    const c = d.data() as Chat;
-    if (c.members?.includes(me.uid) || c.joinRequests?.includes(me.uid)) continue;
-    await updateDoc(d.ref, { joinRequests: arrayUnion(me.uid) });
-  }
+  for (const d of snap.docs) await joinInvitedGroup(d.id, d.data() as Chat, me);
   return snap.size;
+}
+
+/**
+ * The admin added this person's phone number before they had the app. Now that they've registered
+ * with that number, they join the group automatically (like WhatsApp).
+ */
+export async function joinInvitedGroup(chatId: string, c: Chat, me: UserProfile) {
+  if (c.members?.includes(me.uid)) return;
+  await updateDoc(chatRef(chatId), { members: arrayUnion(me.uid), pendingPhones: arrayRemove(me.phone) });
+  await sendMessage(chatId, me, `${me.name} joined the group`, 'system');
 }
 
 /** Admin approves a join request: the person becomes a member. */

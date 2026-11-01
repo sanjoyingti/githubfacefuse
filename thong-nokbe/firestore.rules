@@ -78,6 +78,13 @@ service cloud.firestore {
           && request.resource.data.lastJoinCode == resource.data.inviteCode
           && request.resource.data.members.toSet() == resource.data.members.toSet().union([me()].toSet()))
         ||
+        // An admin added this person's phone number before they had the app: once they register
+        // with that number they join automatically (only themselves, only removing their own number).
+        (resource.data.type == 'group' && myPhone() in resource.data.pendingPhones
+          && changed().hasOnly(['members', 'pendingPhones'])
+          && request.resource.data.members.toSet() == resource.data.members.toSet().union([me()].toSet())
+          && request.resource.data.pendingPhones.toSet() == resource.data.pendingPhones.toSet().difference([myPhone()].toSet()))
+        ||
         // Someone whose number was invited asks to join; a group admin must approve.
         (resource.data.type == 'group' && myPhone() in resource.data.pendingPhones
           && changed().hasOnly(['joinRequests'])
