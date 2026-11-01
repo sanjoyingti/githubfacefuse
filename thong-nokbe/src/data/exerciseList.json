@@ -1,0 +1,44 @@
+{
+  "monday": { "title": "Chest Day", "muscle": "Chest", "exercises": [
+    "Barbell Bench Press", "Incline Barbell Bench Press", "Decline Barbell Bench Press", "Dumbbell Bench Press",
+    "Incline Dumbbell Press", "Decline Dumbbell Press", "Dumbbell Chest Fly", "Incline Dumbbell Fly",
+    "Cable Crossover", "Low to High Cable Fly", "Pec Deck Machine Fly", "Machine Chest Press",
+    "Push-Up", "Incline Push-Up", "Decline Push-Up", "Wide Grip Push-Up",
+    "Chest Dips", "Dumbbell Pullover", "Svend Press", "Landmine Chest Press"
+  ]},
+  "tuesday": { "title": "Biceps Day", "muscle": "Biceps", "exercises": [
+    "Barbell Curl", "EZ Bar Curl", "Dumbbell Bicep Curl", "Alternating Dumbbell Curl",
+    "Hammer Curl", "Cross Body Hammer Curl", "Incline Dumbbell Curl", "Concentration Curl",
+    "Barbell Preacher Curl", "Dumbbell Preacher Curl", "Cable Bicep Curl", "Rope Cable Hammer Curl",
+    "Spider Curl", "Reverse Barbell Curl", "Zottman Curl", "Drag Curl",
+    "Bayesian Cable Curl", "21s Bicep Curl", "Chin-Up", "Resistance Band Bicep Curl"
+  ]},
+  "wednesday": { "title": "Back Day", "muscle": "Back", "exercises": [
+    "Conventional Deadlift", "Pull-Up", "Lat Pulldown", "Close Grip Lat Pulldown",
+    "Barbell Bent Over Row", "Pendlay Row", "One Arm Dumbbell Row", "Seated Cable Row",
+    "T-Bar Row", "Chest Supported Dumbbell Row", "Inverted Row", "Straight Arm Pulldown",
+    "Rack Pull", "Meadows Row", "Seal Row", "Face Pull",
+    "Back Extension Hyperextension", "Barbell Good Morning", "Seated Machine Row", "Superman Exercise"
+  ]},
+  "thursday": { "title": "Triceps Day", "muscle": "Triceps", "exercises": [
+    "Close Grip Bench Press", "Tricep Pushdown Straight Bar", "Rope Tricep Pushdown", "Overhead Dumbbell Tricep Extension",
+    "Overhead Cable Tricep Extension", "EZ Bar Skull Crusher", "Dumbbell Skull Crusher", "Tricep Dips Parallel Bars",
+    "Bench Dips", "Diamond Push-Up", "Dumbbell Tricep Kickback", "Cable Tricep Kickback",
+    "Reverse Grip Tricep Pushdown", "JM Press", "Tate Press", "Seated EZ Bar Overhead Extension",
+    "Tricep Dip Machine", "Single Arm Cable Pushdown", "Close Grip Floor Press", "Bodyweight Tricep Extension"
+  ]},
+  "friday": { "title": "Shoulder Day", "muscle": "Shoulders", "exercises": [
+    "Barbell Overhead Press", "Seated Dumbbell Shoulder Press", "Arnold Press", "Machine Shoulder Press",
+    "Push Press", "Dumbbell Lateral Raise", "Cable Lateral Raise", "Dumbbell Front Raise",
+    "Plate Front Raise", "Dumbbell Rear Delt Fly", "Reverse Pec Deck", "Cable Rear Delt Fly",
+    "Upright Row", "Barbell Shrug", "Dumbbell Shrug", "Landmine Shoulder Press",
+    "Lu Raise", "Pike Push-Up", "Behind the Neck Press", "Y Raise"
+  ]},
+  "saturday": { "title": "Leg Day", "muscle": "Legs", "exercises": [
+    "Barbell Back Squat", "Front Squat", "Leg Press", "Hack Squat",
+    "Romanian Deadlift", "Bulgarian Split Squat", "Walking Lunges", "Reverse Lunge",
+    "Goblet Squat", "Leg Extension", "Lying Leg Curl", "Seated Leg Curl",
+    "Barbell Hip Thrust", "Standing Calf Raise", "Seated Calf Raise", "Sumo Deadlift",
+    "Dumbbell Step-Up", "Box Jump", "Nordic Hamstring Curl", "Smith Machine Squat"
+  ]}
+}
