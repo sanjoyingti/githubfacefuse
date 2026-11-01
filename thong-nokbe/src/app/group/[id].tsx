@@ -14,6 +14,7 @@ import { CallButtons } from '../../components/CallButtons';
 import { APP_INVITE_LINK } from '../../config';
 import { APP_NAME, colors } from '../../theme';
 import type { UserProfile } from '../../lib/types';
+import { useBottomInset } from '../../components/useBottomInset';
 
 function choose(title: string, options: { label: string; destructive?: boolean; onPress: () => void }[]) {
   if (Platform.OS === 'ios') {
@@ -31,6 +32,7 @@ function choose(title: string, options: { label: string; destructive?: boolean; 
 export default function GroupInfo() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const me = useMe();
+  const bottomInset = useBottomInset();
   const chat = useChat(id);
   const users = useUsers([...(chat?.members ?? []), ...(chat?.joinRequests ?? [])]);
   const { callChat, callUser } = useCaller();
@@ -78,7 +80,7 @@ export default function GroupInfo() {
     .sort((a, b) => Number(chat.admins.includes(b.uid)) - Number(chat.admins.includes(a.uid)) || a.name.localeCompare(b.name));
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 }}>
+    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 + bottomInset }}>
       <View style={styles.header}>
         <Avatar name={chat.name} size={90} />
         {editing ? (

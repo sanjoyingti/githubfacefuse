@@ -8,6 +8,7 @@ import type { UserProfile } from '../lib/types';
 import { APP_INVITE_LINK } from '../config';
 import { APP_NAME, colors } from '../theme';
 import { Avatar } from './ui';
+import { useBottomInset } from './useBottomInset';
 
 export interface Selection {
   users: UserProfile[]; // registered app users -> added immediately
@@ -37,6 +38,7 @@ export function MemberPicker({
 }) {
   const { loading, rows, permissionDenied, error } = useContacts();
   const [search, setSearch] = useState('');
+  const bottomInset = useBottomInset();
   const [manual, setManual] = useState('');
   const [manualBusy, setManualBusy] = useState(false);
 
@@ -151,6 +153,7 @@ export function MemberPicker({
           sections={sections}
           keyExtractor={(r) => r.key}
           keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: single ? bottomInset : 0 }}
           renderSectionHeader={({ section }) => <Text style={styles.section}>{section.title}</Text>}
           ListEmptyComponent={<Text style={styles.note}>No matching contacts.</Text>}
           renderItem={({ item }) => {

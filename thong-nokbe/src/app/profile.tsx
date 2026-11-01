@@ -5,9 +5,11 @@ import { useChats } from '../context/ChatsProvider';
 import { Avatar, Button, Card, Input } from '../components/ui';
 import { formatPhone } from '../lib/phone';
 import { APP_NAME, colors } from '../theme';
+import { useBottomInset } from '../components/useBottomInset';
 
 export default function Profile() {
   const me = useMe();
+  const bottomInset = useBottomInset();
   const { updateProfileInfo, logout } = useAuth();
   const { groups } = useChats();
   const [name, setName] = useState(me.name);
@@ -16,7 +18,7 @@ export default function Profile() {
   const dirty = name.trim() !== me.name || about.trim() !== (me.about ?? '');
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 16 }} keyboardShouldPersistTaps="handled">
+    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 16 + bottomInset }} keyboardShouldPersistTaps="handled">
       <View style={{ alignItems: 'center', marginVertical: 16 }}>
         <Avatar name={me.name} size={96} />
         <Text style={{ fontSize: 22, fontWeight: '800', color: colors.text, marginTop: 10 }}>{me.name}</Text>

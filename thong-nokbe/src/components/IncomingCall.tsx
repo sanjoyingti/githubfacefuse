@@ -9,12 +9,14 @@ import { notifyIfAway } from '../lib/localNotify';
 import type { Call, UserProfile } from '../lib/types';
 import { colors } from '../theme';
 import { Avatar } from './ui';
+import { useBottomInset } from './useBottomInset';
 
 const notified = new Set<string>();
 
 /** Listens for calls ringing this user and shows a full-screen accept/decline prompt. */
 export function IncomingCall({ me }: { me: UserProfile }) {
   const [call, setCall] = useState<Call | null>(null);
+  const bottomInset = useBottomInset();
 
   useEffect(() => {
     // ringingFor only lists people who haven't answered or declined yet, so this stays small and needs no index.
@@ -69,7 +71,7 @@ export function IncomingCall({ me }: { me: UserProfile }) {
           <Text style={styles.name}>{title}</Text>
           {call.isGroup && <Text style={styles.sub}>{call.callerName} is calling…</Text>}
         </View>
-        <View style={styles.actions}>
+        <View style={[styles.actions, { bottom: 80 + bottomInset }]}>
           <Pressable
             style={[styles.circle, { backgroundColor: colors.unpaid }]}
             onPress={() => {

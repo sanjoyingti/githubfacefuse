@@ -12,10 +12,12 @@ import { Avatar, Empty } from '../../components/ui';
 import { dayKey, formatDayLong, formatTime } from '../../lib/dates';
 import { colors } from '../../theme';
 import type { Message } from '../../lib/types';
+import { useBottomInset } from '../../components/useBottomInset';
 
 export default function ChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const me = useMe();
+  const bottomInset = useBottomInset();
   const chat = useChat(id);
   const title = useChatTitle(chat, me.uid);
   const navigation = useNavigation();
@@ -98,7 +100,7 @@ export default function ChatScreen() {
           );
         }}
       />
-      <View style={styles.composer}>
+      <View style={[styles.composer, { paddingBottom: 8 + bottomInset }]}>
         <TextInput style={styles.input} placeholder="Message" value={text} onChangeText={setText} multiline placeholderTextColor={colors.muted} />
         <Pressable style={[styles.send, !text.trim() && { opacity: 0.5 }]} onPress={send} disabled={!text.trim()}>
           <Ionicons name="send" size={20} color="#fff" />

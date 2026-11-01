@@ -10,10 +10,12 @@ import { useUsers } from '../../lib/users';
 import { colors } from '../../theme';
 import type { Call, CallKind } from '../../lib/types';
 import { Avatar } from '../../components/ui';
+import { useBottomInset } from '../../components/useBottomInset';
 
 export default function CallScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const me = useMe();
+  const bottomInset = useBottomInset();
   const { width, height } = useWindowDimensions();
   const engine = useRef<IRtcEngine | null>(null);
   const [call, setCall] = useState<Call | null>(null);
@@ -188,7 +190,7 @@ export default function CallScreen() {
         <Text style={styles.topSub}>{tiles > 0 ? `${timer} · ${tiles + 1} people` : isVideo ? 'Video call' : 'Voice call'}</Text>
       </View>
 
-      <View style={styles.controls}>
+      <View style={[styles.controls, { bottom: 36 + bottomInset }]}>
         <Ctrl
           icon={micOn ? 'mic' : 'mic-off'}
           label={micOn ? 'Mute' : 'Unmute'}

@@ -9,10 +9,12 @@ import { isValidVpa } from '../../lib/upi';
 import { Button, Card, Empty, Input } from '../../components/ui';
 import { UpiQr } from '../../components/UpiQr';
 import { colors } from '../../theme';
+import { useBottomInset } from '../../components/useBottomInset';
 
 export default function FeeSettings() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const me = useMe();
+  const bottomInset = useBottomInset();
   const chat = useChat(id);
   const [vpa, setVpa] = useState(chat?.upi?.vpa ?? '');
   const [payeeName, setPayeeName] = useState(chat?.upi?.payeeName ?? me.name);
@@ -38,7 +40,7 @@ export default function FeeSettings() {
   };
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 16 }} keyboardShouldPersistTaps="handled">
+    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 16 + bottomInset }} keyboardShouldPersistTaps="handled">
       <Card>
         <Text style={{ fontWeight: '800', fontSize: 16, color: colors.text, marginBottom: 4 }}>Where members pay</Text>
         <Text style={{ color: colors.muted, marginBottom: 14 }}>

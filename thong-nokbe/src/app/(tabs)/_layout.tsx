@@ -34,6 +34,7 @@ export default function TabsLayout() {
         headerTintColor: '#fff',
         headerTitleStyle: { fontWeight: '800', fontSize: 20 },
         headerRight: () => <MeButton />,
+        tabBarHideOnKeyboard: true,
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: '#64748B',
         tabBarLabelStyle: { fontSize: 13, fontWeight: '800' },
