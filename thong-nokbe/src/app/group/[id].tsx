@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ActionSheetIOS, Alert, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useMe } from '../../context/AuthProvider';
@@ -16,19 +16,7 @@ import { APP_INVITE_LINK } from '../../config';
 import { APP_NAME, colors } from '../../theme';
 import type { UserProfile } from '../../lib/types';
 import { useBottomInset } from '../../components/useBottomInset';
-
-function choose(title: string, options: { label: string; destructive?: boolean; onPress: () => void }[]) {
-  if (Platform.OS === 'ios') {
-    ActionSheetIOS.showActionSheetWithOptions(
-      { title, options: [...options.map((o) => o.label), 'Cancel'], cancelButtonIndex: options.length, destructiveButtonIndex: options.findIndex((o) => o.destructive) },
-      (i) => i < options.length && options[i].onPress(),
-    );
-  } else {
-    Alert.alert(title, undefined, [...options.map((o) => ({ text: o.label, onPress: o.onPress, style: o.destructive ? ('destructive' as const) : undefined })), { text: 'Cancel', style: 'cancel' as const }], {
-      cancelable: true,
-    });
-  }
-}
+import { ActionSheet, type SheetOption } from '../../components/ActionSheet';
 
 export default function GroupInfo() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -39,6 +27,7 @@ export default function GroupInfo() {
   const { callChat, callUser } = useCaller();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
+  const [sheet, setSheet] = useState<{ title: string; options: SheetOption[] } | null>(null);
 
   if (!chat || chat.type !== 'group') return <Empty title="Group not found" subtitle="You may no longer be a member of this group." />;
   const iAmAdmin = chat.admins.includes(me.uid);
@@ -46,15 +35,23 @@ export default function GroupInfo() {
 
   const run = (fn: () => Promise<unknown>) => fn().catch((e) => Alert.alert('Something went wrong', e?.message ?? String(e)));
 
+  // The main admin can remove anyone; second admins can remove normal members only.
+  const canRemove = (u: UserProfile) => u.uid !== me.uid && (iAmMain || (iAmAdmin && !chat.admins.includes(u.uid)));
+  const confirmRemove = (u: UserProfile) =>
+    Alert.alert(`Remove ${u.name}?`, `${u.name} will be removed from "${chat.name}".`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => run(() => removeMember(chat, me, u)) },
+    ]);
+
   const onMember = (u: UserProfile) => {
     if (u.uid === me.uid) return;
     const isAdmin = chat.admins.includes(u.uid);
-    const opts: { label: string; destructive?: boolean; onPress: () => void }[] = [
-      { label: `Message ${u.name}`, onPress: () => run(async () => router.push(`/chat/${await getOrCreateDirectChat(me, u)}`)) },
+    const opts: SheetOption[] = [
+      { label: `Message ${u.name}`, icon: 'chatbubble', onPress: () => run(async () => router.push(`/chat/${await getOrCreateDirectChat(me, u)}`)) },
       ...(hasApp(u)
         ? [
-            { label: `📞 Voice call ${u.name}`, onPress: () => callUser(u, 'voice') },
-            { label: `📹 Video call ${u.name}`, onPress: () => callUser(u, 'video') },
+            { label: `Voice call ${u.name}`, icon: 'call' as const, onPress: () => callUser(u, 'voice') },
+            { label: `Video call ${u.name}`, icon: 'videocam' as const, onPress: () => callUser(u, 'video') },
           ]
         : []),
     ];
@@ -62,24 +59,14 @@ export default function GroupInfo() {
     if (iAmMain) {
       opts.push(
         isAdmin
-          ? { label: '⬇️ Dismiss as admin', onPress: () => run(() => dismissAdmin(chat, me, u)) }
-          : { label: '⭐ Make second admin', onPress: () => run(() => makeAdmin(chat, me, u)) },
+          ? { label: 'Dismiss as admin', icon: 'arrow-down-circle', onPress: () => run(() => dismissAdmin(chat, me, u)) }
+          : { label: 'Make second admin ⭐', icon: 'star', onPress: () => run(() => makeAdmin(chat, me, u)) },
       );
     }
-    if (iAmMain || (iAmAdmin && !isAdmin)) {
-      opts.push(
-        {
-          label: `Remove ${u.name}`,
-          destructive: true,
-          onPress: () =>
-            Alert.alert(`Remove ${u.name}?`, `${u.name} will be removed from "${chat.name}".`, [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Remove', style: 'destructive', onPress: () => run(() => removeMember(chat, me, u)) },
-            ]),
-        },
-      );
+    if (canRemove(u)) {
+      opts.push({ label: `Remove ${u.name} from group`, icon: 'person-remove', destructive: true, onPress: () => confirmRemove(u) });
     }
-    choose(u.name, opts);
+    setSheet({ title: u.name, options: opts });
   };
 
   const members = chat.members
@@ -87,7 +74,8 @@ export default function GroupInfo() {
     .sort((a, b) => Number(chat.admins.includes(b.uid)) - Number(chat.admins.includes(a.uid)) || a.name.localeCompare(b.name));
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 + bottomInset }}>
+    <>
+      <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 + bottomInset }}>
       <View style={styles.header}>
         <Avatar name={chat.name} size={90} />
         {editing ? (
@@ -151,6 +139,12 @@ export default function GroupInfo() {
             ) : !hasApp(u) && u.uid !== me.uid ? (
               <Chip text="Not on app" color={colors.unpaid} bg={colors.unpaidBg} />
             ) : null}
+            {canRemove(u) && (
+              <Pressable onPress={() => confirmRemove(u)} hitSlop={10} style={styles.removeBtn} accessibilityLabel={`Remove ${u.name}`}>
+                <Ionicons name="person-remove" size={18} color={colors.unpaid} />
+                <Text style={styles.removeText}>Remove</Text>
+              </Pressable>
+            )}
           </Pressable>
         ))}
       </View>
@@ -249,7 +243,9 @@ export default function GroupInfo() {
           }
         />
       </View>
-    </ScrollView>
+      </ScrollView>
+      <ActionSheet title={sheet?.title ?? null} options={sheet?.options ?? []} onClose={() => setSheet(null)} />
+    </>
   );
 }
 
@@ -269,6 +265,8 @@ const styles = StyleSheet.create({
   section: { backgroundColor: colors.card, marginBottom: 10, paddingVertical: 4 },
   sectionTitle: { color: colors.muted, fontWeight: '700', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 4 },
   member: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10 },
+  removeBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 8, paddingHorizontal: 10, height: 34, borderRadius: 17, backgroundColor: colors.unpaidBg },
+  removeText: { color: colors.unpaid, fontWeight: '800', fontSize: 13 },
   memberName: { fontSize: 16, fontWeight: '600', color: colors.text },
   memberSub: { color: colors.muted, fontSize: 13, marginTop: 2 },
   adminHint: { color: colors.muted, paddingHorizontal: 16, marginBottom: 10, fontSize: 14 },
