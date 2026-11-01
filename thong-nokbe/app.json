@@ -65,7 +65,9 @@
           "ios": {
             "useFrameworks": "static"
           },
-          "android": {}
+          "android": {
+            "kotlinVersion": "2.4.21"
+          }
         }
       ],
       [
