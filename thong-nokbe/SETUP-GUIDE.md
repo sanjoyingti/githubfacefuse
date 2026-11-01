@@ -60,7 +60,7 @@ This small server keeps the Agora certificate secret. It gives a call pass only 
 2. Left menu **Compute (Workers)** → **Workers & Pages** → **Create** → **Start with Hello World!** (or **Create Worker**).
 3. Name it `thong-nokbe-calls` → **Deploy**.
 4. Tap **Edit code**. Delete all the code in the editor.
-5. Open **https://raw.githubusercontent.com/sanjoyingti/githubfacefuse/ccr-a6556477-keal6c/thong-nokbe/token-server/worker.min.js** (the one-line version, which pastes cleanly on phones) → select all → copy → paste into the empty editor → **Deploy**.
+5. Open **https://raw.githubusercontent.com/sanjoyingti/githubfacefuse/ccr-a6556477-keal6c/thong-nokbe/token-server/worker.phone.js** (comment-free version that pastes cleanly in the phone editor) → select all → copy → paste into the empty editor → **Deploy**.
 6. Go back to the worker → **Settings → Variables and Secrets → + Add**, three times:
    * Type **Text**, name `FIREBASE_PROJECT_ID`, value `roid-266a2`
    * Type **Text**, name `AGORA_APP_ID`, value: your Agora **App ID**
