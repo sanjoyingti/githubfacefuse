@@ -1,0 +1,92 @@
+# Builds the Thong Nokbe Gym Android APK on GitHub and publishes it as a
+# GitHub Release, which gives a direct download link.
+#
+# Secrets (repo Settings → Secrets and variables → Actions):
+#   GOOGLE_SERVICES_JSON – full contents of google-services.json from your Firebase project.
+#                          Without it a stand-in config is used: the APK installs and opens,
+#                          but phone sign-in, chat, calls, attendance and fees won't work.
+#   AGORA_APP_ID         – Agora App ID for voice/video calls.
+#
+# Runs on every push that changes thong-nokbe/ (or this file), or manually from the Actions tab.
+name: Thong Nokbe Gym APK
+
+on:
+  push:
+    paths: ['thong-nokbe/**', '.github/workflows/thong-nokbe-apk.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: thong-nokbe-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: thong-nokbe
+    env:
+      GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+      EXPO_PUBLIC_AGORA_APP_ID: ${{ secrets.AGORA_APP_ID }}
+      NODE_ENV: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: thong-nokbe/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1" > /dev/null
+
+      - name: Install
+        run: |
+          npm ci --legacy-peer-deps
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > google-services.json
+            echo "CONFIG=firebase" >> "$GITHUB_ENV"
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON secret not set: building a preview APK with a stand-in Firebase config (sign-in will not work)."
+            cp scripts/placeholder-google-services.json google-services.json
+            echo "CONFIG=preview" >> "$GITHUB_ENV"
+          fi
+
+      - name: Generate Android project
+        run: CI=1 npx expo prebuild --platform android --no-install
+
+      - name: Build APK
+        working-directory: thong-nokbe/android
+        run: ./gradlew assembleRelease -PreactNativeArchitectures=armeabi-v7a,arm64-v8a --no-daemon -Dorg.gradle.jvmargs="-Xmx5g -XX:MaxMetaspaceSize=1g"
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk ThongNokbeGym.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ThongNokbeGym-apk
+          path: thong-nokbe/ThongNokbeGym.apk
+
+      - name: Publish download link (GitHub Release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: thong-nokbe-build-${{ github.run_number }}
+          name: Thong Nokbe Gym — build ${{ github.run_number }}${{ env.CONFIG == 'preview' && ' (preview)' || '' }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ env.CONFIG == 'preview' }}
+          files: thong-nokbe/ThongNokbeGym.apk
+          body: |
+            Download **ThongNokbeGym.apk** below and open it on your Android phone (allow "Install unknown apps" when asked).
+            ${{ env.CONFIG == 'preview' && '⚠️ Preview build: no Firebase config was set, so sign-in and the online features will not work yet. Add the GOOGLE_SERVICES_JSON secret and re-run to get the full app.' || '' }}
