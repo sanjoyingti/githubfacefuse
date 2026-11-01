@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "261983893002",
+    "firebase_url": "https://roid-266a2-default-rtdb.firebaseio.com",
+    "project_id": "roid-266a2",
+    "storage_bucket": "roid-266a2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:261983893002:android:3ff310b74321b82411d1f3",
+        "android_client_info": {
+          "package_name": "com.thongnokbe.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "261983893002-g9gd37ljt964v7el9agqm85asomb65m2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.thongnokbe.app",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "261983893002-rar364n4f5c508k1h7lpij64loura122.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDqymDsjFkhzzRCvv9z9dsNDE2m_MrHRFA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "261983893002-rar364n4f5c508k1h7lpij64loura122.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -73,6 +73,7 @@ export interface Call {
   callerId: string;
   callerName: string;
   invited: string[];
+  ringingFor?: string[]; // invited people who haven't answered/declined yet
   joined: string[];
   declined: string[];
   status: 'ringing' | 'ongoing' | 'ended';

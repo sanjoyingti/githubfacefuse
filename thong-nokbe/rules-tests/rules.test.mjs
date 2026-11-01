@@ -115,12 +115,12 @@ test('fees: member records own UPI payment only; admin can mark cash or undo', a
 });
 
 test('calls: member can ring the group; invitees see and answer it', async () => {
-  const c = { kind: 'video', chatId: 'g1', chatName: 'Gym', isGroup: true, callerId: ADMIN.uid, callerName: 'A', invited: [MEMBER.uid], joined: [ADMIN.uid], declined: [], status: 'ringing', createdAt: serverTimestamp() };
+  const c = { kind: 'video', chatId: 'g1', chatName: 'Gym', isGroup: true, callerId: ADMIN.uid, callerName: 'A', invited: [MEMBER.uid], ringingFor: [MEMBER.uid], joined: [ADMIN.uid], declined: [], status: 'ringing', createdAt: serverTimestamp() };
   await assertFails(setDoc(doc(as(OUTSIDER), 'calls/c1'), { ...c, callerId: OUTSIDER.uid }));
   await assertSucceeds(setDoc(doc(as(ADMIN), 'calls/c1'), c));
-  const q = query(collection(as(MEMBER), 'calls'), where('invited', 'array-contains', MEMBER.uid), where('status', 'in', ['ringing', 'ongoing']));
+  const q = query(collection(as(MEMBER), 'calls'), where('ringingFor', 'array-contains', MEMBER.uid));
   await assertSucceeds(getDocs(q));
-  await assertSucceeds(updateDoc(doc(as(MEMBER), 'calls/c1'), { joined: arrayUnion(MEMBER.uid), status: 'ongoing' }));
+  await assertSucceeds(updateDoc(doc(as(MEMBER), 'calls/c1'), { joined: arrayUnion(MEMBER.uid), ringingFor: arrayRemove(MEMBER.uid), status: 'ongoing' }));
   await assertFails(getDoc(doc(as(OUTSIDER), 'calls/c1')));
 });
 
@@ -131,21 +131,23 @@ test('direct chats: 1:1 id must match both members', async () => {
 });
 
 test('calls: can only ring people in the same chat, as voice or video', async () => {
-  const c = { kind: 'voice', chatId: 'g1', chatName: 'Gym', isGroup: true, callerId: MEMBER.uid, callerName: 'M', invited: [ADMIN.uid], joined: [MEMBER.uid], declined: [], status: 'ringing' };
+  const c = { kind: 'voice', chatId: 'g1', chatName: 'Gym', isGroup: true, callerId: MEMBER.uid, callerName: 'M', invited: [ADMIN.uid], ringingFor: [ADMIN.uid], joined: [MEMBER.uid], declined: [], status: 'ringing' };
   await assertSucceeds(setDoc(doc(as(MEMBER), 'calls/v1'), c));
   // someone who is not in the group
-  await assertFails(setDoc(doc(as(MEMBER), 'calls/v2'), { ...c, invited: [ADMIN.uid, OUTSIDER.uid] }));
+  await assertFails(setDoc(doc(as(MEMBER), 'calls/v2'), { ...c, invited: [ADMIN.uid, OUTSIDER.uid], ringingFor: [ADMIN.uid, OUTSIDER.uid] }));
   // must be voice or video
   await assertFails(setDoc(doc(as(MEMBER), 'calls/v3'), { ...c, kind: 'phone' }));
+  // ringingFor must match the invited list
+  await assertFails(setDoc(doc(as(MEMBER), 'calls/v6'), { ...c, ringingFor: [ADMIN.uid, OUTSIDER.uid] }));
   // nobody to ring / ringing yourself
-  await assertFails(setDoc(doc(as(MEMBER), 'calls/v4'), { ...c, invited: [] }));
-  await assertFails(setDoc(doc(as(MEMBER), 'calls/v5'), { ...c, invited: [MEMBER.uid] }));
+  await assertFails(setDoc(doc(as(MEMBER), 'calls/v4'), { ...c, invited: [], ringingFor: [] }));
+  await assertFails(setDoc(doc(as(MEMBER), 'calls/v5'), { ...c, invited: [MEMBER.uid], ringingFor: [MEMBER.uid] }));
 });
 
 test('calls: any app user can call any other app user 1:1', async () => {
   // OUTSIDER shares no group with INVITEE, but can open a 1:1 chat and call them.
   await assertSucceeds(setDoc(doc(as(OUTSIDER), 'chats/dm_invitee_outsider'), { type: 'direct', members: ['invitee', 'outsider'], admins: [], createdBy: 'outsider', pendingPhones: [] }));
-  const c = { kind: 'video', chatId: 'dm_invitee_outsider', chatName: 'I', isGroup: false, callerId: OUTSIDER.uid, callerName: 'O', invited: [INVITEE.uid], joined: [OUTSIDER.uid], declined: [], status: 'ringing' };
+  const c = { kind: 'video', chatId: 'dm_invitee_outsider', chatName: 'I', isGroup: false, callerId: OUTSIDER.uid, callerName: 'O', invited: [INVITEE.uid], ringingFor: [INVITEE.uid], joined: [OUTSIDER.uid], declined: [], status: 'ringing' };
   await assertSucceeds(setDoc(doc(as(OUTSIDER), 'calls/d1'), c));
   await assertSucceeds(updateDoc(doc(as(INVITEE), 'calls/d1'), { joined: arrayUnion(INVITEE.uid), status: 'ongoing' }));
   // a third person can't see or join it

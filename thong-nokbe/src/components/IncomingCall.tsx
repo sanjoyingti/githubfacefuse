@@ -17,7 +17,8 @@ export function IncomingCall({ me }: { me: UserProfile }) {
   const [call, setCall] = useState<Call | null>(null);
 
   useEffect(() => {
-    const q = query(collection(db, 'calls'), where('invited', 'array-contains', me.uid), where('status', 'in', ['ringing', 'ongoing']));
+    // ringingFor only lists people who haven't answered or declined yet, so this stays small and needs no index.
+    const q = query(collection(db, 'calls'), where('ringingFor', 'array-contains', me.uid));
     return onSnapshot(
       q,
       (snap) => {
@@ -26,6 +27,7 @@ export function IncomingCall({ me }: { me: UserProfile }) {
           .map((d) => ({ id: d.id, ...(d.data() as Omit<Call, 'id'>) }) as Call)
           .filter(
             (c) =>
+              c.status !== 'ended' &&
               !c.joined?.includes(me.uid) &&
               !c.declined?.includes(me.uid) &&
               (!c.createdAt || now - c.createdAt.toMillis() < RING_TIMEOUT_MS),

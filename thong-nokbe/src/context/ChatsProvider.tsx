@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { collection, onSnapshot, orderBy, query, where } from '@react-native-firebase/firestore';
+import { collection, onSnapshot, query, where } from '@react-native-firebase/firestore';
 import { db } from '../lib/firebase';
 import { toChat } from '../lib/chats';
 import { notifyIfAway, scheduleFeeReminder } from '../lib/localNotify';
@@ -30,11 +30,14 @@ export function ChatsProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'chats'), where('members', 'array-contains', user.uid), orderBy('updatedAt', 'desc'));
+    // Sorted on the phone (newest first) so the database needs no extra index setup.
+    const q = query(collection(db, 'chats'), where('members', 'array-contains', user.uid));
     return onSnapshot(
       q,
       (snap) => {
-        const list = snap.docs.map((d) => toChat(d.id, d.data()));
+        const list = snap.docs
+          .map((d) => toChat(d.id, d.data()))
+          .sort((a, b) => (b.updatedAt?.toMillis?.() ?? Date.now()) - (a.updatedAt?.toMillis?.() ?? Date.now()));
         // Phone notification for new messages from others while the app is in the background.
         const prev = lastSeen.current;
         const next: Record<string, number> = {};

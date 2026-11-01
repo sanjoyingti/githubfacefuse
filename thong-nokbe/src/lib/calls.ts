@@ -35,6 +35,7 @@ export async function startCall(chat: Chat, me: UserProfile, chatName: string, k
     callerId: me.uid,
     callerName: me.name,
     invited,
+    ringingFor: invited,
     joined: [me.uid],
     declined: [],
     status: 'ringing',
@@ -54,11 +55,11 @@ export async function callPerson(me: UserProfile, other: UserProfile, kind: Call
 }
 
 export async function acceptCall(callId: string, me: UserProfile) {
-  await updateDoc(callRef(callId), { joined: arrayUnion(me.uid), status: 'ongoing' });
+  await updateDoc(callRef(callId), { joined: arrayUnion(me.uid), ringingFor: arrayRemove(me.uid), status: 'ongoing' });
 }
 
 export async function declineCall(callId: string, me: UserProfile) {
-  await updateDoc(callRef(callId), { declined: arrayUnion(me.uid) });
+  await updateDoc(callRef(callId), { declined: arrayUnion(me.uid), ringingFor: arrayRemove(me.uid) });
 }
 
 /** Leaves the call; the call is marked ended once nobody is left in it. */
@@ -71,7 +72,7 @@ export async function leaveCall(callId: string, me: UserProfile) {
     tx.update(callRef(callId), {
       joined: arrayRemove(me.uid),
       ...(joined.length === 0 || !c.isGroup || (c.status === 'ringing' && c.callerId === me.uid)
-        ? { status: 'ended', endedAt: serverTimestamp() }
+        ? { status: 'ended', ringingFor: [], endedAt: serverTimestamp() }
         : {}),
     });
   });
