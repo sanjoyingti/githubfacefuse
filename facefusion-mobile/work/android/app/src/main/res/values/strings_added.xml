@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Strings referenced by the 0.9.41 sources that were missing from the resource set this
+  build was assembled from, plus the strings for the occlusion / head-turn / motion options.
+  English only: the other locales fall back to these until they are translated.
+-->
+<resources>
+    <!-- Occlusion, region masks, head-turn fade, motion -->
+    <string name="opt_occlusion">Occlusion mask</string>
+    <string name="opt_occlusion_hint">Keeps the swap off anything in front of the face: food, hands, cups, a microphone, hair. Uses the XSeg model on the GPU or CPU.</string>
+    <string name="opt_region">Face parser mask</string>
+    <string name="opt_region_hint">Swaps only skin, eyes, brows, nose and lips (BiSeNet). Hair, ears and neck stay original.</string>
+    <string name="opt_keep_mouth">Keep original mouth inside</string>
+    <string name="opt_keep_mouth_hint">Teeth, tongue and whatever is in the mouth stay as filmed. Best for eating and talking.</string>
+    <string name="opt_pose_fade">Fade out on big head turns</string>
+    <string name="opt_pose_fade_hint">When the head turns too far left, right, up or down for the swapper, the original face shows through smoothly instead of a stretched one.</string>
+    <string name="opt_pose_fade_start">Start fading at</string>
+    <string name="opt_pose_fade_start_hint">Head turn where the fade begins. The swap is gone 20° later. Lower is safer, higher keeps more of the swap.</string>
+    <string name="opt_motion_smooth">Motion smoothing</string>
+    <string name="opt_motion_smooth_hint">Video and Live: steadies the face alignment between frames and keeps motion-blurred faces swapped during fast movement.</string>
+    <string name="opt_detect_rotated">Find rotated faces</string>
+    <string name="opt_detect_rotated_hint">Also looks for heads turned sideways or upside down (90°, 180°, 270°). Slower on frames without a face.</string>
+
+    <!-- Missing from the base resource set -->
+    <string name="dl_tier_refused">This phone could not run the %1$s models, so the %2$s set is used instead.</string>
+    <string name="gate_subject_driver_video">the driver video</string>
+    <string name="model_face_editor">Face editor</string>
+    <string name="tier_v81s97">Snapdragon 8 Elite Gen 5 (v81, SoC 97)</string>
+
+    <string name="opt_edit_group_eyes">Eyes</string>
+    <string name="opt_edit_group_mouth">Mouth</string>
+    <string name="opt_edit_group_head">Head</string>
+    <string name="opt_edit_eyebrow_direction">Eyebrow direction</string>
+    <string name="opt_edit_eye_gaze_horizontal">Eye gaze horizontal</string>
+    <string name="opt_edit_eye_gaze_vertical">Eye gaze vertical</string>
+    <string name="opt_edit_eye_open_ratio">Eye open ratio</string>
+    <string name="opt_edit_lip_open_ratio">Lip open ratio</string>
+    <string name="opt_edit_mouth_grim">Mouth grim</string>
+    <string name="opt_edit_mouth_pout">Mouth pout</string>
+    <string name="opt_edit_mouth_purse">Mouth purse</string>
+    <string name="opt_edit_mouth_smile">Mouth smile</string>
+    <string name="opt_edit_mouth_position_horizontal">Mouth position horizontal</string>
+    <string name="opt_edit_mouth_position_vertical">Mouth position vertical</string>
+    <string name="opt_edit_head_pitch">Head pitch</string>
+    <string name="opt_edit_head_yaw">Head yaw</string>
+    <string name="opt_edit_head_roll">Head roll</string>
+    <string name="opt_edit_mouth_lipsync">With the lip syncer on, it drives the mouth and these sliders are ignored.</string>
+    <string name="opt_edit_note">Each slider runs from -1 to 1. At 0 the face is unchanged.</string>
+    <string name="opt_edit_reset">Reset all</string>
+
+    <string name="set_lowmem">Low memory</string>
+    <string name="set_lowmem_note">Builds the GPU and CPU models in a way that needs less memory, for phones with 6 GB or less. Slightly slower.</string>
+    <string name="set_lowmem_is_on">It is on for this phone.</string>
+    <string name="set_lowmem_is_off">It is off for this phone.</string>
+    <string name="set_lowmem_on">On</string>
+    <string name="set_lowmem_off">Off</string>
+    <string name="set_models_rejected_note">This phone refused this set: %1$s</string>
+    <string name="set_models_rejected_unknown">no reason was recorded</string>
+    <string name="set_models_source">Download from</string>
+    <string name="set_models_source_hint">Use the mirror if Hugging Face is slow or blocked where you are.</string>
+
+    <string name="set_support">Support</string>
+    <string name="set_support_body">FaceFusion Mobile is free. If it is useful to you, you can support its development.</string>
+    <string name="set_support_coffee">Buy me a coffee</string>
+    <string name="set_support_more">More from the same author:</string>
+    <string name="set_support_nightmare">Another on-device app by the same author</string>
+    <string name="set_support_npuforge">Tools for running models on the Qualcomm NPU</string>
+
+    <string name="status_cannot_read_driver">Cannot read the driver video: %1$s</string>
+    <string name="status_driver_no_video">That file has no video track</string>
+    <string name="status_driver_ready">Driver video ready</string>
+    <string name="status_lips_cleared">Lip sync applies to every face again</string>
+    <string name="status_lips_missed">No face there. Tap inside a face box.</string>
+    <string name="status_lips_set">Lip sync applies to this face</string>
+    <string name="status_lips_set_many">Lip sync applies to %1$d faces</string>
+    <string name="status_lips_wait_boxes">Finding faces, try again in a moment</string>
+    <string name="status_running">Running…</string>
+
+    <string name="swap_action_run">Run</string>
+    <string name="swap_photo_video_hint">Pick a photo or a video as the target</string>
+    <string name="swap_pane_driver">Driver</string>
+    <string name="swap_pane_result">Result</string>
+    <string name="swap_driver_add">Add a video to drive the face</string>
+    <string name="swap_driver_picked">Driver video ready</string>
+    <string name="swap_choose_another_driver">Choose another driver</string>
+    <string name="swap_remove_driver">Remove driver</string>
+    <string name="swap_last_processor">At least one processor has to stay on</string>
+    <string name="swap_lips_pick">Pick the lips</string>
+    <string name="swap_lips_pick_on">Tap the faces that should get lip sync</string>
+    <string name="swap_lips_pick_off">Lip selection done</string>
+    <string name="swap_proc_animator">face_animator</string>
+    <string name="swap_proc_face_editor">face_editor</string>
+</resources>

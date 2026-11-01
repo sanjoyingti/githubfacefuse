@@ -1,0 +1,461 @@
+package com.facefusion.mobile
+
+import android.content.Context
+import android.graphics.Bitmap
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.lifecycle.LifecycleOwner
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+/**
+ * The front camera, swapped, on screen. On both build lines: the gated one samples the
+ * camera through [gateThreshold], which is what made shipping it possible.
+ *
+ * Preview ONLY: no encoder, no muxer, no audio. What it costs is therefore what the
+ * pipeline costs, which is the point of having it -- 26.6 fps on a 720p file with tracking
+ * is the number this has to live up to, minus capture and display.
+ *
+ * ## Why this is not just VideoSwapper with a camera on the front
+ *
+ * VideoSwapper owns a decode/encode loop and runs to completion. This is a pump: frames
+ * arrive when the sensor produces them, the pipeline is slower than the sensor, and the
+ * right answer to a backlog is to throw it away rather than fall further behind.
+ * `STRATEGY_KEEP_ONLY_LATEST` does exactly that and also guarantees ONE frame in flight,
+ * which is what lets the whole pipeline run on the analyzer thread with no lock of its own.
+ *
+ * ## Rotation
+ *
+ * The sensor hands back a landscape buffer with the face rotated 90 degrees in portrait,
+ * and yoloface is not asked to find a sideways face -- `estimateFaceAngle` exists for faces
+ * that are rotated in the FRAME, not for a frame that is rotated whole.
+ * `setOutputImageRotationEnabled(true)` makes CameraX deliver it upright instead, which is
+ * cheaper than rotating 2.7 MB per frame here and is the reason camera-core 1.3 is the
+ * minimum.
+ *
+ * ⚠ MIRRORING IS THE DISPLAY'S JOB, NOT THIS CLASS'S. The pipeline sees the true image so
+ * the detector gets a face the right way round; [ui.LiveScreen] flips only what is drawn.
+ * Swapping a mirrored frame would feed a mirrored face to graphs that were never measured
+ * on one.
+ */
+class LiveEngine {
+
+    /**
+     * What the content check said about a frame.
+     *
+     * Deliberately an enum and not a message: `ContentGate.kt` does not exist on the dev
+     * line, so anything in this class that named it would fail to compile there. This class
+     * forwards a NUMBER down and reports a VERDICT up; the sentence is [MainActivity]'s.
+     */
+    enum class Gate { None, Blocked, Failed }
+
+    /** One frame's worth of result, handed to the UI. */
+    data class Shot(val bitmap: Bitmap?, val faces: Int, val fps: Double, val error: String?,
+                    val gate: Gate = Gate.None,
+                    /** Original camera pixels, only for the one-shot person thumbnails. */
+                    val originalBgr: ByteArray? = null,
+                    val originalW: Int = 0,
+                    val originalH: Int = 0,
+                    /** Current boxes in the display bitmap's coordinates. */
+                    val faceBoxes: FloatArray? = null)
+
+    /** Assign mode asks for boxes every frame; this is only a few floats, not a bitmap. */
+    @Volatile var faceBoxesEnabled: Boolean = false
+    /** Whether the encoder should receive the same horizontal flip as the preview. */
+    @Volatile var mirrorRecording: Boolean = false
+    @Volatile private var faceSnapshotRequested: Boolean = false
+
+    /** Capture the next frame before the native swapper changes it. */
+    fun requestFaceSnapshot() {
+        faceSnapshotRequested = true
+    }
+
+    fun cancelFaceSnapshot() {
+        faceSnapshotRequested = false
+    }
+
+    /**
+     * Score above which a sampled frame is refused, and how often to sample.
+     *
+     * NaN disables the check, which is the dev line's configuration and the reason this
+     * class needs no #ifdef: the gated build sets a real threshold, the ungated one leaves
+     * it alone.
+     *
+     * ⚠ NaN, not a negative number. Gate scores are routinely negative, so a negative
+     * sentinel would disable the gate for exactly the low threshold someone sets while
+     * TESTING that it still blocks.
+     *
+     * ⚠ The gate is what makes a live camera swap shippable on the gated build at all. It
+     * is the FIFTH processing path in the app; see the list in ContentGate's doc.
+     */
+    @Volatile var gateThreshold: Float = Float.NaN
+    /**
+     * One check per this many MILLISECONDS of wall time.
+     *
+     * ⚠ Time, not frames, and the difference is the whole point. The first version sampled
+     * every 30 FRAMES, which is ~1.2 checks/second on the NPU and looks fine -- but the
+     * guarantee it actually makes is "one check per 30 frames", and on the ncnn backend a
+     * frame costs ~240-540 ms instead of ~40. The same constant would have left 8 to 16
+     * SECONDS of unchecked camera between samples on exactly the devices that are slowest,
+     * which is a gate that quietly weakens as the hardware gets worse.
+     *
+     * One second matches what inspectClip already promises for a file (analyse_video's
+     * SAMPLE_INTERVAL_US), so the app now makes ONE promise about unchecked footage
+     * regardless of path or backend. The cost is bounded the same way: 5.05 ms once a
+     * second on the NPU is 0.5% of a frame's budget.
+     */
+    private val kGateIntervalMs = 1000L
+    private var lastGateMs = 0L
+
+    /**
+     * Which lens [start] binds. Read at BIND time, so changing it does nothing to a pump
+     * that is already running -- the caller switches by stopping and starting again.
+     *
+     * ⚠ That is deliberate, and it is the cheap half of a real trade. Rebinding in place
+     * (unbindAll + bindToLifecycle on the live executor) would save ~200 ms, and it would
+     * do it on exactly the unbind/rebind path that already carries an unconfirmed
+     * use-after-free (roadmap 11, and the SIGSEGV quoted on [stop]). stop() then start()
+     * reuses the one path that has been debugged: the executor is drained, the buffers are
+     * dropped, and nothing native outlives the switch. A camera flip that takes as long as
+     * opening the camera is what every camera app already does.
+     */
+    @Volatile var frontCamera: Boolean = true
+
+    /**
+     * Set to record what the pump produces — roadmap 13b. Null is not recording.
+     *
+     * Owned by the caller, which starts and stops it; this class only feeds it. That split
+     * is deliberate: where the file goes, what it is called and when it is saved are all
+     * MainActivity's business, and this class has stayed free of them for the same reason
+     * it takes a gate THRESHOLD rather than knowing what a gate is.
+     *
+     * ⚠ Fed from the analyzer thread, in line with the pump. See LiveRecorder.frame for
+     * why it drops a frame rather than blocking: the recording is the guest here, and a
+     * preview that stutters because a recording is running is the wrong trade.
+     */
+    @Volatile var recorder: LiveRecorder? = null
+
+    /**
+     * Where liveFrame writes the full-resolution swapped BGR while recording.
+     *
+     * Allocated once per resolution and reused, like the display bitmaps above and for the
+     * same reason: at 720p this is 2.7 MB, and a fresh one per frame would be ~40 MB/s of
+     * churn to hand the encoder bytes it copies again anyway.
+     */
+    private var recBuf: ByteArray? = null
+
+    // Per-stage cost, logged every 30 frames. Live was 6.5 fps on its first run against
+    // 26.6 on a file, and no amount of reasoning about which stage was to blame beat
+    // asking -- the same lesson the geometry buckets taught.
+    private var nStat = 0
+    private var msPump = 0.0
+
+    private var provider: ProcessCameraProvider? = null
+    private var exec: ExecutorService? = null
+
+    @Volatile private var running = false
+
+    // TWO bitmaps, alternating, and both halves of that matter.
+    //
+    // Allocating one per frame is out: a 720p ARGB bitmap is 3.7 MB, so 25 fps is 92 MB/s of
+    // pure churn. But reusing ONE is worse than it looks, twice over:
+    //
+    //   * Compose is handed the bitmap as state. Writing new pixels into the same instance
+    //     leaves the reference equal, so recomposition never triggers and the feed simply
+    //     freezes on frame one while the fps counter happily climbs.
+    //   * setPixels would be writing into the exact buffer the compositor is drawing, which
+    //     tears under the best of circumstances.
+    //
+    // Two buffers solve both: the reference changes every frame, and the one being written
+    // is never the one on screen.
+    private val bufs = arrayOfNulls<Bitmap>(2)
+    private var bufIx = 0
+
+    // Frame pacing, measured over a short window rather than since the start, so the number
+    // on screen reacts when the phone throttles instead of averaging the throttling away.
+    private var windowStart = 0L
+    private var windowFrames = 0
+    @Volatile private var fps = 0.0
+
+    val isRunning: Boolean get() = running
+
+    // Longest edge of the DISPLAYED bitmap. Above a phone screen's own width there is
+    // nothing to see and everything to pay for.
+    private val kMaxPreview = 1080
+
+    /**
+     * Binds [frontCamera]'s lens and starts the pump.
+     *
+     * The pipeline must already be initialised and hold a source -- this class deliberately
+     * does not own that: the same [NativePipe] is shared with the preview and the API, and
+     * an engine that re-initialised it on every start would fight them for the models.
+     */
+    fun start(ctx: Context, owner: LifecycleOwner, onShot: (Shot) -> Unit) {
+        if (running) return
+        running = true
+        windowStart = System.nanoTime(); windowFrames = 0
+        lastGateMs = 0L   // so this session gates its own first frame
+        val e = Executors.newSingleThreadExecutor()
+        exec = e
+        val future = ProcessCameraProvider.getInstance(ctx)
+        future.addListener({
+            if (!running) return@addListener
+            val p = runCatching { future.get() }.getOrNull()
+            if (p == null) {
+                onShot(Shot(null, 0, 0.0, "camera unavailable"))
+                running = false
+                return@addListener
+            }
+            provider = p
+            // ⚠ setTargetResolution DID NOT WORK and did not complain. Asking it for
+            // 1280x720 got a 2736x2736 SQUARE frame -- 7.5 megapixels, 8.1x what was
+            // requested -- and every stage paid: 35 ms of YUV conversion, 42 ms of swap
+            // (detprep scales with frame area) and 56 ms of display, for 6.9 fps against
+            // 26.6 on a 720p file. It is deprecated in camera-core 1.3 and interacts badly
+            // with output rotation, which is presumably why it was ignored rather than
+            // honoured or refused.
+            //
+            // ResolutionSelector states the same intent in the API that is actually
+            // consulted: nearest supported size to 720p, preferring lower, 16:9.
+            //
+            // ⚠ This is what keeps the BACK camera from costing frame rate. It offers far
+            // larger sizes than the front one, and every stage here scales with frame area
+            // -- detprep, the YUV conversion and the display downsample all do. Asking for
+            // 720p CLOSEST_LOWER_THEN_HIGHER means the better sensor is not followed up
+            // into a slideshow. Analysis resolution is a frame-rate decision, not a
+            // quality one; the swap runs at the size this returns.
+            val resolution = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                .setAspectRatioStrategy(
+                    androidx.camera.core.resolutionselector.AspectRatioStrategy
+                        .RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(
+                    androidx.camera.core.resolutionselector.ResolutionStrategy(
+                        android.util.Size(1280, 720),
+                        androidx.camera.core.resolutionselector.ResolutionStrategy
+                            .FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+                .build()
+            val analysis = ImageAnalysis.Builder()
+                .setResolutionSelector(resolution)
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                .setOutputImageRotationEnabled(true)
+                .build()
+            analysis.setAnalyzer(e) { img -> onImage(img, onShot) }
+            // The lens, and a REFUSAL that names itself. bindToLifecycle throws
+            // IllegalArgumentException for a camera the device does not have -- a tablet
+            // with no front camera, a phone with the back one disabled by policy -- and
+            // that arrived as "camera: IllegalArgumentException", which says nothing about
+            // what to do. Asked first, it is one sentence and the other lens still works.
+            val want = if (frontCamera) CameraSelector.DEFAULT_FRONT_CAMERA
+                       else CameraSelector.DEFAULT_BACK_CAMERA
+            if (!runCatching { p.hasCamera(want) }.getOrDefault(false)) {
+                onShot(Shot(null, 0, 0.0,
+                            if (frontCamera) "no front camera on this device"
+                            else "no back camera on this device"))
+                running = false
+                return@addListener
+            }
+            runCatching {
+                p.unbindAll()
+                p.bindToLifecycle(owner, want, analysis)
+                // What was actually GRANTED, logged at bind rather than inferred from the
+                // first frame -- the gap between asked and granted is the whole story here.
+                android.util.Log.i("fflive", "granted ${analysis.resolutionInfo?.resolution}")
+            }.onFailure {
+                onShot(Shot(null, 0, 0.0, "camera: ${it.javaClass.simpleName}"))
+                running = false
+            }
+        }, androidx.core.content.ContextCompat.getMainExecutor(ctx))
+    }
+
+    /**
+     * Stop the pump, and DO NOT RETURN until no frame is still inside [onImage].
+     *
+     * ⚠ This is why the caller may free the pipeline afterwards. `shutdown()` alone only
+     * refuses NEW work -- it does not wait for the task already running -- so the first
+     * version returned while a frame was mid-`processFrame`, MainActivity called
+     * NativePipe.release() underneath it, and the analyzer thread dereferenced a pipeline
+     * that no longer existed:
+     *
+     *     SIGSEGV, null pointer dereference, fault addr 0x88
+     *     #00 ffpipe::Pipeline::enhance
+     *     #01 Java_..._processFrame
+     *     #03 LiveEngine.onImage
+     *
+     * A frame takes ~60 ms, so the wait is imperceptible; 2 s is a bound, not an
+     * expectation. Blocking the caller here is the entire point -- "stopped" has to mean
+     * the native side is idle, not that it was asked to be.
+     */
+    fun stop(onDrained: (() -> Unit)? = null) {
+        running = false
+        // Unbind FIRST so no further frames are dispatched, then drain what is in flight.
+        runCatching { provider?.unbindAll() }
+        provider = null
+        val e = exec
+        exec = null
+        bufs[0] = null; bufs[1] = null
+        recBuf = null
+        fps = 0.0
+        if (e == null) { onDrained?.invoke(); return }
+        e.shutdown()
+
+        // ⚠ THE RETURN VALUE OF awaitTermination IS THE WHOLE POINT, and it was being
+        // discarded. `runCatching { e.awaitTermination(2, SECONDS) }` reports a TIMEOUT as
+        // success, so stop() returned claiming the native side was idle while a frame was
+        // still inside processFrame -- and the caller then released the pipeline under it.
+        // That is the SIGSEGV quoted above, reachable again by a different door.
+        //
+        // The doc said "a frame takes ~60 ms, so the wait is imperceptible; 2 s is a bound,
+        // not an expectation". The premise is not always true: on the ncnn backend a frame
+        // is 240-540 ms, "use my Swap settings" can turn the enhancer on at pixel boost
+        // 1024, and a hot phone is slower again. 2 s is reachable, and when it was reached
+        // nothing said so.
+        val drained = runCatching {
+            e.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)
+        }.getOrDefault(false)
+        if (drained) { onDrained?.invoke(); return }
+
+        // It did NOT drain. The caller must not free anything the analyzer thread is still
+        // using, so the teardown is DEFERRED rather than skipped: this thread waits for the
+        // frame to finish and runs it then. Stopping stays instant for the UI, and the
+        // native release happens when it is actually safe.
+        //
+        // PipeGuard is what makes the late release safe against a restart: startLive
+        // acquires it before init, and the caller releases it only inside onDrained, so a
+        // user who presses Start again waits rather than racing.
+        android.util.Log.w("fflive", "pump did not drain in 2 s; deferring teardown")
+        Thread({
+            runCatching { e.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS) }
+            onDrained?.invoke()
+        }, "live-drain").start()
+    }
+
+    /**
+     * One camera frame, all the way through, on the analyzer thread.
+     *
+     * ⚠ `close()` in a finally: CameraX hands out a small fixed pool of buffers and a single
+     * leaked ImageProxy stalls the stream permanently with no error -- the preview simply
+     * stops updating, which reads as "the swap hung".
+     */
+    private fun onImage(img: ImageProxy, onShot: (Shot) -> Unit) {
+        try {
+            if (!running) return
+            val w = img.width
+            val h = img.height
+            val p = img.planes
+
+            // DOWNSCALE FOR DISPLAY. The swap still runs at full frame resolution; only
+            // what is DRAWN shrinks, and the pane is under 1100 px wide on this phone.
+            // Converting at full sensor resolution and letting the GPU shrink it afterwards
+            // was pure waste: at 2736x2736 the pixel buffer alone is 30 MB per frame.
+            val scale = maxOf(1, (maxOf(w, h) + kMaxPreview - 1) / kMaxPreview)
+            val dw = w / scale
+            val dh = h / scale
+            bufIx = bufIx xor 1
+            var bmp = bufs[bufIx]
+            if (bmp == null || bmp.width != dw || bmp.height != dh) {
+                bmp = Bitmap.createBitmap(dw, dh, Bitmap.Config.ARGB_8888)
+                bufs[bufIx] = bmp
+            }
+
+            // ONE call: planes in, swapped preview written into bmp's own pixels. The four
+            // it replaced spent 23 of Live's 62 ms/frame moving bytes across JNI -- see
+            // liveFrame in ffjni.cpp for what each of them was copying.
+            // Sample on the first frame of a session and every kGateIntervalMs after.
+            // lastGateMs is zeroed in start(), so the first frame always samples: a session
+            // that will be refused should be refused before it has shown anything.
+            // Read ONCE per frame. It is volatile and the caller may clear it at any
+            // moment; testing it twice could hand liveFrame a buffer and then find no
+            // recorder to give the result to, or the reverse.
+            val rec = recorder
+            val takeFaceSnapshot = faceSnapshotRequested
+            val wantFaceBoxes = faceBoxesEnabled || takeFaceSnapshot
+            // Assign mode already pays for fresh detection. These arrays stay out of the
+            // normal Live path so ordinary preview frames allocate nothing extra.
+            val originalOut = if (takeFaceSnapshot) ByteArray(w * h * 3) else null
+            val boxesOut = if (wantFaceBoxes) FloatArray(5 * 64) else null
+            val nowMs = System.currentTimeMillis()
+            val gateNow = !gateThreshold.isNaN() && (nowMs - lastGateMs >= kGateIntervalMs)
+            if (gateNow) lastGateMs = nowMs
+            val t = System.nanoTime()
+            val faces = NativePipe.liveFrame(
+                p[0].buffer, p[0].rowStride,
+                p[1].buffer, p[1].rowStride, p[1].pixelStride,
+                p[2].buffer, p[2].rowStride, p[2].pixelStride,
+                w, h, bmp, dw, dh,
+                if (gateNow) gateThreshold else Float.NaN,
+                mirrorRecording,
+                // Only while recording: null costs the native side one branch.
+                if (rec != null) {
+                    val need = w * h * 3
+                    var b = recBuf
+                    if (b == null || b.size != need) { b = ByteArray(need); recBuf = b }
+                    b
+                } else null,
+                originalOut,
+                boxesOut,
+            )
+            msPump += (System.nanoTime() - t) / 1e6
+            // -2 refused, -3 could not measure. Both STOP the pump rather than skipping a
+            // frame: the next frame of a live feed is the same scene, so continuing would
+            // be a refusal that refuses nothing. Stopping also releases the camera, which
+            // is the honest signal that the feature declined to run.
+            if (faces == -2 || faces == -3) {
+                running = false
+                onShot(Shot(null, 0, fps, null,
+                            if (faces == -2) Gate.Blocked else Gate.Failed))
+                return
+            }
+            if (faces < 0) {
+                onShot(Shot(null, 0, fps, NativePipe.lastError()))
+                return
+            }
+
+            // AFTER the error checks, so a refused or failed frame is never recorded. The
+            // gate stops the pump on a refusal, and the file must not contain the frame
+            // that caused it.
+            if (rec != null) recBuf?.let { rec.frame(it, w, h) }
+
+            if (++nStat == 30) {
+                // One bucket, because there is one call -- but one number cannot say
+                // whether a slow window is the swap or the YUV/display work wrapped around
+                // it, and those differ by ~30 ms: a face in frame took this pump from 25 to
+                // 62 ms and the single figure read as a regression either way.
+                //
+                // The native stage timers already carry that split and the app never asked
+                // for them, so pump MINUS the stage sum is what liveFrame's own two scalar
+                // loops cost. Reset per window, so each line is its own 30 frames.
+                // `faces` is this frame's count, not the window's -- an indicator of which
+                // regime the window was in, not a measurement.
+                android.util.Log.i("fflive", "%dx%d -> %dx%d  pump %.1f ms/frame  faces %d"
+                    .format(w, h, dw, dh, msPump / 30, faces))
+                NativePipe.stageMillis().takeIf { it.isNotEmpty() }
+                    ?.let { android.util.Log.i("fflive", "  $it") }
+                NativePipe.resetStats()
+                nStat = 0; msPump = 0.0
+            }
+
+            ++windowFrames
+            val now = System.nanoTime()
+            val elapsed = (now - windowStart) / 1e9
+            if (elapsed >= 0.5) {
+                fps = windowFrames / elapsed
+                windowStart = now; windowFrames = 0
+            }
+            val boxCount = minOf(faces, boxesOut?.size?.div(5) ?: 0)
+            val boxes = if (boxesOut != null) boxesOut.copyOf(boxCount * 5) else null
+            // A snapshot is requested after boxes have appeared, so a successful frame
+            // closes the request and avoids copying full-resolution camera pixels again.
+            if (takeFaceSnapshot && faces > 0) faceSnapshotRequested = false
+            onShot(Shot(bmp, faces, fps, null, Gate.None,
+                        originalOut?.takeIf { faces > 0 }, w, h, boxes))
+        } catch (t: Throwable) {
+            // A throw on the analyzer thread would otherwise take the stream down silently.
+            onShot(Shot(null, 0, fps, "${t.javaClass.simpleName}: ${t.message ?: ""}"))
+        } finally {
+            img.close()
+        }
+    }
+}

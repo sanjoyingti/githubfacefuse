@@ -1,0 +1,5400 @@
+package com.facefusion.mobile
+
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
+import com.facefusion.mobile.ui.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.io.File
+import kotlin.math.hypot
+import kotlin.math.roundToInt
+import androidx.compose.ui.res.stringResource
+
+/**
+ * Source image + target video -> swapped MP4, entirely on device.
+ *
+ * The models are NOT bundled: they are ~266 MB and three of the five are non-commercial or
+ * GPL-3.0 (see docs/model-audit.md), so the APK stays free of them and they are pushed to
+ * the app's files dir -- see work/device/install_app.ps1.  Note that Kotlin nests block
+ * comments, so a literal glob of the form slash-star cannot appear in one.
+ *
+ * The QNN runtime .so files ride in jniLibs and are dlopen'd from nativeLibraryDir.
+ *
+ * This class holds STATE and LOGIC only; every composable lives in `ui/`.
+ */
+/**
+ * "This person keeps the face they were filmed with" -- not a source slot, and it never
+ * indexes one. The native side calls it kNoSource and tests a separate boolean beside it;
+ * here it is only ever a map VALUE, compared and never dereferenced.
+ */
+private const val KEEP_ORIGINAL = -1
+
+class MainActivity : ComponentActivity() {
+
+    /** One face the user has picked. [thumb] is the decode the pane and the row draw. */
+    private data class SourceItem(val uri: Uri, val thumb: Bitmap)
+
+    /**
+     * EVERY source face, shared by both screens, in the order the native slots hold them.
+     *
+     * ⚠ ONE list, deliberately. Swap and Live used to keep the count separately while
+     * `setSourceFrom` quietly pushed into the other one -- already one list with two
+     * names, and the drift between them was only invisible because Swap used just the
+     * first entry. Adding a THIRD list for the Swap screen's own multi-source row was the
+     * obvious next step and the wrong one: the gate's whole guarantee is that there is
+     * exactly one way a face becomes a source, and that is only checkable while there is
+     * exactly one place they live.
+     *
+     * The two screens differ only in which slot each is pointing at, which is what
+     * [swapSourceIndex] and [liveSourceIndex] are.
+     */
+    private var sources by mutableStateOf<List<SourceItem>>(emptyList())
+    private var swapSourceIndex by mutableIntStateOf(0)
+    private var liveSourceIndex by mutableIntStateOf(0)
+
+    /**
+     * What the SWAP pane is showing: whichever source that screen is pointing at.
+     *
+     * ⚠ Derived, never stored. These used to be two independent pieces of state that
+     * every path had to remember to keep in step with the list -- and with one list and
+     * two screens there are now several more such paths, including a removal that
+     * renumbers everything above it. A fact kept twice is a fact that can disagree with
+     * itself; this one is cheap enough to just read.
+     */
+    private val sourceUri: Uri? get() = sources.getOrNull(swapSourceIndex)?.uri
+    private val sourceThumb: Bitmap? get() = sources.getOrNull(swapSourceIndex)?.thumb
+
+    // ---- Assign per person, on the SWAP screen (Live has its own, below).
+    //
+    // Live decides by TRACKING -- it has a sequence of frames and a person moving through
+    // them. A video swap has no such thing at the moment the user is choosing: there is
+    // one still frame on screen. So a tap here stores the person's IDENTITY, and native
+    // matches it on every frame of the run.
+    private var swapAssignMode by mutableStateOf(false)
+    /** The brush: which source the NEXT tapped person gets, or their own face back. */
+    private var swapBrushKeepOriginal by mutableStateOf(false)
+    private var swapSelectedPerson by mutableIntStateOf(-1)
+    /**
+     * The detected people shown by Assign per person, captured ONCE per target.
+     *
+     * These deliberately do not follow [originalFrame]. A video preview changes that
+     * bitmap for every seek/playback step; rebuilding the row from it made the detector's
+     * score order become the user's Person 1/2 identity, so two people could exchange
+     * places without a tap. The saved frame is also the exact frame used when a person is
+     * assigned, so the displayed thumbnail, box and identity all describe one picture.
+     */
+    private var swapPersonSnapshot by mutableStateOf<Bitmap?>(null)
+    private var swapPersonBoxes by mutableStateOf<FloatArray?>(null)
+    private var swapPersonSnapshotTarget by mutableIntStateOf(-1)
+    private var swapPersonThumbs by mutableStateOf<List<Bitmap>>(emptyList())
+    /** person index -> source slot, or [KEEP_ORIGINAL]. */
+    private var swapPersonAssignments by mutableStateOf<Map<Int, Int>>(emptyMap())
+    /**
+     * person index -> their 512-float identity.
+     *
+     * ⚠ Kept in Kotlin because pressing Swap builds a FRESH pipeline and every assignment
+     * on the warm one goes with it. Without this the mode would work perfectly in the
+     * preview and do nothing at all in the output -- the worst shape a bug can take.
+     */
+    private var swapPersonIdentity by mutableStateOf<Map<Int, FloatArray>>(emptyMap())
+    private var liveLargestOnly by mutableStateOf(false)
+    private var targetFile by mutableStateOf<File?>(null)
+    private var targetName by mutableStateOf<String?>(null)
+
+    /**
+     * The DRIVING audio for lip sync -- deliberately independent of [targetFile]. Its own
+     * file, its own timeline, no relation to the target's trim. See [VideoSwapper]'s
+     * `voicePath` doc for why this exists: syncing a clip to its own original audio has no
+     * effect to have, so the UI requires this before Lip Sync can run at all (below).
+     */
+    private var voiceFile by mutableStateOf<File?>(null)
+    private var voiceName by mutableStateOf<String?>(null)
+
+    /**
+     * face_animator's DRIVER: a video whose face's motion the photo target takes on. Its
+     * pixels never reach the output -- only its motion does -- but it is still an input the
+     * pipeline processes, so a run checks it like a target clip.
+     */
+    private var driverFile by mutableStateOf<File?>(null)
+    private var driverName by mutableStateOf<String?>(null)
+
+    /** A run of the photo target makes a VIDEO: animated, or a talking photo. */
+    private val photoMakesVideo: Boolean
+        get() = targetImage != null && (opts.faceAnimate || opts.lipSync)
+    /** The loaded voice's full length, ms. 0 until a file is loaded. */
+    private var voiceDurationMs by mutableStateOf(0L)
+    /**
+     * The part of the voice that DRIVES the lips, ms -- the audio equivalent of
+     * [trimStartMs]/[trimEndMs]. Only this range is decoded for the mouth and copied into
+     * the output's audio track. Reset to the whole file when a voice is loaded.
+     */
+    private var voiceTrimStartMs by mutableStateOf(0f)
+    private var voiceTrimEndMs by mutableStateOf(0f)
+    /** Playback of the loaded voice: where the playhead is, and whether it is running. */
+    private var voicePosMs by mutableStateOf(0f)
+    private var voicePlaying by mutableStateOf(false)
+    private var voicePlayer: android.media.MediaPlayer? = null
+    private var voicePollJob: kotlinx.coroutines.Job? = null
+    /** True while the microphone is capturing a driving voice. */
+    private var recordingVoice by mutableStateOf(false)
+
+    /**
+     * Bumped every time a target is loaded or cleared.
+     *
+     * ⚠ Exists because `targetFile` CANNOT serve as a state key. Every target is copied to
+     * the same path -- `File(cacheDir, "target.mp4")` -- and `File.equals` compares path
+     * strings, so the File for a new video is EQUAL to the File for the old one. A
+     * `LaunchedEffect` keyed on it therefore does not re-fire, and the auto-warm that draws
+     * the swapped pane never runs for any target after the first. Measured on the bench:
+     * loading a second clip produced no `autowarm fired` line at all.
+     *
+     * It was invisible until 0.4.5 because the pane fell back to the PREVIOUS target's
+     * swapped frame; clearing that stale frame is what turned a wrong preview into an
+     * empty one, and an empty one is what got reported.
+     */
+    private var targetVersion by mutableStateOf(0)
+    private var durationMs by mutableStateOf(0L)
+    private var trimStartMs by mutableStateOf(0f)
+    private var trimEndMs by mutableStateOf(0f)
+
+    /**
+     * The runtime knobs, restored from the last run.  Held here rather than inside the
+     * composable so they survive a recomposition and so [runSwap] reads the same object
+     * the UI is editing -- [NativePipe.init] takes them once, at load, and the pipeline
+     * keeps its own copy for the duration.
+     */
+    private var opts by mutableStateOf(SwapOptions())
+    private var downloadSource by mutableStateOf(ModelDownload.SOURCE_HF)
+    private var openCard by mutableStateOf("")
+
+    private var statusText by mutableStateOf("")
+
+    /**
+     * Whether [status] is a FAILURE, as opposed to progress or a refusal.
+     *
+     * Kept beside the text instead of being recovered from it. SwapScreen used to decide
+     * this with `status.startsWith("Failed")`, which reads a sentence written for the user
+     * -- so the moment that sentence is translated, the bug-report button disappears in
+     * every language except English.
+     *
+     * A content refusal is deliberately NOT an error: nothing malfunctioned, and offering
+     * to file a bug about a working gate is noise. That matches what the prefix test did,
+     * since the gate's own sentence never began with "Failed".
+     */
+    private var statusIsError by mutableStateOf(false)
+
+    /**
+     * The status line. Assigning it clears [statusIsError]; use [failStatus] for a failure.
+     *
+     * A property rather than a plain field so that every one of the two dozen
+     * `status = "..."` sites keeps meaning "this is not an error" without each having to
+     * say so.
+     */
+    private var status: String
+        get() = statusText
+        set(value) { statusText = value; statusIsError = false }
+
+    /** A status that IS a failure, and should offer the bug report. */
+    private fun failStatus(value: String) { statusText = value; statusIsError = true }
+    private var log by mutableStateOf("")
+    private var busy by mutableStateOf(false)
+    private var preparing by mutableStateOf(false)
+    private var progress by mutableStateOf(0f)
+    private var framesDone by mutableStateOf(0)
+    private var framesTotal by mutableStateOf(0)
+    private var elapsedS by mutableStateOf(0.0)
+    private var preview by mutableStateOf<Bitmap?>(null)
+    private var outputFile by mutableStateOf<File?>(null)
+
+    /**
+     * Whether the finished output stopped early because the user cancelled.
+     *
+     * A cancelled run now KEEPS its frames (VideoSwapper), which is what was asked for --
+     * but a 4-second file from a 30-second clip must not read as a completed run, so the
+     * pane says so.
+     */
+    private var outputPartial by mutableStateOf(false)
+    private var savedUri by mutableStateOf<Uri?>(null)
+
+    /**
+     * Where the last save actually landed, written by whoever saved it.
+     *
+     * Not rebuilt during composition from `outputFile`: a still goes to Pictures and a
+     * video to Movies, and the pane used to name Movies for both -- so an image result
+     * reported a path with nothing at it.
+     */
+    private var savedPathLabel by mutableStateOf<String?>(null)
+
+    // ---- UI shell
+    private var screen by mutableStateOf(Screen.Swap)
+
+    // ---- Live (dev builds only; the tab does not exist otherwise) ----
+    private val live = LiveEngine()
+    private var liveFrame by mutableStateOf<Bitmap?>(null)
+    private var liveFps by mutableStateOf(0.0)
+    private var liveFaces by mutableStateOf(0)
+    private var liveNote by mutableStateOf<String?>(null)
+    /**
+     * Whether the detector's boxes are drawn over the ORIGINAL pane, and what they are.
+     *
+     * Off by default: rectangles over every preview change how the app looks for everyone
+     * in order to answer a question most sessions never ask. While it is ON, every new
+     * original frame costs one yoloface pass (~2 ms) and no identity work at all.
+     */
+    private var showFaceBoxes by mutableStateOf(false)
+
+    /**
+     * The [targetVersion] the overlay has already decided about.
+     *
+     * The decision is "does this clip hold more than one face", and it is made ONCE per
+     * target. Without the marker the next preview frame would re-decide and switch the
+     * overlay back on for a user who had just turned it off.
+     */
+    private var autoBoxTarget by mutableStateOf(-1)
+    private var faceBoxes by mutableStateOf<FloatArray?>(null)
+
+    /**
+     * Bumps to force a fresh face detection pass. Entering lips pick mode must
+     * see CURRENT boxes: flips of [showFaceBoxes] relaunch the detector only
+     * false->true, so with an already-visible overlay the tap targets would
+     * otherwise stay whatever they were (stale, or nothing yet) with no new
+     * pass to fix them.
+     */
+    private var faceDetectNonce by mutableStateOf(0)
+
+    /**
+     * The frame [faceBoxes] were computed FROM, by identity.
+     *
+     * ⚠ Without this the boxes outlive their frame. A finished run releases the pipeline, so
+     * the detection effect early-returns on `!previewWarm` -- and the old frame's rectangles
+     * stayed on screen over the new frame until the re-warm finished. Reported as "after
+     * swap output the ORIGINAL frame has changed and boxes are misaligned", which is exactly
+     * what it was: right boxes, wrong frame.
+     */
+    private var faceBoxFrame: Bitmap? = null
+
+    /**
+     * The lips boxes and identities, in list order (parallel lists).
+     *
+     * Kept in Kotlin because pressing Swap builds a FRESH pipeline, exactly like
+     * [swapPersonIdentity]: [restoreLipReference] hands them back, so the export
+     * never depends on JNI-global timing. Empty = every face is synced.
+     */
+    private var lipBoxes by mutableStateOf<List<FloatArray>>(emptyList())
+    private var lipIdentities by mutableStateOf<List<FloatArray>>(emptyList())
+
+    /**
+     * Serialises every lips-list mutation (tap add/remove, target-change
+     * clear) and the export restore.
+     *
+     * Taps resolve on background threads while target changes and export
+     * restores run elsewhere; without this two rapid taps (or a tap racing an
+     * export) interleave add/fetch/remove across the Kotlin lists, the native
+     * list and the JNI mirror, and indices silently stop meaning the same face
+     * everywhere -- the "can't deselect / only one synced" shape of bug.
+     */
+    private val lipPickMutex = Mutex()
+
+    /** Lips pick mode: taps choose the lip-sync target. */
+    private var lipPickMode by mutableStateOf(false)
+
+    /** A queue row whose render would be lost; see [removeFromBatch]. */
+    private var confirmBatchDelete by mutableStateOf<Int?>(null)
+
+    /**
+     * The targets waiting behind the visible one -- roadmap 14.
+     *
+     * ONE SOURCE, MANY TARGETS. That is the whole mode, and it is the shape the warm
+     * pipeline already has: setSource is called once and every target reuses it, so a
+     * twelve-clip batch pays for the models and the identity once rather than twelve
+     * times. Many sources against one target would be a comparison sheet nobody asked
+     * for, and the cartesian product of both is a way to fill a phone by accident.
+     *
+     * ⚠ The visible target is NOT in here. It is targetFile, exactly as it has always
+     * been, so every pane, the trim slider and the frame-rate row keep working on the one
+     * clip they were written for. The queue is what happens AFTER it.
+     */
+    private var batchQueue by mutableStateOf<List<BatchItem>>(emptyList())
+
+    /**
+     * Which lens Live uses. In memory only, deliberately: it is not a [SwapOptions] field
+     * -- nothing about it reaches the pipeline -- and a camera choice that survived a
+     * restart would be a surprise on an app that opens on the Swap tab.
+     */
+    private var liveFrontCamera by mutableStateOf(true)
+
+    /**
+     * Whether the DISPLAYED live feed is mirrored, when the user has said so explicitly.
+     *
+     * null means "follow the lens", which is the default and the only sane one: a front
+     * camera is a mirror because that is what every selfie preview on the phone does, and
+     * a back camera is NOT -- it points at what the user is already looking at, so
+     * flipping it puts text backwards and moves the world the wrong way. Switching the
+     * lens clears the override, because an answer given about one camera is not an answer
+     * about the other.
+     *
+     * ⚠ Display only. The pipeline is fed the true image either way, and so is the
+     * recorder -- a flip applied to the frames would be a per-pixel pass on the analyzer
+     * thread and a silent change to what every existing recording looks like.
+     */
+    private var liveMirrorOverride by mutableStateOf<Boolean?>(null)
+    private val liveMirror: Boolean get() = liveMirrorOverride ?: liveFrontCamera
+
+    private fun toggleLiveMirror() {
+        val next = !liveMirror
+        liveMirrorOverride = next
+        // The preview and encoder follow the same answer. Native reads this per frame,
+        // so changing it during recording takes effect on the next encoded frame.
+        live.mirrorRecording = next
+    }
+
+    /**
+     * The feed is filling the screen.
+     *
+     * A VIEW flag and nothing more -- the pump, the pipeline and the recorder do not know
+     * about it, so entering and leaving cannot interrupt a session or a recording. Cleared
+     * by [stopLive] so a stopped session can never leave a black screen with no feed
+     * coming to it.
+     */
+    private var liveFullscreen by mutableStateOf(false)
+
+    /** Live's brush: the counterpart of [swapBrushKeepOriginal] on the other screen. */
+    private var liveBrushKeepOriginal by mutableStateOf(false)
+
+    /** The Live recording in flight, and whether the UI should say so -- roadmap 13b. */
+    private var liveRecorder: LiveRecorder? = null
+    private var liveRecording by mutableStateOf(false)
+    private var liveMicrophone by mutableStateOf(false)
+    private var liveFinalizing by mutableStateOf(false)
+
+    // ⚠ Compose state, NOT live.isRunning. A plain field on the engine is invisible to
+    // recomposition, so the first build showed a running feed under a button still saying
+    // "Start" -- the pixels updated because the bitmap reference changed and nothing else
+    // did.
+    private var liveRunning by mutableStateOf(false)
+    private var liveSwapEnabled by mutableStateOf(true)
+    /**
+     * Assign-per-person mode (Live): when ON, a tap on the feed gives the selected source
+     * chip to that face, and the face keeps it for the rest of the session. OFF is the
+     * default behaviour -- every face takes the active slot. In memory only, like the
+     * other Live switches: it is a property of this screen, not of a swap.
+     */
+    private var liveAssignMode by mutableStateOf(false)
+    /**
+     * The last face assigned, as the box+source liveFrame returned (x0,y0,x1,y1,source,
+     * DISPLAY bitmap coordinates), for the overlay to confirm the tap. [liveAssignNonce]
+     * changes with it so LiveScreen can retime its fade.
+     */
+    private var liveAssignBox by mutableStateOf<FloatArray?>(null)
+    private var liveAssignNonce by mutableIntStateOf(0)
+    private var liveAssignCount by mutableIntStateOf(0)
+    /**
+     * The SELECTED person (assign mode): x0, y0, x1, y1, source -- DISPLAY bitmap
+     * coordinates -- polled every shot, so the highlight follows the person. Null when
+     * nobody is selected (or assign mode is off). The native side owns the selection:
+     * tapping a face selects it, tapping empty space deselects it, and a selected
+     * person follows the source chip.
+     */
+    private var liveSelectionBox by mutableStateOf<FloatArray?>(null)
+    /** Fixed, pre-swap camera thumbnails shown by Live's Assign per person row. */
+    private var livePersonThumbs by mutableStateOf<List<Bitmap>>(emptyList())
+    /** Snapshot boxes and current boxes are both in the Live display bitmap's coordinates. */
+    private var livePersonSnapshotBoxes by mutableStateOf<FloatArray?>(null)
+    private var liveFaceBoxes by mutableStateOf<FloatArray?>(null)
+    /** Number of faces represented by the current photo row, including uncroppable boxes. */
+    private var livePersonSnapshotFaceCount by mutableIntStateOf(0)
+    private var liveSelectedPerson by mutableIntStateOf(-1)
+    private var liveFaceSnapshotPending = false
+    /**
+     * A tap is in flight: the next liveFrame consumes it and the shot callback takes the
+     * result. Pending until taken; a consumed-but-empty result is a miss, never guessed.
+     */
+    private var assignTapPending = false
+    // Off = the forced fast preset. Kept out of SwapOptions on purpose: it is a property of
+    // this screen, not of a swap, and persisting it would let a Live choice change what a
+    // file run does.
+    private var liveUseMySettings by mutableStateOf(false)
+    private val askCamera = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startLive()
+        else liveNote = "Camera permission denied"
+    }
+    private var advancedOpen by mutableStateOf(false)
+    private var modelsVersion by mutableStateOf(0)
+    private var deviceUi by mutableStateOf(DeviceUi())
+
+    /** "" | "qnn" | "ncnn" -- the runtime pinned in Settings, mirrored for composition. */
+    private var forcedBackend by mutableStateOf("")
+    /** "auto" | "gpu" | "cpu" -- which UNIT ncnn may use. See [NativePipe.setNcnnGpu]. */
+    private var ncnnGpu by mutableStateOf("auto")
+
+    /** "auto" | "on" | "off" -- ncnn without Winograd. See [NativePipe.setNcnnLowMemory]. */
+    private var lowMemory by mutableStateOf("auto")
+    /**
+     * The user's manual light/dark choice, or null to follow the system.
+     *
+     * Mirrored for composition and written by the Settings switch; persisted in
+     * [ThemePrefs] so the choice survives a restart.
+     */
+    private var darkTheme by mutableStateOf<Boolean?>(null)
+    private var confirmMetered by mutableStateOf(false)
+
+    /**
+     * A processor whose model is missing was tapped: its LABEL, and the model name.
+     *
+     * The Processors row lists every stage whether or not its model is on the device,
+     * so tapping one that is absent has to lead somewhere. It leads here, and here fetches
+     * THAT model -- one downloader, told what to get.
+     *
+     * ⚠ The label alone used to be enough, because Continue started the bulk download.
+     * That download excludes the enhancer and the lip syncer by name (they are the only
+     * stages whose chip can say "not installed" at all), so the prompt this dialog opens
+     * was the one thing in the app that could never fetch what it was offering.
+     */
+    private var confirmModel by mutableStateOf<Pair<String, String>?>(null)
+
+    /**
+     * Whether this tier's set is incomplete, as explicit state refreshed from disk.
+     *
+     * Not a function evaluated during composition. The first version of this interpolated
+     * the filename wrongly and reported everything missing forever; making the check a
+     * value with one writer means it can be logged, and it is refreshed on resume and while
+     * a download runs rather than depending on a cross-thread invalidation.
+     */
+    private var modelsMissing by mutableStateOf(true)
+
+    /** Asked once, on the first download. Denied only costs the progress notification. */
+    private val askNotify = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()) { }
+
+    // ---- the two preview panes
+    private val previews = PreviewEngine()
+
+    /**
+     * The dev-only live player: the TARGET clip swapped as it plays, with its sound.
+     *
+     * ⚠ It owns the native pipeline while it runs, exactly as Live does, so it takes
+     * [PipeGuard] and drops the preview's warm pipeline rather than sharing one --
+     * see [startPlayer]. Everything it shows is a swapped frame that no run produced
+     * and no file holds, which is why it is behind `BuildConfig.DEV_BUILD`.
+     */
+    private val player = LivePlayer()
+    private var playerOpen by mutableStateOf(false)
+    private var playerFrame by mutableStateOf<Bitmap?>(null)
+    private var playerPos by mutableStateOf(0)
+    private var playerDuration by mutableStateOf(0)
+    private var playerPlaying by mutableStateOf(false)
+    private var playerFps by mutableStateOf(0.0)
+    private var playerFaces by mutableStateOf(0)
+    private var playerDropped by mutableStateOf(0)
+    private var playerNote by mutableStateOf<String?>(null)
+    /** A seek is being resolved. The picture is stale and the sound is deliberately off. */
+    private var playerSeeking by mutableStateOf(false)
+    private var originalFrame by mutableStateOf<Bitmap?>(null)
+    private var swappedFrame by mutableStateOf<Bitmap?>(null)
+    private var previewWarm by mutableStateOf(false)
+    private var previewBusy by mutableStateOf(false)
+    private var previewNote by mutableStateOf<String?>(null)
+    private var targetAspect by mutableStateOf(16f / 9f)
+
+    /**
+     * The target when it is a STILL rather than a video.
+     *
+     * Non-null is the mode flag: `durationMs == 0` follows from it, which is what hides the
+     * trim slider and the frame-rate control.
+     */
+    private var targetImage by mutableStateOf<Bitmap?>(null)
+
+    /** The target video's own frame rate, so the rate control can cap itself to it. */
+    private var inputFps by mutableStateOf(30)
+
+    /**
+     * The target's own pixel size, UPRIGHT. 0 until a video is loaded.
+     *
+     * The output-size control offers only sizes below the clip's own, the same way the
+     * frame-rate control offers only lower rates -- so it needs the clip's short edge, and
+     * `targetAspect` alone cannot give it (a ratio says nothing about how many pixels).
+     */
+    /**
+     * Decode caps, long edge in pixels. See [decodeOriented].
+     *
+     * A SOURCE is only ever an identity -- 112 for the recogniser, 256 for the swapper --
+     * so 2048 is already far more than the models can use. A photo TARGET is the OUTPUT, so
+     * it keeps four times the area; 4096 is a 12 MP result, which is more than a phone
+     * screen or a message will ever show and still fits in memory four times over.
+     */
+    private val MAX_SOURCE_EDGE = 2048
+    private val MAX_TARGET_EDGE = 4096
+
+    private var targetW by mutableStateOf(0)
+    private var targetH by mutableStateOf(0)
+
+    /**
+     * The trim handle the previews are following.
+     *
+     * Both panes used to show the start frame unconditionally, so dragging the END handle
+     * changed nothing on screen and read as a broken preview. Whichever handle moved last
+     * is the one being looked at.
+     */
+    private var previewEdge by mutableStateOf(TrimEdge.Start)
+
+    /** The position both panes are previewing: whichever handle was touched last. */
+    private val previewAtMs: Float
+        get() = if (previewEdge == TrimEdge.End) trimEndMs else trimStartMs
+    private var scrubJob: Job? = null
+
+    /** The debounced redraw owned by [previewOptionsChanged]. One at a time. */
+    private var refreshJob: Job? = null
+
+    /**
+     * A redraw that was asked for while one was already running.
+     *
+     * ⚠ [refreshSwapped] used to simply `return` when `previewBusy`, and nothing ever asked
+     * again -- so a request that arrived during a preview swap was DROPPED. Scrubbing
+     * produces exactly that: the seek job waits, sets the frame, waits again and calls
+     * refreshSwapped, and if the previous swap is still running at that instant the new
+     * position is silently discarded and the swapped pane keeps showing the old one until
+     * something else happens to trigger it. The whole point of a preview is that it follows
+     * the handle, so it coalesces now instead of dropping.
+     */
+    private var refreshPending = false
+    private var refreshPendingForce = false
+
+    /** Set by the Cancel button, read by the swap worker. Volatile: different threads. */
+    @Volatile private var cancelRequested = false
+
+    /**
+     * The file names the hosted manifest publishes for this device's tier.
+     *
+     * Empty until the fetch lands, and empty forever when offline -- both mean "no row
+     * offers a download", which is the honest state rather than a button that cannot work.
+     */
+    /**
+     * What the manifest publishes for this tier: file name -> its LENGTH.
+     *
+     * The length is why this is a map and not a set. It is the same field
+     * `ModelDownload.missing` re-fetches on, so a row that says "update available"
+     * and the downloader that would act on it cannot disagree.
+     */
+    private var hostedFiles by mutableStateOf<Map<String, Long>>(emptyMap())
+
+    /**
+     * Where the pipeline was, last time this screen had it.
+     *
+     * If the API server used it in between, what is loaded is the server's source and the
+     * server's options, and the preview's warm flag would otherwise be a promise about
+     * somebody else's face. See [PipeGuard.sequence].
+     */
+    private var lastPipeSeq = -2
+
+    /**
+     * The ONE place a URI becomes the source face.
+     *
+     * Extracted so the gallery picker and the camera capture cannot drift apart. They must
+     * not: the content gate runs on the source in refreshSwapped, and it gets there because
+     * previewOptionsChanged() is called here. A second path that set sourceUri and forgot
+     * this call would be an ungated source -- which is the failure mode the gate's path
+     * list exists to prevent, arriving by way of a convenience button.
+     */
+    private fun setSourceFrom(uri: Uri) {
+        val at = addToSources(uri) ?: return
+        swapSourceIndex = at
+        liveSourceIndex = at
+        swapBrushKeepOriginal = false
+        // A different face means the loaded pipeline is holding the wrong embedding.
+        previewOptionsChanged()
+    }
+
+    /**
+     * Put [uri] in [sources] if it is not already there, and say which slot it is.
+     *
+     * The ONE place the list grows. Null when the image cannot be decoded -- and the
+     * caller is told, because a picker that visibly does nothing is the bug report.
+     */
+    private fun addToSources(uri: Uri): Int? {
+        // KEPT, not merely referenced. A picker Uri is borrowed -- GetContent grants no
+        // persistable permission, and the picture itself can be deleted from the gallery
+        // -- so a list that outlives the process has to own its bytes. The copy is named
+        // by content hash, which makes re-picking the same face a no-op instead of a
+        // second tile of the same person.
+        val kept = keepSourceFile(uri) ?: uri
+        val existing = sources.indexOfFirst { it.uri == kept }
+        if (existing >= 0) return existing
+        val thumb = decodeOriented(kept) ?: run {
+            status = getString(R.string.status_cannot_read_source)
+            return null
+        }
+        sources = sources + SourceItem(kept, thumb)
+        return sources.lastIndex
+    }
+
+    /** The row's own copies. App-private; nothing else on the phone can read it. */
+    private fun sourcesDir(): File = File(filesDir, "sources").apply { mkdirs() }
+
+    /**
+     * The KEPT faces, which is a different question from what is in the row.
+     *
+     * The row survives a restart on its own, but it is also a working surface -- faces
+     * come and go from it and the X on a tile deletes one for good. A face in here is one
+     * the user said to keep, so clearing the row cannot take it. Same content-hash name in
+     * both places, so a face that is in both is the same face and costs one photo twice.
+     */
+    private fun savedDir(): File = File(filesDir, "saved").apply { mkdirs() }
+
+    /** The library, newest last, rebuilt from disk whenever it changes. */
+    private var savedFaces by mutableStateOf<List<com.facefusion.mobile.ui.SavedFace>>(emptyList())
+    private var facesDialogOpen by mutableStateOf(false)
+
+    private fun refreshSavedFaces() {
+        savedFaces = (savedDir().listFiles() ?: emptyArray())
+            .sortedBy { it.lastModified() }
+            .mapNotNull { f ->
+                val u = Uri.fromFile(f)
+                val thumb = decodeOriented(u) ?: return@mapNotNull null
+                com.facefusion.mobile.ui.SavedFace(u, thumb, f.lastModified())
+            }
+    }
+
+    /**
+     * Whether the face on show is already kept.
+     *
+     * ⚠ Derived from [savedFaces], NOT from the filesystem. It used to ask the disk
+     * directly, and Compose has no way to know a file was deleted -- so removing a face in
+     * the library left this reading `true` for ever and the button stayed dead. A state
+     * this UI reacts to has to be read from state this UI observes.
+     */
+    private val shownSourceSaved: Boolean
+        get() {
+            val name = sourceUri?.path?.let { File(it).name } ?: return false
+            return savedFaces.any { s -> s.uri.path?.let { File(it).name } == name }
+        }
+
+    /** Keep the shown face, or stop keeping it. The one button does both. */
+    private fun toggleShownSourceSaved() {
+        val src = sourceUri?.path?.let { File(it) } ?: return
+        val dst = File(savedDir(), src.name)
+        if (dst.exists()) {
+            confirm(R.string.faces_unsave_title, R.string.faces_unsave_body,
+                    R.string.faces_unsave_ok, destructive = true) {
+                runCatching { dst.delete() }
+                refreshSavedFaces()
+                status = getString(R.string.faces_unsaved_toast)
+            }
+        } else {
+            confirm(R.string.faces_save_title, R.string.faces_save_body,
+                    R.string.faces_save_ok) {
+                runCatching { src.copyTo(dst) }
+                refreshSavedFaces()
+                status = getString(R.string.faces_saved_toast)
+            }
+        }
+    }
+
+    /**
+     * One confirmation, asked the same way everywhere.
+     *
+     * Every action on a kept face confirms -- keeping, un-keeping, using and deleting --
+     * because they sit next to each other on 28 dp buttons where the destructive one is
+     * not distinguishable from the harmless one at arm's length.
+     */
+    private data class Confirm(
+        val title: String, val body: String, val ok: String,
+        val destructive: Boolean, val action: () -> Unit,
+    )
+
+    private var pendingConfirm by mutableStateOf<Confirm?>(null)
+
+    private fun confirm(title: Int, body: Int, ok: Int,
+                        destructive: Boolean = false, action: () -> Unit) {
+        pendingConfirm = Confirm(getString(title), getString(body), getString(ok),
+                                 destructive, action)
+    }
+
+    /**
+     * Put a kept face back in the row and select it.
+     *
+     * ⚠ Through [setSourceFrom], which is the ONE way a source is chosen -- it adds to
+     * the list, moves both screens' indices and tells the warm pipeline the identity
+     * changed. Assigning the state here instead would be a source that arrived by a route
+     * no other source takes, which is exactly the shape of a path that later turns out not
+     * to have been examined.
+     */
+    private fun useSavedFace(uri: Uri) {
+        // No confirmation: nothing is lost and it is what the library is FOR. The prompts
+        // are for the actions that delete something.
+        facesDialogOpen = false
+        setSourceFrom(uri)
+    }
+
+    /** Forget a kept face. The row keeps its own copy if it has one. */
+    private fun deleteSavedFace(uri: Uri) {
+        confirm(R.string.faces_delete_title, R.string.faces_delete_body,
+                R.string.common_delete, destructive = true) {
+            runCatching { uri.path?.let { File(it).delete() } }
+            refreshSavedFaces()
+        }
+    }
+
+    /**
+     * Copy [uri]'s bytes into [sourcesDir], named by their SHA-256. Null if unreadable.
+     *
+     * Raw bytes rather than the decoded Bitmap, so EXIF orientation survives -- the
+     * decode path already honours it, and re-encoding here would either lose the tag or
+     * bake in a rotation the decoder would then apply twice.
+     */
+    private fun keepSourceFile(uri: Uri): Uri? = runCatching {
+        if (uri.scheme == "file" && File(uri.path!!).parentFile == sourcesDir()) return uri
+        val bytes = (contentResolver.openInputStream(uri) ?: return null).use { it.readBytes() }
+        val name = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }.take(32) + ".img"
+        val f = File(sourcesDir(), name)
+        if (!f.exists()) f.writeBytes(bytes)
+        Uri.fromFile(f)
+    }.getOrNull()
+
+    /**
+     * Put last session's faces back in the row.
+     *
+     * ⚠ This does NOT create an unchecked path, and it deliberately does not add a
+     * check of its own. A restored face is an entry in `sources` like any other, and
+     * `screenSourceList` walks the WHOLE list every time a pipeline is built -- so it is
+     * examined before it can be swapped into anything, on every screen, exactly as a face
+     * picked a second ago is. Adding a check here would be a second place that decision
+     * is made, which is how one of them ends up disagreeing with the other.
+     *
+     * Routed through [addToSources] rather than assigning `sources`, because that is the
+     * one place the list grows and it is where the decode failure is reported.
+     */
+    private fun restoreSources() {
+        val files = sourcesDir().listFiles()?.sortedBy { it.lastModified() } ?: return
+        for (f in files) addToSources(Uri.fromFile(f))
+        refreshSavedFaces()
+    }
+
+    /**
+     * Remove one source, from either screen, and leave every index that named it right.
+     *
+     * ⚠ Slots are named by INDEX everywhere -- the two screens' selections, every stored
+     * per-person assignment, and `setActiveSource` natively -- so a removal RENUMBERS the
+     * ones above it. A person assigned to the slot that went away loses their assignment;
+     * a person above it keeps theirs, one lower. "Keep the original face" survives either
+     * way: it indexes nothing, and the person was excluded regardless of how many sources
+     * are left.
+     */
+    private fun removeSource(index: Int) {
+        if (index !in sources.indices) return
+        // The row owns its copy, so removing a tile has to drop it -- otherwise a list
+        // that restores itself never shrinks, and the X becomes a button that appears to
+        // work until the next launch. The LIBRARY copy is a different file and is left
+        // alone: keeping a face is what protects it from this.
+        val gone = sources[index].uri
+        runCatching {
+            if (gone.scheme == "file") {
+                val f = File(gone.path!!)
+                if (f.parentFile == sourcesDir()) f.delete()
+            }
+        }
+        sources = sources.filterIndexed { i, _ -> i != index }
+        swapPersonAssignments = swapPersonAssignments.mapNotNull { (person, slot) ->
+            when {
+                slot == index -> null
+                slot > index -> person to (slot - 1)
+                else -> person to slot
+            }
+        }.toMap()
+        swapPersonIdentity = swapPersonIdentity.filterKeys { it in swapPersonAssignments }
+        fun shift(i: Int) = (if (i > index) i - 1 else i)
+            .coerceIn(0, sources.lastIndex.coerceAtLeast(0))
+        swapSourceIndex = shift(swapSourceIndex)
+        liveSourceIndex = shift(liveSourceIndex)
+        if (sources.isEmpty()) {
+            resetSwapAssign()
+            status = ""
+        }
+        previewOptionsChanged()
+    }
+
+    /** Every source face, decoded once: the bitmaps to CHECK and the bytes to register. */
+    private class PreparedSources(
+        val bitmaps: List<Bitmap>,
+        val slots: List<PreviewEngine.SourceSlot>,
+    )
+
+    /**
+     * Decode every source in [sources] and convert it for the pipeline. Null if any of
+     * them cannot be read -- a partial list would register faces at the wrong slots.
+     *
+     * Decoding is not processing, so this needs no pipeline and carries no check. The
+     * check is [screenSourceList], which runs against the bitmaps this returns.
+     */
+    private fun prepareSources(): PreparedSources? {
+        // Empty is a valid list only while face_swapper is off (SwapOptions.swapsFace).
+        if (sources.isEmpty()) return if (opts.swapsFace) null else PreparedSources(emptyList(), emptyList())
+        val bitmaps = sources.map { decodeOriented(it.uri) ?: return null }
+        val slots = sources.zip(bitmaps).map { (item, bmp) ->
+            val soft = bmp.asArgb8888() ?: return null
+            val px = IntArray(soft.width * soft.height)
+            soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+            PreviewEngine.SourceSlot(
+                item.uri, NativePipe.argbToBgr(px, soft.width, soft.height),
+                soft.width, soft.height)
+        }
+        return PreparedSources(bitmaps, slots)
+    }
+
+    /**
+     * THE SOURCE CHECK, over the WHOLE list. Null to allow, a finished sentence to refuse.
+     *
+     * ⚠ Every slot, never only the active one. Any face in this list is one tap away from
+     * being the one that gets swapped in -- on either screen, and mid-run on both -- so
+     * checking the first and registering the rest would leave the others processed and
+     * unexamined. That is also why the list is shared: one list is one loop.
+     *
+     * ⚠ `ok` is ALLOW alone. A check that could not run refuses, the same as one that
+     * refused, so a broken graph is never a way through.
+     */
+    private fun screenSourceList(bitmaps: List<Bitmap>, tag: String): String? {
+        for ((i, bmp) in bitmaps.withIndex()) {
+            val v = ContentGate.inspectStill(bmp)
+            // The reason, not only the number. A faulted check reads "NaN" and stops
+            // there, and the detail is then the whole story.
+            appendLog("$tag source ${i + 1} score %+.3f".format(v.score) +
+                      (if (v.detail.isNotBlank()) "  [" + v.detail + "]" else ""))
+            if (!v.permitted) return ContentGate.message(
+                this, R.string.gate_subject_source_image, v)
+        }
+        return null
+    }
+
+    /** Register a prepared list into the pipeline that is loaded now. Null on success. */
+    private fun registerSources(prepared: PreparedSources): String? {
+        if (prepared.slots.isEmpty()) {
+            NativePipe.setFaceAssignEnabled(false)
+            return null
+        }
+        val first = prepared.slots.first()
+        if (!NativePipe.setSource(first.bgr, first.width, first.height))
+            return "source: ${NativePipe.lastError()}"
+        for ((i, slot) in prepared.slots.withIndex()) {
+            if (i == 0) continue
+            if (NativePipe.addSource(slot.bgr, slot.width, slot.height) < 0)
+                return "source ${i + 1}: ${NativePipe.lastError()}"
+        }
+        NativePipe.setActiveSource(swapSourceIndex.coerceIn(0, prepared.slots.lastIndex))
+        NativePipe.setFaceAssignEnabled(swapAssignMode)
+        return null
+    }
+
+    /** Forget every per-person choice and turn the mode off, natively as well as here. */
+    private fun resetSwapAssign() {
+        swapAssignMode = false
+        resetSwapPersonState()
+        swapBrushKeepOriginal = false
+        NativePipe.setFaceAssignEnabled(false)
+    }
+
+    /** Forget the target-specific people without changing whether the mode is enabled. */
+    private fun resetSwapPersonState() {
+        swapSelectedPerson = -1
+        swapPersonSnapshot = null
+        swapPersonBoxes = null
+        swapPersonSnapshotTarget = -1
+        swapPersonThumbs = emptyList()
+        swapPersonAssignments = emptyMap()
+        swapPersonIdentity = emptyMap()
+        NativePipe.clearFaceSourceAssignments()
+    }
+
+    /**
+     * The Swap screen's source row: point at a face that is ALREADY a slot.
+     *
+     * ⚠ It adds nothing, which is why it needs no check of its own: every slot in the
+     * list was gated on the way into the pipeline that holds it (see the gate hook in
+     * refreshSwapped, which covers all of them, not just the first). Changing which
+     * gated slot is active processes nothing new.
+     */
+    private fun selectSwapSource(index: Int) {
+        if (index !in sources.indices) return
+        swapBrushKeepOriginal = false
+        swapSourceIndex = index
+        if (previewWarm) NativePipe.setActiveSource(index)
+        // In assign mode the row is a BRUSH: picking a source while a person is selected
+        // applies it to them at once, which is what makes either tap order work.
+        if (swapAssignMode && swapSelectedPerson >= 0)
+            assignSwapPerson(swapSelectedPerson, index, keepOriginal = false)
+        else previewOptionsChanged(reloads = false)
+    }
+
+    /** The other brush: the next person tapped keeps the face they were filmed with. */
+    private fun selectSwapKeepOriginal() {
+        if (!swapAssignMode) return
+        swapBrushKeepOriginal = true
+        if (swapSelectedPerson >= 0)
+            assignSwapPerson(swapSelectedPerson, KEEP_ORIGINAL, keepOriginal = true)
+    }
+
+    /**
+     * Record what happens to [person] -- one of the faces detected in the frame on screen.
+     *
+     * Runs off the main thread: it re-analyses the whole frame to find the identity under
+     * the tap, which is a detector pass plus an embedding, not a lookup.
+     */
+    private fun assignSwapPerson(person: Int, source: Int, keepOriginal: Boolean) {
+        if (!swapAssignMode || person !in swapPersonThumbs.indices) return
+        if (!keepOriginal && source !in sources.indices) return
+        if (!previewWarm) {
+            // Nothing to assign ON. Said out loud, because the alternative is a tap that
+            // silently does nothing while the pipeline is still coming up.
+            status = getString(R.string.swap_assign_not_ready)
+            return
+        }
+        // Use the frozen detection photo, not the latest video preview frame. The row and
+        // its boxes are target-specific; using the moving frame here reintroduced the same
+        // Person N -> another face problem that the static thumbnails are meant to remove.
+        val frame = swapPersonSnapshot ?: return
+        val box = swapPersonBoxes?.asList()?.chunked(5)?.getOrNull(person) ?: return
+        val soft = frame.asArgb8888() ?: return
+        val px = IntArray(soft.width * soft.height)
+        soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+        val cx = (box[0] + box[2]) / 2f
+        val cy = (box[1] + box[3]) / 2f
+        lifecycleScope.launch {
+            val identity = withContext(Dispatchers.Default) {
+                NativePipe.assignFaceAt(
+                    NativePipe.argbToBgr(px, soft.width, soft.height), soft.width, soft.height,
+                    cx, cy, if (keepOriginal) 0 else source, keepOriginal)
+            }
+            if (identity.size != 512) {
+                status = getString(R.string.swap_assign_failed, person + 1)
+                return@launch
+            }
+            swapSelectedPerson = person
+            swapBrushKeepOriginal = keepOriginal
+            swapPersonAssignments = swapPersonAssignments +
+                (person to if (keepOriginal) KEEP_ORIGINAL else source)
+            swapPersonIdentity = swapPersonIdentity + (person to identity)
+            status = if (keepOriginal)
+                         getString(R.string.swap_assign_kept, person + 1)
+                     else getString(R.string.swap_assign_set, person + 1, source + 1)
+            // No reload: the assignment is already on the warm pipeline, and this only
+            // needs the swapped pane redrawn through it.
+            previewOptionsChanged(reloads = false)
+        }
+    }
+
+    /** Tap a face in the row: select them, and apply whatever the brush currently is. */
+    private fun selectSwapPerson(person: Int) {
+        if (person !in swapPersonThumbs.indices) return
+        swapSelectedPerson = person
+        if (!swapAssignMode) return
+        if (swapBrushKeepOriginal) assignSwapPerson(person, KEEP_ORIGINAL, keepOriginal = true)
+        else assignSwapPerson(person, swapSourceIndex, keepOriginal = false)
+    }
+
+    private fun toggleSwapAssign() {
+        swapAssignMode = !swapAssignMode
+        resetSwapPersonState()
+        swapBrushKeepOriginal = false
+        NativePipe.setFaceAssignEnabled(swapAssignMode)
+        if (swapAssignMode) {
+            // Keep the native swap selector clean: a stale reference would win
+            // inside swapAll and silently cut assign mode down to one face.
+            NativePipe.clearReferenceFace()
+            // The row is a row of DETECTED people, so the boxes have to exist first.
+            showFaceBoxes = true
+            faceBoxes = null
+            refreshSwapped(force = true)
+        } else {
+            swapPersonThumbs = emptyList()
+            previewOptionsChanged(reloads = false)
+        }
+    }
+
+    private fun clearSwapAssignments() {
+        swapPersonAssignments = emptyMap()
+        swapPersonIdentity = emptyMap()
+        swapSelectedPerson = -1
+        swapBrushKeepOriginal = false
+        NativePipe.clearFaceSourceAssignments()
+        status = getString(R.string.swap_assign_cleared)
+        previewOptionsChanged(reloads = false)
+    }
+
+    /**
+     * Every remembered assignment, pushed onto the pipeline that is loaded RIGHT NOW.
+     *
+     * Called after each init -- the preview's, the run's, the player's -- because native
+     * assignments do not survive one. Returns how many landed.
+     */
+    private fun restoreSwapAssignments(): Int {
+        if (!swapAssignMode) return 0
+        var n = 0
+        for ((person, slot) in swapPersonAssignments) {
+            val identity = swapPersonIdentity[person] ?: continue
+            val keep = slot == KEEP_ORIGINAL
+            if (NativePipe.restoreFaceAssignment(identity, if (keep) 0 else slot, keep)) n++
+            else appendLog("could not restore the choice for person ${person + 1}")
+        }
+        return n
+    }
+
+    /**
+     * The lips identities onto the pipeline that is loaded RIGHT NOW, exactly.
+     *
+     * Called after every init the app owns (preview warm, export, batch): the
+     * pipeline ends up holding exactly [lipIdentities], in order -- replacing
+     * whatever an init re-applied, so Kotlin state and native state cannot
+     * drift apart (rotation, concurrent re-warm, restores). Returns how many
+     * landed; zero means the run syncs every face.
+     */
+    private suspend fun pushLipSelection(): Int {
+        lipPickMutex.withLock {
+            if (lipIdentities.isEmpty()) {
+                NativePipe.setLipReferences(FloatArray(0), 0)
+                return 0
+            }
+            val flat = FloatArray(lipIdentities.size * 512)
+            lipIdentities.forEachIndexed { i, e -> e.copyInto(flat, i * 512) }
+            if (!NativePipe.setLipReferences(flat, lipIdentities.size)) {
+                appendLog("could not push the lips selection; export will sync all faces")
+                return 0
+            }
+            return lipIdentities.size
+        }
+    }
+
+    private val pickSource = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) setSourceFrom(uri)
+    }
+
+    private val pickLiveSources = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) addLiveSource(uri)
+    }
+
+    private fun pickLiveSource() = pickLiveSources.launch("image/*")
+
+    /**
+     * The Live screen's "+": another face, mid-session if need be.
+     *
+     * ⚠ GATED HERE when the pump is running, and that is not belt and braces -- it is the
+     * only check this path has. [startLive] gates the whole list on the way up, which
+     * covers every source that existed THEN; a face added afterwards reaches `addSource`
+     * and becomes swappable one tap later without ever passing that loop. Not running,
+     * nothing is registered yet and startLive's loop is still the check.
+     */
+    private fun addLiveSource(uri: Uri) {
+        val already = sources.indexOfFirst { it.uri == uri }
+        if (already >= 0) { selectLiveSource(already); return }
+        // ONE decode, two uses: the thumbnail stored for the pane and the pixels handed
+        // to the pipeline are the same image -- a second decode is a full-size allocation
+        // that produces nothing new.
+        val bmp = decodeOriented(uri) ?: run {
+            liveNote = getString(R.string.status_cannot_read_source); return
+        }
+        if (!liveRunning) {
+            sources = sources + SourceItem(uri, bmp)
+            liveSourceIndex = sources.lastIndex
+            return
+        }
+        lifecycleScope.launch {
+            val soft = bmp.asArgb8888()
+            val px = IntArray(soft.width * soft.height)
+            soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+            val bgr = NativePipe.argbToBgr(px, soft.width, soft.height)
+            val refusal = withContext(Dispatchers.Default) {
+                val v = ContentGate.inspectStill(bmp)
+                appendLog("live added source score %+.3f".format(v.score) +
+                          (if (v.detail.isNotBlank()) "  [" + v.detail + "]" else ""))
+                if (!v.permitted) ContentGate.message(
+                    this@MainActivity, R.string.gate_subject_source_image, v)
+                // The native slots must stay aligned with this list, so the new face is
+                // registered at the index the row will show it at.
+                else if (NativePipe.addSource(bgr, soft.width, soft.height) < 0)
+                    getString(R.string.status_no_face)
+                else null
+            }
+            if (refusal != null) { liveNote = refusal; return@launch }
+            sources = sources + SourceItem(uri, bmp)
+            selectLiveSource(sources.lastIndex)
+        }
+    }
+
+    private fun selectLiveSource(index: Int) {
+        if (index !in sources.indices) return
+        // ⚠ The brush is cleared BEFORE the no-op check, never after. Selecting "keep the
+        // original" and then tapping the source that was already active is the one way
+        // back, and an early return above this line made it the one way that did nothing.
+        val wasKeepOriginal = liveBrushKeepOriginal
+        liveBrushKeepOriginal = false
+        if (index == liveSourceIndex && !wasKeepOriginal) return
+        liveSourceIndex = index
+        // setActiveSource also re-applies to the SELECTED person, which is exactly what
+        // takes them back off "keep the original" -- so this covers both directions.
+        if (liveRunning) NativePipe.setActiveSource(index)
+    }
+
+    /** Live's other brush. The next tapped person keeps the face they were filmed with. */
+    private fun selectLiveKeepOriginal() {
+        if (!liveAssignMode) return
+        liveBrushKeepOriginal = true
+        if (liveRunning) NativePipe.setSelectedFaceKeepOriginal(true)
+    }
+
+    private fun clearLiveSource() {
+        if (liveRunning || sources.isEmpty()) return
+        removeSource(liveSourceIndex)
+    }
+
+    private val takeSourcePhoto = registerForActivityResult(
+        ActivityResultContracts.TakePicture()) { ok ->
+        val uri = pendingCapture; pendingCapture = null
+        if (ok && uri != null) setSourceFrom(uri)
+    }
+    /**
+     * Where the system camera is writing, between launching it and its result arriving.
+     *
+     * The contracts report only success/failure -- the URI is the one WE supplied, so it
+     * has to survive the round trip here. Cleared on the way out either way, so a cancelled
+     * capture cannot be mistaken for the next one.
+     */
+    private var pendingCapture: Uri? = null
+
+    /** A content:// URI for a new file under files/captures, via the manifest's provider. */
+    private fun newCaptureUri(ext: String): Uri {
+        val dir = File(filesDir, "captures").apply { mkdirs() }
+        val f = File(dir, "cap_${System.currentTimeMillis()}.$ext")
+        return androidx.core.content.FileProvider.getUriForFile(
+            this, "$packageName.fileprovider", f)
+    }
+
+    private val takePhoto = registerForActivityResult(
+        ActivityResultContracts.TakePicture()) { ok ->
+        val uri = pendingCapture; pendingCapture = null
+        if (ok && uri != null) loadTarget(uri)
+    }
+    private val recordVideo = registerForActivityResult(
+        ActivityResultContracts.CaptureVideo()) { ok ->
+        val uri = pendingCapture; pendingCapture = null
+        if (ok && uri != null) loadTarget(uri)
+    }
+
+    /**
+     * Launch the system camera for a target.
+     *
+     * ⚠ The CAMERA permission is REQUESTED first even though the system camera app is what
+     * actually opens the lens. An app that DECLARES android.permission.CAMERA -- which this
+     * one does, for the Live tab -- must also hold it before ACTION_IMAGE_CAPTURE will
+     * start, or the intent fails. An app that never declared it would need no such thing,
+     * which is why this looks unnecessary and is not.
+     */
+    private fun capture(video: Boolean, forSource: Boolean = false) {
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            pendingCaptureIsVideo = video
+            pendingCaptureForSource = forSource
+            askCameraForCapture.launch(android.Manifest.permission.CAMERA)
+            return
+        }
+        val uri = newCaptureUri(if (video) "mp4" else "jpg")
+        pendingCapture = uri
+        when {
+            // A source face is an identity, so there is no video form of it -- the source
+            // capture is stills only, and forSource is never combined with video.
+            forSource -> takeSourcePhoto.launch(uri)
+            video -> recordVideo.launch(uri)
+            else -> takePhoto.launch(uri)
+        }
+    }
+
+    private var pendingCaptureIsVideo = false
+    private var pendingCaptureForSource = false
+    private val askCameraForCapture = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) capture(pendingCaptureIsVideo, pendingCaptureForSource)
+        else status = getString(R.string.status_camera_denied)
+    }
+
+    // OpenDocument rather than GetContent: GetContent takes ONE mime filter, and the
+    // target can now be a video or a still.
+    /**
+     * The target picker, which is also the BATCH picker.
+     *
+     * OpenMultipleDocuments rather than OpenDocument, deliberately: picking one file
+     * behaves exactly as it always did, and picking several queues the rest. There is no
+     * separate "batch mode" control to find, because selecting twelve clips is already an
+     * unambiguous statement that you want twelve clips done -- the app just has to stop
+     * throwing eleven of them away.
+     *
+     * The FIRST goes through loadTarget as the visible target, so the panes, the trim and
+     * the frame rate all behave as before; the rest are queue entries and nothing more.
+     */
+    private val pickTarget = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNullOrEmpty()) return@registerForActivityResult
+        // How many came back, in the log: "I picked several and got one clip" and "I picked
+        // one" are the same screen afterwards, and only this line tells them apart.
+        android.util.Log.i("ffbatch", "picker returned " + uris.size + " uri(s)")
+        batchQueue = emptyList()
+        loadTarget(uris.first())
+        // ⚠ VIDEOS ONLY, and the first pick decides whether there is a queue at all.
+        //
+        // A still target has no Swap button -- the pane already IS the result -- so a queue
+        // behind one would be a list with no way to start it. And runBatch drives
+        // VideoSwapper, which has nothing to do with a photo. Both are real limits rather
+        // than oversights, so the picker enforces them here instead of letting the run fail
+        // per item with "cannot read".
+        val images = uris.count {
+            contentResolver.getType(it)?.startsWith("image/") == true
+        }
+        val videos = uris.filter {
+            contentResolver.getType(it)?.startsWith("image/") != true
+        }
+        if (images > 0 && videos.size < 2) {
+            // Nothing to queue: either the visible target is the still, or every other pick
+            // was one. The single-target flow is exactly right for that.
+            if (images == uris.size) status = getString(R.string.status_batch_images_only)
+            return@registerForActivityResult
+        }
+        if (uris.size > 1) {
+            // ⚠ INCLUDING the first. The queue holds every item with the visible target at
+            // index 0, from the pick until the run ends -- one representation, so the UI
+            // and the runner cannot disagree about whether item one is in the list. The
+            // first version kept it out and had both of them add it back, which drew the
+            // visible clip twice.
+            batchQueue = videos.map {
+                BatchItem(it, displayName(it) ?: getString(R.string.batch_unnamed_clip))
+            }
+            seedBatchThumbs(videos, 0)
+            status = if (images > 0)
+                         getString(R.string.status_batch_queued_some, videos.size, images)
+                     else getString(R.string.status_batch_queued, videos.size)
+        }
+    }
+    /**
+     * Add clips to the queue WITHOUT disturbing the visible target -- roadmap 14.
+     *
+     * ⚠ This exists because the field report was "i didnt see any batch processing from ui
+     * side". The design was that picking several files IS the batch, with no control to
+     * find; that is still true and still works, but it is invisible -- SAF needs a
+     * long-press before a second file can be selected at all, so a user who does not
+     * already know the feature exists has no way to discover it. A named button is how
+     * they find out the queue is there; multi-select stays as the fast path.
+     */
+    private val pickMoreTargets = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNullOrEmpty()) return@registerForActivityResult
+        val tgt = targetFile ?: return@registerForActivityResult
+        val videos = uris.filter {
+            contentResolver.getType(it)?.startsWith("image/") != true
+        }
+        if (videos.isEmpty()) {
+            status = getString(R.string.status_batch_images_only)
+            return@registerForActivityResult
+        }
+        // Seed index 0 with the VISIBLE target the first time, so the queue keeps its one
+        // representation: item 0 is always the clip on screen. runBatch reads targetFile
+        // for that item rather than this URI, so a cache path here would be equivalent.
+        val head = if (batchQueue.isEmpty())
+                       listOf(BatchItem(Uri.fromFile(tgt), targetName ?: tgt.name))
+                   else batchQueue
+        // ⚠ Not the same clip twice. Adding a file that is already queued produced a second
+        // row with the same name that swapped the same video again into a second output --
+        // twice the wait for one result, and two rows nobody could tell apart.
+        val already = head.map { it.uri }.toSet()
+        val fresh = videos.filterNot { it in already }
+        if (fresh.isEmpty()) {
+            status = getString(R.string.status_batch_already_queued)
+            return@registerForActivityResult
+        }
+        batchQueue = head + fresh.map {
+            BatchItem(it, displayName(it) ?: getString(R.string.batch_unnamed_clip))
+        }
+        seedBatchThumbs(fresh, head.size)
+        status = getString(R.string.status_batch_queued, batchQueue.size)
+    }
+
+    // Audio or video -- upstream's own `source_paths` takes either and reads whichever
+    // track is there, so a dubbed line saved as a short video should not be rejected for
+    // carrying pixels it will never use.
+    private val pickVoice = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) loadVoice(uri)
+    }
+
+    private val pickDriver = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) loadDriver(uri)
+    }
+
+    /** Copy the driver to a real path, as targets and voices are, and check it has video. */
+    private fun loadDriver(uri: Uri) {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val f = File(cacheDir, "driver.video")
+                    contentResolver.openInputStream(uri).use { i ->
+                        f.outputStream().use { o -> i!!.copyTo(o) }
+                    }
+                    val mmr = MediaMetadataRetriever().apply { setDataSource(f.absolutePath) }
+                    val hasVideo = mmr.extractMetadata(
+                        MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes"
+                    mmr.release()
+                    if (!hasVideo) error(getString(R.string.status_driver_no_video))
+                    f
+                }
+            }
+            result.onSuccess {
+                driverFile = it
+                driverName = displayName(uri)
+                status = getString(R.string.status_driver_ready)
+            }.onFailure {
+                driverFile = null; driverName = null
+                status = getString(R.string.status_cannot_read_driver, it.message ?: "")
+            }
+        }
+    }
+
+    private fun clearDriver() {
+        driverFile = null
+        driverName = null
+    }
+
+    /**
+     * The models live in a subdirectory of the app's external files dir.
+     *
+     * It has to be created by the APP, not by `adb push`: a directory created by adb is
+     * owned by `shell`, and although the files inside are world-readable the app cannot
+     * traverse a shell-owned directory here -- open() fails with nothing but ENOENT to
+     * explain it.  mkdirs() on every launch makes the dir app-owned before anything is
+     * pushed into it.
+     */
+    private fun modelDir() = File(getExternalFilesDir(null), "models").apply { mkdirs() }
+
+    /**
+     * Decode an image the way the camera meant it to be seen.
+     *
+     * [BitmapFactory] ignores EXIF orientation. A phone stores a portrait photo as
+     * LANDSCAPE pixels plus an Orientation tag, so decoding without applying the tag
+     * yields a sideways image -- and that is not a cosmetic thumbnail problem: `yoloface`
+     * is not rotation invariant, so a face on its side is simply not detected and the run
+     * dies with "no face found in source image". Reported 2026-08-29; the rotated preview
+     * and the missing face were one bug, not two.
+     *
+     * [ImageDecoder] applies the tag itself and also reads HEIC, which is what Samsung
+     * cameras write by default and what BitmapFactory is weakest on.
+     *
+     * ALLOCATOR_SOFTWARE is required, not a preference: every caller reads the pixels back
+     * with getPixels, and a hardware bitmap has no pixel array to read. It throws rather
+     * than returning null on a bad file, hence runCatching.
+     */
+    /**
+     * ⚠ AND IT IS CAPPED, which is not an optimisation -- it is why the app survives a
+     * camera photo at all.
+     *
+     * Reported as "freezes and crashes on SOME photos" on an 8 Elite Gen 5. Nothing here
+     * limited the decode, and a flagship shoots 50 MP (8160x6144) or 200 MP. At 50 MP one
+     * photo asks for, in order: a 200 MB ARGB_8888 bitmap, a 200 MB `copy` for the gate, a
+     * 200 MB IntArray for getPixels, and a 150 MB BGR buffer. ~750 MB against an app heap
+     * that is typically 256-512 MB, so it dies -- and thrashes the collector on the way,
+     * which is the freeze that precedes it. A 12 MP shot needs ~48 MB and lives, which is
+     * exactly why it was "some photos".
+     *
+     * setTargetSampleSize decodes SMALLER rather than decoding and shrinking, so the full
+     * bitmap is never allocated. Powers of two only, which is what the decoders do natively
+     * and therefore free.
+     *
+     * The caps differ because the two uses differ. A SOURCE is an identity: it is warped to
+     * 112 for the recogniser and 256 for the swapper, so pixels beyond ~2048 on the long
+     * edge are thrown away untouched. A photo TARGET is the output -- what is capped here
+     * is what gets saved -- so it keeps four times the area, which still leaves a 12 MP
+     * result and a working phone.
+     */
+    private fun decodeOriented(uri: Uri, maxEdge: Int = MAX_SOURCE_EDGE): Bitmap? = runCatching {
+        ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) { d, info, _ ->
+            d.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            d.isMutableRequired = true
+            sampleFor(info.size.width, info.size.height, maxEdge)?.let { d.setTargetSampleSize(it) }
+        }
+    }.getOrNull()
+
+    /** As above, for a file the selftest pushed rather than a picked Uri. */
+    private fun decodeOriented(file: File, maxEdge: Int = MAX_SOURCE_EDGE): Bitmap? = runCatching {
+        ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { d, info, _ ->
+            d.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            d.isMutableRequired = true
+            sampleFor(info.size.width, info.size.height, maxEdge)?.let { d.setTargetSampleSize(it) }
+        }
+    }.getOrNull()
+
+    /** The power-of-two subsample that brings the long edge under [maxEdge]; null for none. */
+    private fun sampleFor(w: Int, h: Int, maxEdge: Int): Int? {
+        var s = 1
+        while (maxOf(w, h) / s > maxEdge) s *= 2
+        return if (s > 1) s else null
+    }
+
+    /**
+     * The fp16 canary pair, unpacked out of assets.
+     *
+     * Rewritten on every call rather than cached: the two total 85 KB, and a half-written
+     * file from a killed install would otherwise fail the control forever and pin the
+     * verdict at "unknown".
+     */
+    private fun canaryDir() = File(filesDir, "canary").apply {
+        mkdirs()
+        for (name in listOf("canary_249.bin", "canary_228.bin")) {
+            runCatching {
+                assets.open("canary/$name").use { input ->
+                    File(this, name).outputStream().use { input.copyTo(it) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Which `<name>_<tier>.bin` this chip needs, resolved against disk on EVERY read.
+     *
+     * ⚠ A `by lazy` here was half of the 0.2.0 "downloads the models, then says there are
+     * no models" bug. It is first read before anything is downloaded, when the only answer
+     * available is the best tier the chip could load; the download then lands a DIFFERENT
+     * tier, and the cached value never catches up. A getter costs a few `canRead()` calls
+     * -- [ModelPaths] caches the expensive half, the probe.
+     */
+    private val tier: String get() = ModelPaths.tier(this)
+
+    /**
+     * Every tier this chip can load, best first. See [NativePipe.probeTierChain] -- it is
+     * NOT "this tier and every older one", so it must not be reconstructed here.
+     */
+    private val tierChain: List<String> get() = ModelPaths.tierChain(this)
+
+    /**
+     * Whether hyperswap_1b's binary is on the device.
+     *
+     * The choice appears only when it is real, and the
+     * required/optional rows in the Settings inventory follow the SELECTED swapper.
+     * Binaries are published per tier on the model repo; nothing is bundled in the APK.
+     */
+    private val hasHyperswap1b: Boolean by lazy {
+        ModelPaths.present(modelDir(), tier, "hyperswap_1b")
+    }
+
+    /**
+     * Whether hyperswap_1c's binary is on the device. Same rule as 1b.
+     */
+    private val hasHyperswap1c: Boolean by lazy {
+        ModelPaths.present(modelDir(), tier, "hyperswap_1c")
+    }
+
+    /**
+     * Whether the face enhancer's binary is on the device.
+     *
+     * Asked of the FILESYSTEM, not [NativePipe.hasEnhancer], because the switch has to be
+     * drawable before any pipeline exists -- the Advanced panel opens long before a run
+     * initialises one. The native side is still the authority at execution time and skips
+     * the stage if the model went away in between.
+     *
+     * Not `by lazy`: a download can add gpen after the Activity is created, and a lazy
+     * would keep saying no for the life of the process.
+     */
+    private val hasEnhancer: Boolean
+        get() = ModelPaths.present(modelDir(), tier, "gpen")
+
+    /**
+     * Whether the lip syncer's binary is on the device.
+     *
+     * Same rule as [hasEnhancer], and for the same reason: asked of the filesystem so the
+     * chip is drawable before a pipeline exists, with the native side still the authority
+     * at execution time.
+     */
+    private val hasLipSyncer: Boolean
+        // edtalk only. wav2lip was accepted here while ffpipe still fell back to it; both
+        // went together, deliberately, because offering Lip Sync for a model the pipeline
+        // now refuses is worse than saying the model is missing.
+        get() = ModelPaths.present(modelDir(), tier, "edtalk")
+
+    /**
+     * Whether the face editor's set (LivePortrait, four files) is on the device. Same rule
+     * as [hasEnhancer]: the filesystem decides whether the chip is drawn, the native side
+     * whether the stage runs -- and on a chip that refuses one of its graphs native says
+     * no while this says yes, which the run log reports (see NativePipe.hasFaceEditor).
+     */
+    private val hasFaceEditor: Boolean
+        get() = ModelPaths.present(modelDir(), tier, ModelPaths.LIVEPORTRAIT)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        BugReport.install(this)
+        NativePipe.ensureLoaded()
+        // BEFORE the first probe, and that ordering is the whole point: ModelPaths caches
+        // the backend and the tier chain on first ask, so a runtime pinned in Settings and
+        // applied any later would be ignored for the life of the process.
+        // adb: am start -n com.facefusion.mobile/.MainActivity --es backend ncnn|qnn|auto
+        //
+        // The runtime, settable from the shell, BEFORE ModelPaths.apply pushes it down.
+        // Settings has the same control, but a chip that has to be tapped cannot be part of
+        // a scripted device run -- and every other verification in this project is a script
+        // (install_app.ps1, run_cli.ps1, the selftest below). The non-Qualcomm path is the
+        // one that most needs that, because it is the path no device here selects on its
+        // own.
+        //
+        // Safe to leave in a shipping build for the reason the `api` extra is not: this
+        // picks between two runtimes that both run the same gated pipeline. It cannot open
+        // a port, and it cannot reach anything the Settings screen does not already offer.
+        intent?.getStringExtra("backend")?.let {
+            val want = if (it == "auto") "" else it
+            if (want == "" || want == "qnn" || want == "ncnn")
+                ModelPaths.setForcedBackend(this, want)
+        }
+        // adb: ... --es unit auto|gpu|cpu   -- which unit ncnn may use, same as the
+        // Settings "Graphics chip" chips.
+        //
+        // Here for the reason the line above is: the pin is the escape hatch for a phone
+        // whose Vulkan computes these graphs wrongly, and an escape hatch that can only be
+        // reached by tapping a chip cannot be part of a scripted run. It is the only way to
+        // exercise the CPU pin on a bench whose own GPU passes the agreement check, and "a
+        // path that cannot be tested is a path that is not verified".
+        intent?.getStringExtra("unit")?.let {
+            if (it == "auto" || it == "gpu" || it == "cpu") ModelPaths.setNcnnGpu(this, it)
+        }
+        // adb: ... --es lowmem auto|on|off   -- the low memory switch, scriptable for the
+        // same reason as the unit pin: it is measured with a bench, not with a finger.
+        intent?.getStringExtra("lowmem")?.let {
+            if (it == "auto" || it == "on" || it == "off") ModelPaths.setLowMemory(this, it)
+        }
+        ModelPaths.apply(this)
+        forcedBackend = ModelPaths.forcedBackend(this)
+        ncnnGpu = ModelPaths.ncnnGpu(this)
+        lowMemory = ModelPaths.lowMemory(this)
+        downloadSource = ModelDownload.loadSource(this)
+        // Restore the manual theme choice (if any) BEFORE the first composition, so a
+        // pinned dark mode does not flash the light scheme on launch.
+        darkTheme = ThemePrefs.load(this)
+        modelDir()
+        // The faces from last time. Before the UI composes, so the row is never briefly
+        // empty and then repopulated under the user's finger.
+        restoreSources()
+        opts = SwapOptions.load(this).let {
+            // inswapper_128 is retired from the UI: it is 128 px where all three
+            // hyperswaps are 256, which is the reason -- NOT that it never worked. It is
+            // converted, measured (32.96 dB / 23.32 ms) and still loadable by ffjni. A
+            // saved "inswapper" falls back rather than pointing at a model no picker
+            // offers, and Settings keeps a delete-only row for the file itself.
+            if (it.swapper == "inswapper") it.copy(swapper = "hyperswap") else it
+        }
+        ApiService.restore(this)
+
+        // adb: ... --es selftest 1 --es enhance 1 --es lipsync 1   (or `0` to force OFF)
+        //
+        // The enhancer is opt-in and off by default, so the selftest never touched it --
+        // which meant gpen had never run through the APK on EITHER backend, and on ncnn it
+        // is the one model with a history of being wrong rather than slow. Not persisted:
+        // this changes the run, not the user's settings.
+        //
+        // `lipsync` is here for the same reason and it is the ONLY way the lip syncer gets
+        // exercised over adb: the chip needs a target with an audio track and a hand on the
+        // screen, and a stage nobody can run from a script is a stage that only breaks in
+        // the field.
+        //
+        // ⚠ Both extras are THREE-STATE, and that is not cosmetic. They used to only ever
+        // turn a stage ON, so a run without them inherited `opts` from the user's SAVED
+        // settings -- and a "plain" baseline measured with the enhancer and the lip syncer
+        // still enabled from an earlier run looks exactly like a plain one in the log.
+        // That corrupted a real measurement (roadmap 9, 2026-09-04). `--es lipsync 0`
+        // forces OFF; omitting it still means "whatever is saved".
+        if (intent?.getStringExtra("selftest") != null) {
+            fun flag(name: String): Boolean? = intent?.getStringExtra(name)?.let {
+                it != "0" && !it.equals("false", ignoreCase = true)
+            }
+            flag("enhance")?.let { opts = opts.copy(faceEnhance = it) }
+            flag("lipsync")?.let { opts = opts.copy(lipSync = it) }
+            // `--es swap 0`: face_swapper off, which only counts with another stage on.
+            flag("swap")?.let { opts = opts.copy(swapEnabled = it) }
+            // `--es animate 1`: face_animator, the source photo moved by the test clip;
+            // `--es talking 1`: the talking photo (needs `--es lipsync 1 --es voice <f>`).
+            flag("animate")?.let { opts = opts.copy(faceAnimate = it) }
+            val portrait = opts.faceAnimate || flag("talking") == true
+            // `--es edit mouth_smile=1,head_yaw=-0.5`: the face editor with these sliders
+            // (upstream's names, SwapOptions.EDITOR_SLIDERS); `--es edit 0` forces it OFF.
+            // Same three-state rule as above, for the same reason.
+            intent?.getStringExtra("edit")?.let { spec ->
+                opts = if (spec == "0") opts.copy(faceEdit = false)
+                       else opts.copy(faceEdit = true, editor = SwapOptions.parseEditor(spec))
+            }
+            // `--es voice <name>`: a driving-audio file under the app's own files dir (or
+            // /sdcard/Download), scriptable over adb without going through the SAF picker.
+            // Bench-only wiring for `VideoSwapper.voicePath` -- see `runSwap`'s doc for why
+            // the real UI never lets this stay null while Lip Sync is on.
+            selfTest(intent?.getStringExtra("voice"), portrait); return
+        }
+
+        // adb: am start -n com.facefusion.mobile/.MainActivity --es api start
+        //
+        // LOOPBACK ONLY, and deliberately not parameterised: this Activity is exported, so
+        // an extra that could bind 0.0.0.0 would be a remote-exposure switch any app on the
+        // phone could flip without the user seeing the screen. Opening the port to the
+        // network stays a deliberate touch on a switch that says what it does. The token is
+        // required either way.
+        // ⚠ CONSUMED, not merely read. The launch intent stays attached to the task,
+        // so Android hands it back every time this activity is re-created -- after a
+        // low-memory kill, or when the task is restored. An extra that merely SELECTS
+        // something can be replayed harmlessly; one that performs an ACTION cannot, and
+        // this one opens a port. Left un-consumed it reads as "the API notification comes
+        // back on its own", which is what it was reported as, and no switch in Settings
+        // explains it because no switch was touched.
+        if (intent?.getStringExtra("api") == "start") {
+            intent.removeExtra("api")
+            setIntent(intent)
+            toggleApi(on = true, lan = false, remember = false)
+        }
+
+        sweepOrphanedOutputs()
+        probeDevice()
+
+        refreshModelsMissing()
+        refreshHostedFiles()
+
+        // adb: am start -n com.facefusion.mobile/.MainActivity --es download 1
+        //
+        // The same call the Download button makes, so the DOWNLOADER can be verified on a
+        // device rather than read. It resolves the manifest for whichever runtime is
+        // active, which is the half that differs between them -- QNN tiers live under
+        // `tiers`, the ncnn set under its own key with an `ncnn/` prefix on every filename
+        // -- and that difference is invisible from the outside until a file lands in the
+        // wrong place or not at all.
+        //
+        // Nothing here is privileged: it fetches only what the manifest publishes for a
+        // runtime the app already chose, and every file is still SHA256-verified before it
+        // takes its real name.
+        // `--es source mirror|hf`: the Download-from setting, saved as if picked in Settings.
+        intent?.getStringExtra("source")?.let {
+            ModelDownload.setSource(this, it)
+            downloadSource = ModelDownload.loadSource(this)
+        }
+        if (intent?.getStringExtra("download") != null) onDownloadTapped()
+
+        setContent {
+            FaceFusionTheme(darkTheme) {
+                // The download runs in a service, on its own thread. Rather than trust a
+                // cross-thread state write to invalidate exactly the right scope, re-read
+                // the disk while it matters; the loop exits as soon as the set is complete.
+                LaunchedEffect(modelsMissing, ModelDownload.running) {
+                    while (modelsMissing || ModelDownload.running) {
+                        refreshModelsMissing()
+                        delay(400)
+                    }
+                    // The Settings inventory is not observable state -- it asks the
+                    // filesystem during composition and reads modelsVersion to know when
+                    // to ask again. Without this, a model that finished downloading while
+                    // that screen was open stayed listed as missing.
+                    modelsVersion++
+                    // ~300 MB is long enough that the user has put the phone down, and the
+                    // notification is the only thing that has been speaking to them. This
+                    // says so in the app too, but only for a download that actually ENDED
+                    // here: the loop also exits on the first composition of an install that
+                    // already has its models, and announcing a download to someone who did
+                    // not start one is worse than saying nothing.
+                    if (announceDownload) {
+                        announceDownload = false
+                        val err = ModelDownload.error
+                        // ⚠ "Models ready" is a claim about the REQUIRED set, and it used
+                        // to be the only thing said here -- so a one-model download that
+                        // fetched nothing, or failed outright, still reported success as
+                        // long as the required models happened to be present. Which they
+                        // always are by the time anyone asks for an optional one.
+                        if (err != null)
+                            toast(getString(R.string.toast_download_failed, err))
+                        else if (pendingDownload != null)
+                            toast(getString(R.string.toast_download_done))
+                        else if (!modelsMissing)
+                            toast(getString(R.string.toast_models_ready))
+                        pendingDownload = null
+                        // Finish the tap that started this. Gated on the FILE, not on the
+                        // download reporting success: turning a stage on for a model that
+                        // is not there produces a run that fails later, somewhere that
+                        // cannot explain why.
+                        enableAfterDownload?.let { m ->
+                            if (ModelPaths.present(modelDir(), tier, m)) when (m) {
+                                "gpen" -> applyOpts(opts.copy(faceEnhance = true))
+                                "edtalk" -> applyOpts(opts.copy(lipSync = true))
+                                ModelPaths.LIVEPORTRAIT -> applyOpts(opts.copy(faceEdit = true))
+                            }
+                        }
+                        enableAfterDownload = null
+                    }
+                }
+
+                // The preview warms ITSELF once both inputs and the models exist.
+                //
+                // The refresh button used to be the only thing that would pay for the first
+                // model load (~266 MB, several seconds), so removing it means nothing would
+                // ever ask. force = true because that first load is exactly what a cold
+                // refreshSwapped declines to do on its own.
+                //
+                // Keyed on the inputs rather than run in a loop: it fires when the user
+                // finishes picking, and cannot repeat because refreshing changes none of
+                // its keys.
+                //
+                // ⚠ It used to require `!previewWarm` as well, which quietly made a WARM
+                // pipeline the case it would not redraw for. That was survivable only
+                // because both target paths went cold on their own -- the photo path by
+                // releasing the whole pipeline, the video path by leaving `preview` set so
+                // a stale frame filled the pane instead. Now that a target change keeps the
+                // pipeline (see clearPreviewFrames), this is what draws the new target, and
+                // the guard would have left the pane empty.
+                // WHAT THE DETECTOR SEES.
+                //
+                // `previewWarm` is the precondition that matters: detectFaces goes straight
+                // at the shared g_pipe, so it must not be asked while a run owns it --
+                // `busy` covers that, and PipeGuard covers the API.
+                //
+                // ⚠ It also runs ONCE PER TARGET while the overlay is OFF, to answer "is
+                // there more than one face here". That question cannot be answered by the
+                // switch's initial value, because the detector has to have run first -- and
+                // it is exactly the question the user has when a second face is on screen.
+                // One yoloface pass, ~2 ms, and no identity work at all.
+                LaunchedEffect(originalFrame, showFaceBoxes, swapAssignMode, previewWarm,
+                               busy, targetVersion, faceDetectNonce) {
+                    val frame = originalFrame
+                    // The boxes belong to ONE frame. The moment the frame changes they are
+                    // wrong, and being wrong on screen is worse than being absent -- so they
+                    // go immediately, before anything below decides whether to recompute.
+                    if (faceBoxFrame !== frame) {
+                        faceBoxes = null
+                        faceBoxFrame = null
+                    }
+                    val decide = autoBoxTarget != targetVersion
+                    if (frame == null || !previewWarm || busy ||
+                        (!showFaceBoxes && !decide)) {
+                        if (!showFaceBoxes && !decide) faceBoxes = null
+                        return@LaunchedEffect
+                    }
+                    val found = withContext(Dispatchers.Default) {
+                        runCatching {
+                            val soft = frame.asArgb8888()
+                                ?: return@runCatching null
+                            val px = IntArray(soft.width * soft.height)
+                            soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+                            NativePipe.detectFaces(
+                                NativePipe.argbToBgr(px, soft.width, soft.height),
+                                soft.width, soft.height)
+                        }.getOrNull()
+                    }
+                    if (decide) {
+                        // Once per target, whatever the answer: a user who turns the
+                        // overlay back off must not have it turned on again by the next
+                        // preview frame of the same clip.
+                        autoBoxTarget = targetVersion
+                        if ((found?.size ?: 0) >= 10) {
+                            showFaceBoxes = true
+                            status = getString(R.string.status_faces_found,
+                                               (found?.size ?: 0) / 5)
+                        }
+                    }
+                    faceBoxes = if (showFaceBoxes) found else null
+                    // Assign per person uses a PHOTO snapshot, not the moving preview.
+                    // The detector may still refresh faceBoxes for the optional overlay,
+                    // but the row and its assignment coordinates are created only once per
+                    // target. This removes thumbnail churn and prevents detector score
+                    // order from silently changing what Person 1/2 means.
+                    if (swapAssignMode && showFaceBoxes && found != null &&
+                        swapPersonSnapshotTarget != targetVersion) {
+                        swapPersonSnapshot = frame
+                        swapPersonBoxes = found.copyOf()
+                        swapPersonThumbs = found.asList().chunked(5).mapNotNull { b ->
+                            if (b.size < 4) null else cropPersonThumb(frame, b)
+                        }
+                        swapPersonSnapshotTarget = targetVersion
+                    }
+                    faceBoxFrame = frame
+                }
+
+                LaunchedEffect(sourceUri, targetVersion, modelsMissing, opts.swapsFace) {
+                    android.util.Log.d("ffpreview", "autowarm fired: src=" +
+                        (sourceUri != null) + " tgt=" +
+                        (targetFile != null || targetImage != null) +
+                        " missing=" + modelsMissing + " run=" + busy)
+                    if ((sourceUri != null || !opts.swapsFace) &&
+                        (targetFile != null || targetImage != null) && !modelsMissing && !busy) {
+                        refreshSwapped(force = true)
+                    }
+                }
+                AppScaffold(
+                    screen,
+                    {
+                        // Leaving the tab stops the feed. Without this the camera keeps
+                        // running behind the Swap screen, PipeGuard stays held so a swap
+                        // reports the NPU busy, and the pipeline Live configured is still
+                        // the loaded one.
+                        if (screen == Screen.Live && it != Screen.Live) stopLive()
+                        screen = it
+                    },
+                    // Shown on BOTH lines now. It was dev-only for one reason -- the live
+                    // path had no content gate -- and that reason is gone: the camera is
+                    // sampled in LiveEngine and the source is checked where it is picked.
+                    showLive = true,
+                ) { pad ->
+                    Box(Modifier.padding(pad)) {
+                        when (screen) {
+                            Screen.Swap -> SwapScreen(
+                                sourceThumb = sourceThumb,
+                                sourceThumbs = sources.map { it.thumb },
+                                activeSource = swapSourceIndex,
+                                onSelectSource = ::selectSwapSource,
+                                assignMode = swapAssignMode,
+                                personThumbs = swapPersonThumbs,
+                                selectedPerson = swapSelectedPerson,
+                                personAssignments = swapPersonAssignments,
+                                keepOriginalBrush = swapBrushKeepOriginal,
+                                onKeepOriginal = ::selectSwapKeepOriginal,
+                                onToggleAssignMode = ::toggleSwapAssign,
+                                onSelectPerson = ::selectSwapPerson,
+                                onClearAssignments = ::clearSwapAssignments,
+                                hasSource = sourceUri != null,
+                                hasTarget = targetFile != null || targetImage != null,
+                                imageTarget = targetImage != null,
+                                durationMs = durationMs,
+                                trimStartMs = trimStartMs,
+                                trimEndMs = trimEndMs,
+                                onTrimChange = ::onTrimChanged,
+                                targetAspect = targetAspect,
+                                inputFps = inputFps,
+                                targetW = targetW,
+                                targetH = targetH,
+                                fmt = ::fmt,
+                                preview = PreviewUi(
+                                    original = originalFrame,
+                                    // During a run the pane becomes the live output, which is
+                                    // the same thing one frame later. It KEEPS that frame
+                                    // after the run: the run invalidated the preview to hand
+                                    // the pipeline over, so falling back to swappedFrame here
+                                    // meant the pane emptied itself the instant the swap
+                                    // finished and sat on "Preparing preview..." for good --
+                                    // nothing re-warms a pipeline the finished run released.
+                                    swapped = if (busy) preview else (swappedFrame ?: preview),
+                                    timeLabel = if (durationMs > 0) fmt(previewAtMs) else "",
+                                    warm = previewWarm,
+                                    busy = previewBusy,
+                                    note = previewNote,
+                                    faceBoxes = if (showFaceBoxes) faceBoxes else null,
+                                    lipReferenceBoxes = if (showFaceBoxes) lipBoxes else emptyList(),
+                                ),
+                                run = RunUi(busy, preparing, progress, framesDone,
+                                            framesTotal, elapsedS),
+                                status = status,
+                                statusIsError = statusIsError,
+                                log = log,
+                                opts = opts,
+                                onOptsChange = ::applyOpts,
+                                onSaveSource = ::toggleShownSourceSaved,
+                                sourceSaved = shownSourceSaved,
+                                onOpenFaces = { refreshSavedFaces(); facesDialogOpen = true },
+                                hasHyperswap1b = hasHyperswap1b,
+                                hasHyperswap1c = hasHyperswap1c,
+                                hasEnhancer = hasEnhancer,
+                                hasLipSyncer = hasLipSyncer,
+                                hasFaceEditor = hasFaceEditor,
+                                onRequestModel = { label, model ->
+                                    confirmModel = label to model
+                                },
+                                showFaceBoxes = showFaceBoxes,
+                                lipPickMode = lipPickMode,
+                                onToggleLipPickMode = ::toggleLipPickMode,
+                                onPickLipFace = ::pickLipReferenceFace,
+                                onPickLipMiss = {
+                                    status = getString(R.string.status_lips_wait_boxes)
+                                },
+                                openCard = openCard,
+                                onToggleCard = { k -> openCard = if (openCard == k) "" else k },
+                                // A still needs no run, so it has no output FILE -- what
+                                // there is to save is the pane itself.
+                                hasOutput = if (targetImage != null && !photoMakesVideo)
+                                                swappedFrame != null
+                                            else outputFile != null,
+                                outputFile = outputFile,
+                                outputPartial = outputPartial,
+                                onSaveFrame = ::saveFrameAt,
+                                onSavePreviewFrame = ::savePreviewFrame,
+                                saved = savedUri != null,
+                                savedPath = savedPathLabel,
+                                onPickSource = { pickSource.launch("image/*") },
+                                onPickTarget = {
+                                    pickTarget.launch(arrayOf("video/*", "image/*"))
+                                },
+                                onClearSource = {
+                                    confirm(R.string.faces_remove_title,
+                                            R.string.faces_remove_body,
+                                            R.string.common_delete,
+                                            destructive = true) { clearSource() }
+                                },
+                                onCaptureSource = { capture(video = false, forSource = true) },
+                                onCapturePhoto = { capture(video = false) },
+                                onCaptureVideo = { capture(video = true) },
+                                onClearTarget = ::clearTarget,
+                                onDeleteOutput = ::discardOutput,
+                                hasVoice = voiceFile != null,
+                                voiceName = voiceName,
+                                voiceDurationMs = voiceDurationMs,
+                                voiceTrimStartMs = voiceTrimStartMs,
+                                voiceTrimEndMs = voiceTrimEndMs,
+                                onVoiceTrimChange = ::onVoiceTrimChanged,
+                                voicePosMs = voicePosMs,
+                                voicePlaying = voicePlaying,
+                                onVoicePlayPause = ::toggleVoicePlayback,
+                                onVoiceSeek = ::onVoiceSeek,
+                                onPickVoice = { pickVoice.launch(arrayOf("audio/*", "video/*")) },
+                                onClearVoice = ::clearVoice,
+                                hasDriver = driverFile != null,
+                                driverName = driverName,
+                                onPickDriver = { pickDriver.launch(arrayOf("video/*")) },
+                                onClearDriver = ::clearDriver,
+                                photoMakesVideo = photoMakesVideo,
+                                recordingVoice = recordingVoice,
+                                onToggleRecordVoice = ::toggleVoiceRecording,
+                                // ONE button. A queue of one is a single run, and the
+                                // batch runner would only add a loop around it -- and its
+                                // own trim rule, which the single case must keep.
+                                onSwap = {
+                                    // ⚠ size > 1, not isEmpty. A queue of exactly one is
+                                    // the ordinary single-clip run and must keep its TRIM:
+                                    // the batch runner deliberately ignores trim, because
+                                    // one range cannot mean anything across clips of
+                                    // different lengths.
+                                    if (photoMakesVideo) runPortrait()
+                                    else if (batchQueue.size > 1) runBatch() else runSwap()
+                                },
+                                batch = batchQueue,
+                                batchAutoSave = opts.batchAutoSave,
+                                // Already in the gallery, so there is nothing to offer.
+                                // Auto-save writes each clip as it finishes; a Save button
+                                // beside a clip that is already saved is a second copy and
+                                // a question the user has answered once already.
+                                outputAutoSaved = opts.batchAutoSave &&
+                                    outputFile != null &&
+                                    batchQueue.any { it.output == outputFile },
+                                onBatchAutoSave = { on ->
+                                    applyOpts(opts.copy(batchAutoSave = on))
+                                },
+                                onOpenBatchOutput = { i ->
+                                    val q = batchQueue.getOrNull(i)
+                                    q?.output?.let {
+                                        outputFile = it
+                                        outputPartial = false
+                                        // The CLIP's saved state, not a blank one. Nulling
+                                        // it here is what made a hand-saved clip forget it
+                                        // had been saved the moment you swiped past it.
+                                        savedUri = q.savedUri
+                                        savedPathLabel = q.savedUri?.let { _ ->
+                                            "Movies/FaceFusion/" + it.name
+                                        }
+                                        // The NAME alone. "Showing beach.mp4" spends the
+                                        // status line saying what the pane above it is
+                                        // already doing.
+                                        status = batchQueue[i].name
+                                    }
+                                },
+                                onAddToBatch = {
+                                    pickMoreTargets.launch(arrayOf("video/*"))
+                                },
+                                onLivePlay = { startPlayer() },
+                                onRemoveFromBatch = { i ->
+                                    // A finished row holds a render. Ask before losing one,
+                                    // exactly as the single output does -- unless auto-save
+                                    // already put it in the gallery, where the file here is
+                                    // a working copy and deleting it costs nothing.
+                                    val it0 = batchQueue.getOrNull(i)
+                                    if (it0?.output != null && !opts.batchAutoSave)
+                                        confirmBatchDelete = i
+                                    else removeFromBatch(i)
+                                },
+                                onCancel = {
+                                    cancelRequested = true
+                                    status = getString(R.string.status_cancelling)
+                                },
+                                modelsMissing = modelsMissing,
+                                modelsMissingNote = refusedTierNote(),
+                                onDownload = { onDownloadTapped() },
+                                onShareLog = { shareBugReport() },
+                                // A still saves the pane; a video saves its file.
+                                onSave = {
+                                    if (targetImage != null && !photoMakesVideo) saveSwappedStill()
+                                    else outputFile?.let { saveToGallery(it) }
+                                },
+                                onShare = { shareResult() },
+                            )
+
+                            Screen.Live -> LiveScreen(
+                                sourceThumb = sources.getOrNull(liveSourceIndex)?.thumb,
+                                sourceThumbs = sources.map { it.thumb },
+                                sourceCount = sources.size,
+                                activeSource = liveSourceIndex,
+                                onSelectSource = ::selectLiveSource,
+                                onPickSource = ::pickLiveSource,
+                                onClearSource = {
+                                    confirm(R.string.faces_remove_title,
+                                            R.string.faces_remove_body,
+                                            R.string.common_delete,
+                                            destructive = true) { clearLiveSource() }
+                                },
+                                onCaptureSource = { capture(video = false, forSource = true) },
+                                frame = liveFrame,
+                                running = liveRunning,
+                                onToggleRun = { toggleLive() },
+                                fps = liveFps,
+                                faces = liveFaces,
+                                useMySettings = liveUseMySettings,
+                                onUseMySettings = { liveUseMySettings = it },
+                                note = liveNote,
+                                modelsReady = !modelsMissing,
+                                onDownload = { onDownloadTapped() },
+                                frontCamera = liveFrontCamera,
+                                onSwitchCamera = ::switchLiveCamera,
+                                mirror = liveMirror,
+                                onToggleMirror = ::toggleLiveMirror,
+                                recording = liveRecording,
+                                microphone = liveMicrophone,
+                                finalizing = liveFinalizing,
+                                onMicrophoneChange = ::changeLiveMicrophone,
+                                largestOnly = liveLargestOnly,
+                                // Runtime setter, no pipeline restart: swapLargestOnly is
+                                // read per frame natively, and a restart would tear down
+                                // the pipeline and wipe every face assignment made so far.
+                                onLargestOnlyChange = { liveLargestOnly = it; if (liveRunning) NativePipe.setSwapLargestOnly(it) },
+                                swapEnabled = liveSwapEnabled,
+                                onToggleSwapEnabled = { toggleSwapEnabled() },
+                                assignMode = liveAssignMode,
+                                personThumbs = livePersonThumbs,
+                                selectedPerson = liveSelectedPerson,
+                                onSelectPerson = ::selectLivePerson,
+                                keepOriginalBrush = liveBrushKeepOriginal,
+                                onKeepOriginal = ::selectLiveKeepOriginal,
+                                onToggleAssignMode = ::toggleLiveAssign,
+                                onAssignFace = ::assignLiveFace,
+                                onEnterFullscreen = { liveFullscreen = true },
+                                onSaveSource = ::toggleShownSourceSaved,
+                                sourceSaved = shownSourceSaved,
+                                onOpenFaces = { refreshSavedFaces(); facesDialogOpen = true },
+                                assignBox = liveAssignBox,
+                                assignNonce = liveAssignNonce,
+                                assignCount = liveAssignCount,
+                                selectionBox = liveSelectionBox,
+                                onClearAssignments = ::clearLiveAssignments,
+                                onToggleRecord = ::toggleLiveRecording,
+                            )
+
+                            Screen.Settings -> SettingsScreen(
+                                sections = modelSections(),
+                                modelDirPath = modelDir().absolutePath,
+                                device = deviceUi,
+                                // The ROW's files, not the required set. This is the whole
+                                // of the 0.7.0 regression: the button was wired to the bulk
+                                // fetch, which excludes the enhancer and the lip syncer by
+                                // name, so the two models that have nothing BUT this button
+                                // could not be downloaded at all.
+                                onDownloadModel = { m -> onDownloadTapped(m.files) },
+                                onDeleteModel = { m ->
+                                    // Every file of the row, not just the one it is named
+                                    // after: an ncnn model is a param/bin pair.
+                                    m.files.forEach { File(modelDir(), it).delete() }
+                                    modelsVersion++
+                                    // Hard: the file behind the loaded pipeline just went
+                                    // away, and the redraw is what reports which one.
+                                    previewOptionsChanged(hard = true)
+                                },
+                                onApiToggle = ::toggleApi,
+                                onApiLan = ::setApiLan,
+                                onShareBugReport = { shareBugReport() },
+                                forcedBackend = forcedBackend,
+                                // null in a QNN-only build, which is what hides the
+                                // control rather than drawing a dead one.
+                                onForceBackend =
+                                    if (NativePipe.hasNcnnBackend()) ::onForceBackend
+                                    else null,
+                                ncnnGpu = ncnnGpu,
+                                onNcnnGpu =
+                                    if (NativePipe.hasNcnnBackend()) ::onNcnnGpu
+                                    else null,
+                                lowMemory = lowMemory,
+                                downloadSource = downloadSource,
+                                onDownloadSource = { v ->
+                                    ModelDownload.setSource(this@MainActivity, v)
+                                    downloadSource = v
+                                    appendLog("models download from: $v")
+                                },
+                                lowMemoryActive = ModelPaths.lowMemoryOn(this@MainActivity),
+                                onLowMemory =
+                                    if (NativePipe.hasNcnnBackend()) ::onLowMemory
+                                    else null,
+                                // The manual theme choice (null = follow the system) and
+                                // the switch that makes one. Saved immediately so a restart
+                                // keeps it -- see ThemePrefs.
+                                darkTheme = darkTheme,
+                                onSetTheme = { dark ->
+                                    darkTheme = dark
+                                    ThemePrefs.save(this@MainActivity, dark)
+                                },
+                            )
+                        }
+                    }
+
+                    confirmModel?.let { (name, model) ->
+                        AlertDialog(
+                            onDismissRequest = { confirmModel = null },
+                            title = { Text(stringResource(R.string.proc_get_title, name)) },
+                            text = {
+                                // Say the size when the manifest has been read, and say
+                                // nothing about it when it has not. A number invented for
+                                // an offline device is worse than no number.
+                                val mb = modelSizeMb(model)
+                                Text(if (mb.isEmpty())
+                                         stringResource(R.string.proc_get_body)
+                                     else stringResource(R.string.proc_get_body_size, mb))
+                            },
+                            confirmButton = {
+                                // THIS model's files. ModelPaths, not a name pattern: on
+                                // ncnn a model is a param/bin pair.
+                                TextButton({
+                                    confirmModel = null
+                                    // The tap was an ENABLE; the download is only what was
+                                    // in the way.
+                                    enableAfterDownload = model
+                                    onDownloadTapped(ModelPaths.filesFor(tier, model))
+                                }) {
+                                    Text(stringResource(R.string.proc_get_confirm))
+                                }
+                            },
+                            dismissButton = {
+                                TextButton({ confirmModel = null }) {
+                                    Text(stringResource(R.string.proc_get_cancel))
+                                }
+                            },
+                        )
+                    }
+
+                    pendingConfirm?.let { c ->
+                        AlertDialog(
+                            onDismissRequest = { pendingConfirm = null },
+                            title = { Text(c.title) },
+                            text = { Text(c.body) },
+                            confirmButton = {
+                                TextButton({
+                                    val run = c.action
+                                    pendingConfirm = null
+                                    run()
+                                }) {
+                                    Text(c.ok, color = if (c.destructive)
+                                        MaterialTheme.colorScheme.error
+                                        else MaterialTheme.colorScheme.primary)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton({ pendingConfirm = null }) {
+                                    Text(stringResource(R.string.common_cancel))
+                                }
+                            },
+                        )
+                    }
+
+                    if (facesDialogOpen) SavedFacesDialog(
+                        faces = savedFaces,
+                        onUse = { useSavedFace(it.uri) },
+                        onDelete = { deleteSavedFace(it.uri) },
+                        onDismiss = { facesDialogOpen = false },
+                    )
+
+                    // The live feed, filling the screen. Only while the pump is actually
+                    // running: fullscreen over a stopped session is a black rectangle that
+                    // will never get a frame, and Back is the only way out of it.
+                    if (liveFullscreen && liveRunning) LiveFullscreen(
+                        frame = liveFrame,
+                        mirror = liveMirror,
+                        assignMode = liveAssignMode,
+                        running = liveRunning,
+                        onAssignFace = ::assignLiveFace,
+                        onExit = { liveFullscreen = false },
+                    )
+
+                    // The live player, over everything. A Dialog, so it does not matter
+                    // where in the tree it sits -- it is here with the other dialogs rather
+                    // than inside the Swap branch because it outlives a tab switch.
+                    if (playerOpen) LivePlayerOverlay(
+                        frame = playerFrame,
+                        positionMs = playerPos,
+                        durationMs = playerDuration,
+                        playing = playerPlaying,
+                        fps = playerFps,
+                        faces = playerFaces,
+                        dropped = playerDropped,
+                        note = playerNote,
+                        onPlayPause = {
+                            if (player.isPlaying) { player.pause(); playerPlaying = false }
+                            else { player.play(); playerPlaying = true }
+                        },
+                        seeking = playerSeeking,
+                        onSeek = { ms ->
+                            // Said immediately rather than waiting for the pump's first
+                            // shot: resolving the seek is what takes the time, so the
+                            // indicator has to be up before it starts, not after.
+                            playerSeeking = true
+                            player.seekTo(ms)
+                            // Optimistic, so the thumb stays where it was dropped instead
+                            // of snapping back for the frame it takes the pump to re-seek.
+                            playerPos = ms
+                        },
+                        onClose = { stopPlayer() },
+                    )
+
+                    confirmBatchDelete?.let { ix ->
+                        val name = batchQueue.getOrNull(ix)?.name ?: ""
+                        AlertDialog(
+                            onDismissRequest = { confirmBatchDelete = null },
+                            title = { Text(stringResource(R.string.batch_delete_title)) },
+                            text = { Text(stringResource(R.string.batch_delete_body, name)) },
+                            confirmButton = {
+                                TextButton({ removeFromBatch(ix) }) {
+                                    Text(stringResource(R.string.batch_delete_confirm),
+                                         color = MaterialTheme.colorScheme.error)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton({ confirmBatchDelete = null }) {
+                                    Text(stringResource(R.string.proc_get_cancel))
+                                }
+                            },
+                        )
+                    }
+
+                    if (confirmMetered) {
+                        AlertDialog(
+                            onDismissRequest = { confirmMetered = false },
+                            title = { Text(stringResource(R.string.dl_metered_title)) },
+                            text = {
+                                Text(
+                                    stringResource(R.string.dl_metered_body)
+                                )
+                            },
+                            confirmButton = {
+                                TextButton({ confirmMetered = false; beginDownload() }) {
+                                    Text(stringResource(R.string.dl_metered_confirm))
+                                }
+                            },
+                            dismissButton = {
+                                TextButton({ confirmMetered = false }) {
+                                    Text(stringResource(R.string.dl_metered_wait))
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshModelsMissing()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        scrubJob?.cancel()
+        stopVoicePlayback()
+        // Before the preview's own teardown: the pump holds the pipeline this is about to
+        // release, and stop() is what makes it let go.
+        player.stop()
+        previews.release()
+    }
+
+    private fun fmt(ms: Float): String {
+        val t = (ms / 1000f)
+        return "%d:%04.1f".format((t / 60).toInt(), t % 60)
+    }
+
+    private fun appendLog(line: String) { log = (log + line + "\n").takeLast(4000) }
+
+    /**
+     * The same start-the-server extra, for an app that is ALREADY running.
+     *
+     * `am start` on a live Activity delivers here, not to onCreate, so without this the
+     * documented headless line silently did nothing whenever the app happened to be open --
+     * which looks identical to the server crashing on startup.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Same consumption as onCreate: this intent becomes the task's, so an extra
+        // left in it is an instruction that runs again at every future re-creation.
+        if (intent.getStringExtra("api") == "start") {
+            intent.removeExtra("api")
+            toggleApi(on = true, lan = false, remember = false)
+        }
+        setIntent(intent)
+    }
+
+    /**
+     * Pin the neural runtime, or "" for automatic.
+     *
+     * ⚠ The ORDER here is not arrangeable. `NativePipe.release()` must run FIRST, while the
+     * old backend is still the active one: the pipeline's handles are freed through the
+     * seam, and although they now carry the backend that opened them (ffnn.cpp), a pipeline
+     * half-owned by a runtime the process has moved off is not a thing to keep around.
+     * Then the setting, then the caches, then a fresh probe.
+     *
+     * Everything the previous runtime produced is discarded with it -- the loaded models,
+     * the swapped preview, and the answer to "which models are missing", which is a
+     * different question on each backend.
+     */
+    private fun onForceBackend(value: String) {
+        if (value == forcedBackend) return
+        NativePipe.release()
+        ModelPaths.setForcedBackend(this, value)
+        forcedBackend = value
+        deviceUi = DeviceUi()
+        probeDevice()
+        refreshModelsMissing()
+        refreshHostedFiles()
+        // Hard: the models behind the loaded pipeline are not merely stale, they are the
+        // other runtime's file format.
+        previewOptionsChanged(hard = true)
+        appendLog("runtime: " + (if (value.isEmpty()) "automatic" else value))
+    }
+
+    /**
+     * Pin which UNIT the ncnn backend runs on, or "auto" to let it check itself.
+     *
+     * Same order as [onForceBackend] and for the same reason: a model keeps the unit it was
+     * opened on, so the pipeline has to go before the setting changes under it. It does NOT
+     * touch the tier chain or the model set -- both units load the same ncnn files -- so
+     * unlike a runtime change there is nothing to re-download.
+     */
+    private fun onNcnnGpu(value: String) {
+        if (value == ncnnGpu) return
+        NativePipe.release()
+        ModelPaths.setNcnnGpu(this, value)
+        ncnnGpu = value
+        deviceUi = DeviceUi()
+        probeDevice()
+        previewOptionsChanged(hard = true)
+        appendLog("ncnn unit: $value")
+    }
+
+    /** The low memory switch. Same order as [onNcnnGpu]: release, persist, re-probe. */
+    private fun onLowMemory(value: String) {
+        if (value == lowMemory) return
+        NativePipe.release()
+        ModelPaths.setLowMemory(this, value)
+        lowMemory = value
+        previewOptionsChanged(hard = true)
+        appendLog("low memory: $value (" +
+                  (if (ModelPaths.lowMemoryOn(this)) "on" else "off") + ")")
+    }
+
+    // ------------------------------------------------------------------ device
+
+    /** Measure the HTP once, off the main thread; the probe brings the backend up. */
+    private fun probeDevice() = lifecycleScope.launch(Dispatchers.Default) {
+        val lib = applicationInfo.nativeLibraryDir
+        val raw = runCatching { NativePipe.probeDeviceInfo(lib, lib) }.getOrDefault("ok=0")
+        val kv = raw.split(';').mapNotNull {
+            val p = it.split('='); if (p.size == 2) p[0] to p[1] else null
+        }.toMap()
+        val fp16 = runCatching {
+            NativePipe.probeFp16(lib, lib, canaryDir().absolutePath)
+        }.getOrDefault("unknown")
+        withContext(Dispatchers.Main) {
+            deviceUi = DeviceUi(
+                ok = kv["ok"] == "1",
+                arch = kv["arch"]?.toIntOrNull() ?: 0,
+                vtcmMb = kv["vtcm"]?.toIntOrNull() ?: 0,
+                soc = kv["soc"]?.toIntOrNull() ?: 0,
+                tier = kv["tier"].orEmpty(),
+                fp16 = fp16,
+                // Reported even when ok=0: on a part with no Hexagon the HTP probe is
+                // MEANT to fail, and this is the row that says what is running instead.
+                backend = kv["backend"].orEmpty(),
+                gpu = kv["gpu"] == "1",
+            )
+        }
+    }
+
+    /**
+     * Ask the manifest what exists for this tier. One ~2 KB request, once per launch.
+     *
+     * Failure is silent and total: [hostedFiles] stays empty, so Settings offers no
+     * downloads at all rather than offering one that cannot succeed.
+     */
+    /**
+     * What [model] weighs on the host, as "23.5 MB" -- or "" when nothing says.
+     *
+     * Read from [hostedFiles], the same map the Settings rows use, so the two cannot
+     * disagree; empty offline, and empty for a model this tier does not publish.
+     */
+    private fun modelSizeMb(model: String): String {
+        val files = ModelPaths.filesFor(tier, model)
+        if (files.isEmpty() || !files.all { it in hostedFiles }) return ""
+        return "%.1f MB".format(files.sumOf { hostedFiles[it] ?: 0L } / 1048576.0)
+    }
+
+    private fun refreshHostedFiles() = lifecycleScope.launch(Dispatchers.IO) {
+        val hosted = runCatching {
+            ModelDownload.manifestFor(tierChain.joinToString(","))
+                .second.associate { it.name to it.bytes }
+        }.getOrDefault(emptyMap())
+        withContext(Dispatchers.Main) { hostedFiles = hosted }
+    }
+
+    // ------------------------------------------------------------------ remote API
+
+    /**
+     * Start, stop, or rebind the HTTP server.
+     *
+     * Rebinding is a restart, not a flag flip: the bind address is fixed when the socket is
+     * created, so a switch that changed [lan] on a live server would report an address it
+     * is not listening on.
+     */
+    /**
+     * The LAN preference, which is NOT the same question as "is the server running".
+     *
+     * Separated from [toggleApi] because routing it through there made it a no-op whenever
+     * the server was off: `toggleApi` stops and returns when `on` is false, so the
+     * preference was never written and the switch snapped back. The two switches were never
+     * meant to depend on each other -- one opens a port, the other says which address it
+     * binds when it does.
+     *
+     * A running server is REBOUND, because the address is fixed when the socket opens: a
+     * live flag change would leave it reporting an address it is not listening on.
+     */
+    private fun setApiLan(lan: Boolean) {
+        if (lan == ApiService.allowLan) return
+        ApiService.setLan(this, lan)
+        if (ApiService.running) {
+            ApiService.stop(this)
+            ApiService.start(this, lan)
+        }
+    }
+
+    private fun toggleApi(on: Boolean, lan: Boolean, remember: Boolean = true) {
+        if (!on) { ApiService.stop(this); return }
+        if (android.os.Build.VERSION.SDK_INT >= 33)
+            askNotify.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        if (ApiService.running && lan != ApiService.allowLan) ApiService.stop(this)
+        ApiService.start(this, lan, remember)
+    }
+
+    /** Everything we know about this run, handed to whatever the user sends it with. */
+    private fun shareBugReport() {
+        val d = deviceUi
+        val npu = if (d.ok)
+            "arch v" + d.arch + ", vtcm " + d.vtcmMb + " MB, soc " + d.soc +
+                ", tier " + d.tier + ", fp16 " + d.fp16
+        else "not measured"
+        // A tier this phone refused, and why. It is the one fact a "models not on this
+        // device" report needs and the run log no longer has after a restart.
+        val refused = ModelPaths.rejectedTiers(this).sorted().joinToString("; ") {
+            it + ": " + (ModelPaths.rejectedReason(this, it) ?: "reason not recorded")
+        }
+        val npuLine = if (refused.isEmpty()) npu else "$npu\nrefused   : $refused"
+        val models = modelDir().listFiles()?.map { it.name + "  " + it.length() + " bytes" }
+            ?.sorted().orEmpty()
+        // Say so when it does not go. The share used to be fire-and-forget, so a device
+        // with nothing that accepts text/plain -- or a report too large for a Binder
+        // transaction -- produced a button that did visibly nothing.
+        val err = BugReport.share(this, BugReport.compose(this, log, npuLine, models, status))
+        if (err != null) {
+            status = getString(R.string.status_share_failed, err)
+            return
+        }
+        BugReport.clearCrash(this)
+    }
+
+    // --------------------------------------------------------------- model download
+
+    /**
+     * Whether this tier's set is incomplete.
+     *
+     * Local and instant -- it asks the filesystem, not the network -- so the overlay can
+     * decide whether to appear without a round trip. Reads [modelsVersion] and
+     * [ModelDownload.finished] so a delete or a completed download recomposes it.
+     */
+    /** Recompute from disk. Cheap: a handful of canRead() calls. */
+    private fun refreshModelsMissing() {
+        // ModelPaths, not a fourth copy of the same list, and NOT deviceUi.tier -- see the
+        // warning on ModelPaths.tier.
+        val absent = ModelPaths.missing(this, tier, opts.swapper)
+        val now = absent.isNotEmpty()
+        if (now != modelsMissing)
+            android.util.Log.i("ffmodels", "missing=" + now + " " + absent)
+        modelsMissing = now
+    }
+
+    /**
+     * Record a tier this chip loaded and would not run, and re-ask what is missing.
+     *
+     * Called after EVERY init, successful or not. A device can reject its best tier and
+     * come up on the next one, and that rejection is worth keeping either way -- it is a
+     * property of the silicon, and re-proving it costs a full context load per launch.
+     *
+     * The `refreshModelsMissing` is the half that matters to the user. Rejecting v81 drops
+     * it from the chain, which makes v73 the tier this device wants and v73 is not on
+     * disk -- so the download overlay has to re-ask, or they are left looking at an error
+     * with nothing on screen that would act on it.
+     */
+    /**
+     * "The v81 set would not run here, so this phone needs the v73 one", or null.
+     *
+     * A phone that fell back has a complete set on disk and is told its models are
+     * missing; without this the overlay reads as the download having failed (#16).
+     */
+    private fun refusedTierNote(): String? {
+        val ignored = modelsVersion
+        val d = ModelPaths.dir(this)
+        val refused = ModelPaths.rejectedTiers(this)
+            .firstOrNull { it != tier && ModelPaths.present(d, it, "yoloface") } ?: return null
+        return getString(R.string.dl_tier_refused, refused, tier)
+    }
+
+    private fun noteTierRejection() {
+        val bad = NativePipe.rejectedTier()
+        if (bad.isBlank() || bad in ModelPaths.rejectedTiers(this)) return
+        val why = NativePipe.rejectedReason()
+        appendLog("tier $bad will not execute on this device; falling back" +
+                  (if (why.isNotBlank()) " ($why)" else ""))
+        ModelPaths.rejectTier(this, bad, why)
+        refreshModelsMissing()
+    }
+
+    /**
+     * A short confirmation, on top of the status line.
+     *
+     * The status line is where a save already reported itself, and it is easy to miss: it
+     * sits below the panes, it is one line among several, and on a save the user is usually
+     * looking at the pane they just saved rather than at it. A toast says the thing landed
+     * without the user having to go looking for the sentence that says so.
+     */
+    private fun toast(text: String) {
+        android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Apply a new option set: state, disk, and the warm pipeline.
+     *
+     * A function rather than the lambda it used to be because a download can now finish
+     * one of these on the user's behalf -- see [enableAfterDownload] -- and a second copy
+     * of this would be a second chance to forget the save or the redraw.
+     */
+    private fun applyOpts(o: SwapOptions) {
+        // inswapper_128 retired: never persist it again, even if an old caller passes it.
+        val fixed = if (o.swapper == "inswapper") o.copy(swapper = "hyperswap") else o
+        // Only the SWAPPER selects a different model file. Everything else is a per-frame
+        // value the loaded pipeline can simply be told about, so it must not send the
+        // preview cold -- going cold is what made a slider cost a model reload.
+        val reloads = fixed.swapper != opts.swapper
+        opts = fixed
+        fixed.save(this)
+        // init() consumed the old options; the warm pipeline is now showing something the
+        // user did not ask for. This REDRAWS -- clearing the pane and leaving it cleared
+        // is how "Preparing preview..." became permanent, since nothing was left to ask
+        // for the next one.
+        previewOptionsChanged(reloads = reloads)
+    }
+
+    /**
+     * @param only the LOCAL filenames to fetch, or null for "whatever this device needs".
+     *   A Settings row passes its own files, which is the ONLY way to reach the enhancer
+     *   and the lip syncer -- the null path excludes them by name.
+     */
+    private fun onDownloadTapped(only: List<String>? = null) {
+        if (android.os.Build.VERSION.SDK_INT >= 33)
+            askNotify.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        // Metered is a warning, not a refusal: the user may have no Wi-Fi and still want it.
+        // ⚠ The request has to survive the dialog. Parking it here rather than in the
+        // dialog's lambda is what stops "Continue" from silently turning a one-model
+        // download into the bulk one.
+        pendingDownload = only
+        if (ModelDownload.isMetered(this)) confirmMetered = true else beginDownload()
+    }
+
+    /** True only between starting a download and reporting that it finished. */
+    private var announceDownload = false
+
+    /** What [beginDownload] will ask for; see [onDownloadTapped]. */
+    private var pendingDownload: List<String>? = null
+
+    /**
+     * The processor to switch ON once its model lands, or null.
+     *
+     * The tap that starts this download was a tap on the chip -- the user asked to ENABLE
+     * the stage, and the download is only what stood in the way. Leaving the chip off
+     * afterwards makes them ask twice for one thing, and the second ask looks like the
+     * first one failed.
+     *
+     * Set ONLY by the processor prompt. A Settings row is an inventory action and says
+     * nothing about wanting the stage on.
+     */
+    private var enableAfterDownload: String? = null
+
+    private fun beginDownload() {
+        ModelDownload.reset()
+        announceDownload = true
+        // The whole chain, not one tier: the downloader picks the best tier the manifest
+        // actually publishes. Handing it only `tier` would fail outright on a chip whose
+        // best tier is not hosted yet.
+        DownloadService.start(this, tierChain.joinToString(","), pendingDownload)
+    }
+
+    // ------------------------------------------------------------------ models
+
+    /** What `loadTarget` pulls out of the container, so the result is not a List<Any>. */
+    private data class Loaded(val file: File, val durationMs: Long, val width: Int,
+                             val height: Int, val fps: Int)
+
+    /**
+     * The inventory the Settings screen lists.
+     *
+     * Called during composition, so reading [modelsVersion] here is what makes a delete
+     * redraw the list -- the files themselves are not observable state.
+     */
+    /**
+     * Every model SET on this device: the one in use, then any other that has files.
+     *
+     * A phone that has run both runtimes holds two, and before this only the active one
+     * appeared anywhere -- so the ~600 MB of ncnn weights an NPU build never touches had no
+     * screen on which they existed, and no way to be deleted short of switching runtime
+     * back and forth.
+     *
+     * The inactive sets are read from DISK rather than from the chip or the manifest: what
+     * matters about them is only that they are taking up space.
+     */
+    private fun modelSections(): List<ModelSection> {
+        val active = tier
+        val others = ModelPaths.variantsOnDisk(this).filter { it != active }
+        fun title(v: String) =
+            if (v == ModelPaths.NCNN_TIER) getString(R.string.set_models_gpu)
+            else getString(R.string.set_models_npu, v)
+        return listOf(ModelSection(title(active), "", modelRows(active), active = true)) +
+            others.map {
+                val why = ModelPaths.rejectedReason(this, it)
+                ModelSection(title(it), "", modelRows(it), active = false,
+                             note = if (it in ModelPaths.rejectedTiers(this))
+                                 getString(R.string.set_models_rejected_note,
+                                           why ?: getString(R.string.set_models_rejected_unknown))
+                             else null)
+            }
+    }
+
+    private fun modelRows(t: String): List<ModelRow> {
+        val ignored = modelsVersion
+        check(ignored >= 0)
+        // "Required" has to mean what ModelPaths.missing() ENFORCES, or this screen tells
+        // a user everything is fine about a device that then refuses to swap.
+        //
+        // Which swapper is required depends on the one selected: missing() checks
+        // opts.swapper, so no swapper is inherently required -- the SELECTED one is
+        // required and the others are alternatives.
+        val allSwappers = listOf("hyperswap", "hyperswap_1b", "hyperswap_1c")
+        val alts = allSwappers.filter { it != opts.swapper }
+        val required = listOf(
+            "yoloface" to getString(R.string.model_detector),
+            "fan2d" to getString(R.string.model_landmarker),
+            "arcface" to getString(R.string.model_recogniser),
+            opts.swapper to (getString(R.string.model_swapper) +
+                    ": " + swapperDisplay(opts.swapper)),
+        )
+        // The content gate is required -- missing() blocks a run without it and
+        // ffpipe::init will not come up -- but it is satisfied by EITHER build, so neither
+        // file is required ON ITS OWN. fp32 `nsfw_` only finalizes on v79 and up; below
+        // that the quantised `nsfwq_` is the only one that exists. So the PAIR is what is
+        // required, and a row is only worth flagging when NEITHER is on the device --
+        // otherwise a v79 phone, which correctly has just `nsfw_`, would be told the
+        // `nsfwq_` it must never download is missing and required.
+        //
+        // ⚠ "v79 and up" was wrong and is now measured: the fp32 gate does NOT build for
+        // v81. qnn-context-binary-generator refuses it with "no properties registered for
+        // q::QNN_Gelu", so v81 ships `nsfwq_` like the tiers BELOW v79 do. fp32 is a v79
+        // fact, not a floor -- which is exactly why this row tests the PAIR and never the
+        // arch (docs/traps.md #10).
+        val gateOk = ModelPaths.present(modelDir(), t, "nsfw") ||
+                     ModelPaths.present(modelDir(), t, "nsfwq2")
+        val gate = listOf(
+            "nsfw" to getString(R.string.model_content_checker),
+            "nsfwq2" to getString(R.string.model_content_checker_quantised),
+        )
+        val optional = alts.map {
+            it to (getString(R.string.model_swapper) + ": " + swapperDisplay(it))
+        } + listOf(
+            // It was absent from BOTH lists, so a 28 MB model that is on the device, that
+            // the Advanced panel offers a switch for, and that /health reports as present,
+            // was invisible on the one screen whose job is to say what is installed.
+            "gpen" to getString(R.string.model_enhancer),
+            // Added the day the lip syncer shipped, and it is the SECOND time this list
+            // has caused exactly this bug: the comment above records gpen being invisible
+            // on the one screen whose job is to say what is installed. A hardcoded list
+            // beside a manifest-driven downloader will drift again -- what saves it is
+            // that `row()` reads ModelPaths and `hostedFiles`, so a name added here is
+            // enough and a name forgotten is invisible rather than broken.
+            // wav2lip gets no row: ffpipe no longer opens it, so it is neither a download
+            // that would ever run nor an installed capability the screen can honestly
+            // claim. A device that still holds the file keeps a dead ~44 MB until the
+            // app's data is cleared.
+            "edtalk" to getString(R.string.model_lip_syncer_256),
+            ModelPaths.LIVEPORTRAIT to getString(R.string.model_face_editor),
+            "fan685" to getString(R.string.model_landmark_refiner),
+        )
+        // What can be fetched is whatever the MANIFEST publishes for this tier -- asked
+        // once over the network, not guessed here. The guess it replaces had the gate wrong
+        // in both directions: a v79 phone would have been offered `nsfwq`, which its tier
+        // does not carry and which would therefore never arrive, while a deleted `nsfw` row
+        // disappeared from the list entirely, because only gpen was allowed to show itself
+        // while absent. Offline the set is empty and no row offers a download, which is
+        // correct -- there is nothing to download from.
+        fun row(name: String, label: String, req: Boolean): ModelRow {
+            // Filenames come from ModelPaths, never from a pattern here: ncnn needs a
+            // param/bin PAIR named after the ONNX graph, QNN one context binary with the
+            // tier in the name, and a row that spelled either out would be wrong on the
+            // other backend.
+            val files = ModelPaths.filesFor(t, name).map { File(modelDir(), it) }
+            if (files.isEmpty()) return ModelRow(label, name, 0L, false, req)
+            val present = files.all { it.canRead() }
+            val len = files.sumOf { if (it.exists()) it.length() else 0L }
+            // A pair is shown as ONE row under the name the user thinks in. The .param is
+            // 30 KB beside a 400 MB .bin, so listing both would be noise, and half a pair
+            // is not a state worth a row of its own -- it is simply "not installed".
+            val f = files.first()
+            val hostedLen = files.sumOf { hostedFiles[it.name] ?: 0L }
+                .takeIf { files.all { p -> p.name in hostedFiles } }
+            return ModelRow(label, f.name, len, present, req,
+                            files = files.map { it.name },
+                            downloadable = files.all { it.name in hostedFiles },
+                            // Present, published, and a different file from the published
+                            // one. Offline `hostedFiles` is empty and nothing is ever called
+                            // outdated, which is the right answer when there is nothing to
+                            // compare against -- never a scary row because the network is.
+                            outdated = present && hostedLen != null && hostedLen != len,
+                            // In the queue that is running RIGHT NOW, rather than "some
+                            // download exists". The bulk button skips the optional models,
+                            // so the two stopped meaning the same thing.
+                            fetching = files.any { it.name in ModelDownload.queued })
+        }
+        // RETIRED, and still on some devices. inswapper_128 is no longer offered
+        // anywhere -- three 256 swappers supersede a 128 one -- but it is 136 MB and it
+        // is hosted, so anyone who ever fetched it is holding it. Present-only, never
+        // `downloadable`: a row is how a file gets DELETED, and offering to download a
+        // model nothing can select would be the opposite of retiring it.
+        val retired = listOf("inswapper" to getString(R.string.model_swapper_retired))
+        return (required.map { (n, l) -> row(n, l, true) } +
+            gate.map { (n, l) -> row(n, l, !gateOk) }.filter { it.present || it.downloadable } +
+            optional.map { (n, l) -> row(n, l, false) }.filter { it.present || it.downloadable } +
+            retired.map { (n, l) -> row(n, l, false).copy(downloadable = false) }
+                .filter { it.present })
+            // One row per FILE SET, not per logical name. The two gate names resolve to two
+            // different context binaries on QNN and to the SAME `nsfw_2_sim` pair on ncnn --
+            // the quantised build exists because a QNN tier below v79 cannot finalize the
+            // fp32 gate, which is a QNN fact and means nothing here. Without this the ncnn
+            // inventory lists "Content checker" twice, both describing one file.
+            .distinctBy { it.fileName }
+    }
+
+    // ------------------------------------------------------------------ previews
+
+    /**
+     * The warm pipeline no longer matches what the UI is asking for.
+     *
+     * Tears the native pipeline DOWN, so this is for the cases that need the global gone --
+     * a run about to init its own, or a model deleted underneath it. An options change must
+     * not come through here: see [previewOptionsChanged].
+     *
+     * `preview` is cleared with the rest. It holds the last live frame of the previous run,
+     * and the swapped pane falls back to it, so leaving it set would show the last frame of
+     * the LAST target after picking a new one.
+     */
+    private fun invalidatePreview() {
+        previews.invalidate()
+        previewWarm = false
+        clearPreviewFrames()
+    }
+
+    /**
+     * The DISPLAYED preview is stale. What is loaded is not.
+     *
+     * A new target changes neither of the two things the warm pipeline depends on: the warm
+     * key is the options and the SOURCE, and target frames are handed to `processFrame` one
+     * at a time. So a target change has to forget the pictures on screen and nothing else.
+     *
+     * ⚠ Both target paths got this wrong, in opposite directions, and one fix closes both:
+     *
+     *  - the PHOTO path called [invalidatePreview], which tears the native pipeline down.
+     *    Every context reloaded on the next preview to show a frame the loaded models were
+     *    already able to swap. Invisible on the NPU and seconds of "Loading models" on the
+     *    CPU backend, which is where it was noticed.
+     *  - the VIDEO path cleared `swappedFrame` but not `preview`, and the pane resolves
+     *    `swappedFrame ?: preview`. `preview` holds the last live frame of the last run, so
+     *    picking a new video could show the PREVIOUS target's swapped face over the new
+     *    target's original -- the exact failure invalidatePreview's own comment describes,
+     *    in the one path that did not call it.
+     */
+    private fun clearPreviewFrames() {
+        swappedFrame = null
+        previewNote = null
+        preview = null
+    }
+
+    /**
+     * An option (or the source face) changed, so the pane is showing a stale swap.
+     *
+     * Deliberately NOT [invalidatePreview]: that releases the native pipeline, and a weight
+     * slider emits a value per pixel of drag, so a release would land in the middle of a
+     * preview swap running on another thread -- a use-after-free reached by dragging.
+     * [PreviewEngine.ensureReady] keys on the options and the source and rebuilds itself
+     * when they differ, so marking the pane stale is enough and the rebuild happens once,
+     * inside the coroutine that owns the pipeline.
+     *
+     * Debounced for the same reason: a drag would otherwise ask for a full model reload
+     * dozens of times a second. The wait outlives previewBusy so a change made DURING a
+     * refresh still lands, rather than being dropped by refreshSwapped's early return.
+     */
+    private fun previewOptionsChanged(hard: Boolean = false, reloads: Boolean = true) {
+        // `hard` is for a model that went away underneath the loaded pipeline. Still not
+        // while a swap is reading it: the redraw below re-checks the files and reports the
+        // missing one, which is the useful half of tearing it down anyway.
+        if (hard && !previewBusy) previews.invalidate()
+        // Cold only when the pipeline really has to be rebuilt. `reloads` is false for a
+        // per-frame option, whose new value refreshSwapped pushes to the warm pipeline --
+        // going cold there would re-decode the source and re-run the gate to change a float.
+        if (hard || reloads) previewWarm = false
+        swappedFrame = null
+        previewNote = null
+        preview = null
+        savedUri = null; savedPathLabel = null
+        refreshJob?.cancel()
+        refreshJob = lifecycleScope.launch {
+            delay(500)
+            while (previewBusy) delay(100)
+            refreshSwapped(force = true)
+        }
+    }
+
+    /**
+     * The trim handle moved.
+     *
+     * Debounced rather than acted on per pixel: a drag emits dozens of values a second and
+     * each one is a video seek. The swapped pane waits longer again, and only refreshes if
+     * the pipeline is ALREADY warm -- the first load costs seconds and must be asked for.
+     */
+    private fun onTrimChanged(start: Float, end: Float, edge: TrimEdge) {
+        trimStartMs = start
+        trimEndMs = end
+        previewEdge = edge
+        scrubJob?.cancel()
+        scrubJob = lifecycleScope.launch {
+            delay(150)
+            // The frame under the handle being dragged, not always the start.
+            android.util.Log.d("ffpreview", "seek to " + previewAtMs + " edge=" + edge)
+            val got = previews.frameAt(previewAtMs)
+            // Size only. The pixel sampling that lived here is what proved the retriever was
+            // returning identical images for different timestamps (see FrameSeeker); it did
+            // its job and does not belong in a shipping build.
+            android.util.Log.d("ffpreview", "  frame=" +
+                (if (got == null) "NULL" else got.width.toString() + "x" + got.height))
+            originalFrame = got
+            if (previewWarm && !busy) {
+                delay(250)
+                refreshSwapped(force = false)
+            }
+        }
+    }
+
+    /**
+     * Render the swapped pane for the current frame.
+     *
+     * [force] is the refresh button: it is allowed to pay for the model load. Without it,
+     * this is a no-op unless the pipeline is already warm.
+     */
+    /**
+     * Why a redraw did not happen.
+     *
+     * ⚠ Every `return` below is a silent one: the pane keeps whatever it had and nothing
+     * says why, which is exactly how "stuck on Preparing preview" and "the frame does not
+     * update on seek" arrive as reports with no evidence attached. The same shape as the
+     * QNN error that was thrown away for two releases -- a decision made and not recorded.
+     * One line per refusal, at debug level, on a tag nothing else uses.
+     */
+    private fun skipRefresh(why: String) {
+        android.util.Log.d("ffpreview", "refresh skipped: " + why +
+            "  warm=" + previewWarm + " busy=" + previewBusy + " run=" + busy +
+            " missing=" + modelsMissing + " src=" + (sourceUri != null) +
+            " tgt=" + (targetFile != null || targetImage != null))
+    }
+
+    private fun refreshSwapped(force: Boolean) {
+        if (busy) { skipRefresh("a run owns the pipeline"); return }
+        // Coalesced, not dropped: remember that the pane is out of date and redraw once the
+        // in-flight one lets go. `force` is OR-ed in so a cold request cannot be downgraded
+        // by a warm one arriving behind it.
+        if (previewBusy) {
+            refreshPending = true
+            refreshPendingForce = refreshPendingForce || force
+            skipRefresh("one already running; queued")
+            return
+        }
+        if (!previewWarm && !force) { skipRefresh("cold and not forced"); return }
+        if (opts.swapsFace && sourceUri == null) { skipRefresh("no source"); return }
+        // An image target has no targetFile -- it is held as a bitmap. Testing the
+        // video handle here meant an image never previewed at all.
+        if (targetFile == null && targetImage == null) { skipRefresh("no target"); return }
+        android.util.Log.d("ffpreview", "refresh start force=" + force + " warm=" + previewWarm)
+
+        lifecycleScope.launch {
+            // The API server may be mid-request. Wait briefly rather than bounce: a preview
+            // that quietly does not appear is the bug this whole pass has been about.
+            if (!PipeGuard.acquire("preview", 4000)) {
+                previewNote = pipeBusyMessage()
+                return@launch
+            }
+            // Someone else has had the pipeline since this screen last used it, so the warm
+            // flag describes their source, not ours.
+            if (!PipeGuard.uninterrupted(lastPipeSeq)) {
+                previews.invalidate()
+                previewWarm = false
+            }
+            lastPipeSeq = PipeGuard.sequence
+
+            previewBusy = true
+            previewNote = null
+            // Per-frame options onto the WARM pipeline, before the frame is swapped with
+            // them. No-ops when nothing is loaded or nothing changed; when the swapper
+            // changed it does nothing and ensureReady below does the reload instead.
+            previews.applyOptions(opts)
+            // Same reasoning, for the lip syncer's driving audio -- decoded once per voice
+            // file (see PreviewEngine.applyVoice), called on every refresh rather than only
+            // at cold warm-up so a voice picked or changed AFTER the preview is already
+            // warm still reaches it. The fps has to match what a real run would index
+            // frames at, or the preview and the eventual output disagree on which mouth
+            // belongs to which timestamp.
+            if (opts.lipSync) {
+                val previewFps = if (opts.outputFps in 1..inputFps) opts.outputFps else inputFps
+                // The SAME trim the run will use: the preview's mel windows must index the
+                // same part of the voice the output does, or the scrubbed mouth and the
+                // rendered mouth would disagree on every frame.
+                previews.applyVoice(voiceFile?.absolutePath,
+                                    (voiceTrimStartMs * 1000).toLong(),
+                                    if (voiceTrimEndMs >= voiceDurationMs) Long.MAX_VALUE
+                                    else (voiceTrimEndMs * 1000).toLong(),
+                                    previewFps.toDouble())
+            }
+            try {
+                val frame = originalFrame ?: previews.frameAt(previewAtMs)?.also {
+                    originalFrame = it
+                } ?: run {
+                    previewNote = getString(R.string.status_cannot_read_frame)
+                    return@launch
+                }
+
+                if (!previewWarm) {
+                    val prepared = withContext(Dispatchers.IO) { prepareSources() }
+                    if (prepared == null) {
+                        previewNote = getString(R.string.status_cannot_read_source)
+                        return@launch
+                    }
+
+                    val models = modelDir()
+                    val t = tier
+                    val missing = listOf("yoloface", "fan2d", "arcface", opts.swapper)
+                        .filterNot { ModelPaths.present(models, t, it) }
+                    if (missing.isNotEmpty()) {
+                        previewNote = "Missing ${missing.joinToString()}"
+                        return@launch
+                    }
+
+                    val lib = applicationInfo.nativeLibraryDir
+                    val err = previews.ensureReady(
+                        lib, models.absolutePath, opts,
+                        slots = prepared.slots,
+                        activeSource = swapSourceIndex,
+                        assignEnabled = swapAssignMode,
+                        // The same check runSwap makes, over the same list. Without it the
+                        // preview is a complete second processing path with no check on
+                        // it, and the check becomes avoidable by never pressing Swap.
+                        gate = { screenSourceList(prepared.bitmaps, "preview") },
+                    )
+                    // Before the error branch, because a rejection is worth recording even
+                    // when the fallback then succeeded and there is no error to report.
+                    noteTierRejection()
+                    if (err != null) {
+                        // The LOG too, not just the pane. A bug report carries the log and
+                        // the status line; it does not carry the pane. So the one report
+                        // this project most needed to explain -- an 8 Elite Gen 5 whose
+                        // v81 tier loads and will not execute -- arrived with the failure
+                        // filling the screen and "-- run log --  (empty)" underneath it,
+                        // and the user had to photograph the pane to say what happened.
+                        appendLog(err)
+                        previewNote = err
+                        return@launch
+                    }
+                    previewWarm = true
+                    // ⚠ AFTER the init, every time. Native assignments live on the
+                    // pipeline and do not survive one being built, so a mode that is on
+                    // would come back empty and silently swap everybody.
+                    restoreSwapAssignments()
+                    // Same for the lips list: Kotlin state is the truth, pushed
+                    // exactly (rotation, concurrent re-warm and restores cannot
+                    // drift it from what the green boxes show).
+                    pushLipSelection()
+                }
+
+                // Every previewed frame, not just the source. The source is checked once,
+                // when the pipeline warms; the target is checked here because the trim
+                // handle can reach any frame in the clip and this pane displays it.
+                ContentGate.inspectStill(frame).let { v ->
+                    if (!v.permitted) {
+                        // Logged with its subject, like every other check: a report that
+                        // shows only the SOURCE score passing cannot say this was the
+                        // refusal on screen (issue #17).
+                        appendLog("preview target frame score %+.3f, refused".format(v.score) +
+                                  (if (v.detail.isNotBlank()) "  [" + v.detail + "]" else ""))
+                        previewNote = ContentGate.message(this@MainActivity, R.string.gate_subject_this_frame, v)
+                        swappedFrame = null
+                        return@launch
+                    }
+                }
+
+                val out = previews.swap(frame, previewAtMs, voiceFile?.absolutePath)
+                android.util.Log.d("ffpreview", "  swapped faces=" + out.faces +
+                                                " err=" + out.error)
+                when {
+                    out.error != null -> { previewNote = out.error; swappedFrame = null }
+                    out.faces == 0 -> {
+                        // processFrame leaves the buffer untouched when it finds nothing, so
+                        // without this the pane would show the ORIGINAL and look like a
+                        // swap that did nothing.
+                        previewNote = getString(R.string.status_no_face)
+                        swappedFrame = null
+                    }
+                    else -> {
+                        swappedFrame = out.bitmap; previewNote = null
+                        // For a still this pane IS the result, so a new one is a different
+                        // image from the one the Save button reported saving.
+                        if (targetImage != null) { savedUri = null; savedPathLabel = null }
+                    }
+                }
+            } finally {
+                previewBusy = false
+                PipeGuard.release()
+                // Whatever arrived while this one held the pipeline. Reads the CURRENT
+                // position rather than a remembered one -- the seek job keeps
+                // `originalFrame` up to date, so the redraw lands on the newest frame
+                // rather than replaying the one that was missed.
+                if (refreshPending) {
+                    refreshPending = false
+                    val f = refreshPendingForce
+                    refreshPendingForce = false
+                    refreshSwapped(force = f)
+                }
+            }
+        }
+    }
+
+    /**
+     * Copy the picked target out of SAF.
+     *
+     * A still short-circuits everything video: there is no duration, so no trim, no frame
+     * rate, and nothing to seek. `durationMs == 0` is the mode flag the UI reads.
+     */
+    /**
+     * The file's real name, for a `content://` URI.
+     *
+     * `uri.lastPathSegment` is NOT the filename for most SAF providers -- it is the
+     * provider's own document id, which is very often just a number ("118", "msf:42").
+     * `OpenableColumns.DISPLAY_NAME` is the column every provider is required to answer
+     * correctly; the segment is only a fallback for the rare URI a query fails on.
+     */
+    private fun displayName(uri: Uri): String? {
+        val queried = runCatching {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                                   null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull()
+        return queried ?: uri.lastPathSegment?.substringAfterLast('/')
+    }
+
+    /**
+     * Forget the lips target. Called wherever the TARGET changes: an identity
+     * from another clip is invisible.
+     */
+    private fun dropLipReferenceFace() {
+        // Async under the pick mutex: a tap may be resolving right now, and
+        // clearing around it would shift every index it is about to use.
+        lifecycleScope.launch {
+            lipPickMutex.withLock {
+                if (lipBoxes.isEmpty() && lipIdentities.isEmpty() &&
+                    !NativePipe.hasLipReferenceFace()) return@withLock
+                NativePipe.clearLipReferenceFace()
+                lipBoxes = emptyList()
+                lipIdentities = emptyList()
+            }
+        }
+    }
+
+    /**
+     * Copy a picked URI into the cache under [name], for the decoders that need a path.
+     *
+     * ⚠ The name is the caller's because the single-target path uses ONE fixed file --
+     * `cacheDir/target.mp4` -- and a batch item copied over that would destroy the target
+     * the panes, the trim slider and item one of the queue are all still pointing at. Each
+     * queued clip therefore gets its own name, and deletes it when it is done.
+     */
+    private fun copyToCache(uri: Uri, name: String): File? = runCatching {
+        val f = File(cacheDir, name)
+        contentResolver.openInputStream(uri).use { i ->
+            f.outputStream().use { o -> i!!.copyTo(o) }
+        }
+        f
+    }.getOrNull()
+
+    private fun loadTarget(uri: Uri) {
+        resetSwapPersonState()
+        dropLipReferenceFace()
+        lipPickMode = false
+        if (contentResolver.getType(uri)?.startsWith("image/") == true) {
+            loadTargetImage(uri)
+            return
+        }
+        preparing = true
+        targetName = displayName(uri)
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    // MediaExtractor needs a real path; SAF only gives a stream.
+                    val f = File(cacheDir, "target.mp4")
+                    contentResolver.openInputStream(uri).use { i ->
+                        f.outputStream().use { o -> i!!.copyTo(o) }
+                    }
+                    val mmr = MediaMetadataRetriever().apply { setDataSource(f.absolutePath) }
+                    val d = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        ?.toLongOrNull() ?: 0L
+                    val storedW = mmr.extractMetadata(
+                        MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                    val storedH = mmr.extractMetadata(
+                        MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                    // ⚠ ROTATION-CORRECTED, and it has to be. VIDEO_WIDTH/HEIGHT are the
+                    // STORED dimensions: a phone films portrait by recording 1920x1080 and
+                    // setting a 90 degree flag, so this reports 16:9 for a clip every other
+                    // part of the app treats as 9:16.
+                    //
+                    // FrameSeeker already decodes AND rotates (see its outWidth/outHeight),
+                    // so the pane was being sized 16:9 for a 9:16 bitmap and ContentScale.Fit
+                    // did the only thing it could -- letterbox it into grey side bars. It
+                    // also chose the stacked layout over the side-by-side one, which exists
+                    // precisely for portrait footage. Output was never affected: VideoSwapper
+                    // reads the same flag itself.
+                    val rot = mmr.extractMetadata(
+                        MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+                    val swap = rot == 90 || rot == 270
+                    val w = if (swap) storedH else storedW
+                    val h = if (swap) storedW else storedH
+                    // CAPTURE_FRAMERATE is absent on plenty of files (it is a camera tag,
+                    // not a container one), so fall back to counting frames over the
+                    // duration rather than assuming 30.
+                    val fpsMeta = mmr.extractMetadata(
+                        MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toFloatOrNull()
+                    val frameCount = mmr.extractMetadata(
+                        MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toIntOrNull()
+                    val fps = when {
+                        fpsMeta != null && fpsMeta > 1f -> fpsMeta.roundToInt()
+                        frameCount != null && d > 0 -> (frameCount * 1000.0 / d).roundToInt()
+                        else -> 30
+                    }.coerceIn(1, 240)
+                    mmr.release()
+                    Loaded(f, d, w, h, fps)
+                }
+            }
+            ok.onSuccess { l ->
+                // The old result belongs to the old target. Dropping it here is also the
+                // fix for a stale-result bug: nothing cleared `outputFile` on a new pick, so
+                // the pane went on offering to save and share the PREVIOUS video.
+                discardOutput()
+                targetImage = null
+                // face_animator moves a STILL's face; it has nothing to do on a clip.
+                if (opts.faceAnimate) applyOpts(opts.copy(faceAnimate = false))
+                targetFile = l.file; durationMs = l.durationMs
+                inputFps = l.fps
+                targetW = l.width; targetH = l.height
+                // ⚠ The output choices belong to the clip that is going away. "24 fps" and
+                // "720p" were answers about ITS 30 fps and ITS 2160p; carrying them onto a
+                // new clip applies a decision nobody made about it. Reset, not remembered.
+                if (opts.outputFps != 0 || opts.outputMaxShortEdge != 0)
+                    applyOpts(opts.copy(outputFps = 0, outputMaxShortEdge = 0))
+                trimStartMs = 0f; trimEndMs = l.durationMs.toFloat()
+                targetAspect = if (l.width > 0 && l.height > 0)
+                    l.width.toFloat() / l.height else 16f / 9f
+                status = getString(R.string.status_target_ready_video,
+                                   l.width, l.height, fmt(l.durationMs.toFloat()))
+                // Open it for scrubbing and show the first frame straight away.
+                previews.openTarget(l.file.absolutePath, l.fps)
+                targetVersion++
+                // `preview` too, which this path used to leave set -- see clearPreviewFrames.
+                clearPreviewFrames()
+                originalFrame = previews.frameAt(0f)
+            }.onFailure {
+                status = getString(R.string.status_cannot_read_video, it.message ?: "")
+            }
+            preparing = false
+        }
+    }
+
+    /**
+     * A still target.
+     *
+     * Decoded through [decodeOriented] like the source, so a portrait photo is not swapped
+     * on its side -- the same EXIF bug, and it would have been reintroduced here by using
+     * BitmapFactory for the new path.
+     */
+    private fun loadTargetImage(uri: Uri) {
+        resetSwapPersonState()
+        dropLipReferenceFace()
+        lipPickMode = false
+        preparing = true
+        targetName = displayName(uri)
+        lifecycleScope.launch {
+            val bmp = withContext(Dispatchers.IO) { decodeOriented(uri, MAX_TARGET_EDGE) }
+            if (bmp == null) {
+                status = getString(R.string.status_cannot_read_image)
+                preparing = false
+                return@launch
+            }
+            discardOutput()
+            previews.closeTarget()
+            targetFile = null
+            targetImage = bmp
+            durationMs = 0L
+            trimStartMs = 0f; trimEndMs = 0f
+            targetAspect = if (bmp.height > 0) bmp.width.toFloat() / bmp.height else 1f
+            // The frames, not the pipeline. The double `originalFrame = bmp` this replaces
+            // was working around invalidatePreview clearing state this path had just set.
+            clearPreviewFrames()
+            targetVersion++
+            originalFrame = bmp
+            status = getString(R.string.status_target_ready_image, bmp.width, bmp.height)
+            preparing = false
+        }
+    }
+
+    /**
+     * The lip syncer's DRIVING audio -- a file the user chose deliberately, never the
+     * target's own track. See [voiceFile]'s doc and [VideoSwapper]'s `voicePath`.
+     *
+     * Copied to a real path for the same reason [loadTarget] copies the target: both
+     * [MediaMetadataRetriever] (the `has_audio` check here) and [AudioDecoder] need one,
+     * and SAF only ever hands back a stream.
+     */
+    private fun loadVoice(uri: Uri) {
+        voiceName = displayName(uri)
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val f = File(cacheDir, "voice.audio")
+                    contentResolver.openInputStream(uri).use { i ->
+                        f.outputStream().use { o -> i!!.copyTo(o) }
+                    }
+                    val mmr = MediaMetadataRetriever().apply { setDataSource(f.absolutePath) }
+                    val hasAudio = mmr.extractMetadata(
+                        MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes"
+                    val durMs = mmr.extractMetadata(
+                        MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                    mmr.release()
+                    if (!hasAudio) error(getString(R.string.status_voice_no_audio))
+                    Pair(f, durMs)
+                }
+            }
+            result.onSuccess { (f, durMs) ->
+                voiceFile = f
+                // The trim is a property of THIS file: a newly picked or recorded voice
+                // always starts whole, never inheriting the previous file's range.
+                voiceDurationMs = durMs
+                voiceTrimStartMs = 0f
+                voiceTrimEndMs = durMs.toFloat()
+                voicePosMs = 0f
+                stopVoicePlayback()
+                status = getString(R.string.status_voice_ready, fmt(durMs.toFloat()))
+            }.onFailure {
+                voiceFile = null
+                status = getString(R.string.status_cannot_read_audio, it.message ?: "")
+            }
+            // Not `opts`, so nothing else asks the swapped pane to redraw for it. Cheap:
+            // the pipeline stays warm, `applyVoice` just decodes the new file on the next
+            // refresh -- no reload, which is what `reloads = false` says.
+            if (opts.lipSync) previewOptionsChanged(reloads = false)
+        }
+    }
+
+    /**
+     * Record the driving voice with the phone's own microphone.
+     *
+     * The lip syncer needs a voice that is NOT the target's own audio, and until now the
+     * only way to supply one was to already have the file. Recording one is the obvious
+     * missing half, and it is the same shape as capturing a source face with the camera.
+     *
+     * ⚠ The result goes through [loadVoice] like any picked file rather than being assigned
+     * to voiceFile directly. That is what keeps the has_audio check, the duration read, the
+     * status line and the preview refresh in ONE place -- a recording that set voiceFile
+     * itself would be a second path that silently skips all four.
+     *
+     * MPEG_4 + AAC because that is what AudioDecoder already reads: a raw PCM or AMR file
+     * would decode, but through a different branch nobody measured.
+     */
+    private var recorder: android.media.MediaRecorder? = null
+
+    private fun toggleVoiceRecording() {
+        if (recordingVoice) { stopVoiceRecording(); return }
+        if (liveRecording || liveFinalizing) return
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            askMic.launch(android.Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        val f = File(cacheDir, "voice_rec.m4a")
+        val r = android.media.MediaRecorder(this)
+        val ok = runCatching {
+            r.setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
+            r.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+            r.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
+            r.setAudioSamplingRate(44100)
+            r.setAudioChannels(1)
+            r.setAudioEncodingBitRate(128_000)
+            r.setOutputFile(f.absolutePath)
+            r.prepare()
+            r.start()
+        }.isSuccess
+        if (!ok) {
+            runCatching { r.release() }
+            status = getString(R.string.status_record_failed)
+            return
+        }
+        recorder = r
+        recordedTo = f
+        recordingVoice = true
+        status = getString(R.string.status_recording)
+    }
+
+    private fun stopVoiceRecording() {
+        val r = recorder ?: return
+        recorder = null
+        recordingVoice = false
+        // stop() THROWS when nothing was captured -- a recording ended within a few tens of
+        // milliseconds of starting produces no frames and no valid file. Treated as "too
+        // short" rather than an error, because that is what the user did.
+        val ok = runCatching { r.stop() }.isSuccess
+        runCatching { r.release() }
+        val f = recordedTo
+        if (ok && f != null && f.length() > 0) loadVoice(Uri.fromFile(f))
+        else status = getString(R.string.status_record_too_short)
+    }
+
+    private var recordedTo: File? = null
+    private val askMic = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) toggleVoiceRecording()
+        else status = getString(R.string.status_mic_denied)
+    }
+
+    private fun clearVoice() {
+        voiceFile = null
+        voiceName = null
+        voiceDurationMs = 0
+        voiceTrimStartMs = 0f
+        voiceTrimEndMs = 0f
+        voicePosMs = 0f
+        stopVoicePlayback()
+        if (opts.lipSync) previewOptionsChanged(reloads = false)
+    }
+
+    /**
+     * Play or pause the loaded voice, so the user can hear what they picked before it
+     * drives anything.
+     *
+     * Playback is confined to the trimmed range: it starts at the trim start (or the
+     * playhead if that is already inside it) and stops at the trim end -- "play" always
+     * previews exactly the segment that will drive the lips. Dragging the seekbar can
+     * scrub anywhere in the file; the next play snaps back inside the selection.
+     */
+    private fun toggleVoicePlayback() {
+        val f = voiceFile ?: return
+        if (voicePlaying) {
+            voicePollJob?.cancel()
+            voicePlayer?.pause()
+            voicePlaying = false
+            return
+        }
+        val p = voicePlayer ?: run {
+            val np = android.media.MediaPlayer()
+            runCatching {
+                np.setDataSource(f.absolutePath)
+                np.prepare()
+            }.getOrElse {
+                np.release()
+                status = getString(R.string.status_cannot_read_audio, it.message ?: "")
+                return
+            }
+            np.setOnCompletionListener { voicePlaybackEnded() }
+            voicePlayer = np
+            np
+        }
+        val dur = p.duration.toLong().coerceAtLeast(1)
+        if (voiceDurationMs <= 0) voiceDurationMs = dur
+        var at = voicePosMs.coerceIn(0f, voiceDurationMs.toFloat())
+        // Outside the selection (before its start, or after its end from a previous run)
+        // snaps to the start of the selection.
+        if (at >= voiceTrimEndMs) at = voiceTrimStartMs
+        if (at < voiceTrimStartMs) at = voiceTrimStartMs
+        runCatching { p.seekTo(at.toInt()) }
+        p.start()
+        voicePosMs = at
+        voicePlaying = true
+        voicePollJob?.cancel()
+        voicePollJob = lifecycleScope.launch {
+            while (voicePlaying) {
+                delay(200)
+                val pos = voicePlayer?.currentPosition?.toLong() ?: continue
+                if (pos >= voiceTrimEndMs.toLong()) { voicePlaybackEnded(); break }
+                voicePosMs = pos.toFloat()
+            }
+        }
+    }
+
+    /** Playback reached the end of the trimmed selection (or the file ended early). */
+    private fun voicePlaybackEnded() {
+        runCatching { voicePlayer?.pause() }
+        voicePlaying = false
+        // Back to the start of the selection, so the next press of play replays it.
+        voicePosMs = voiceTrimStartMs
+    }
+
+    /**
+     * One detected person, as a small square for the assignment row.
+     *
+     * ⚠ Every edge is clamped INTO the frame before the crop. Detector boxes routinely
+     * run off the side of the picture on a face at the edge, and `createBitmap` throws
+     * on a rectangle that does not fit -- which would take down the preview effect that
+     * calls this, not just the one thumbnail.
+     */
+    private fun cropPersonThumb(frame: Bitmap, box: List<Float>): Bitmap? = runCatching {
+        if (box.size < 4 || frame.width < 2 || frame.height < 2) return@runCatching null
+        val x0 = box[0].toInt().coerceIn(0, frame.width - 1)
+        val y0 = box[1].toInt().coerceIn(0, frame.height - 1)
+        val x1 = box[2].toInt().coerceIn(x0 + 1, frame.width)
+        val y1 = box[3].toInt().coerceIn(y0 + 1, frame.height)
+        Bitmap.createScaledBitmap(
+            Bitmap.createBitmap(frame, x0, y0, x1 - x0, y1 - y0), 96, 96, true)
+    }.getOrNull()
+
+    /** Release the player entirely -- a new voice is loaded, or the screen is going away. */
+    private fun stopVoicePlayback() {
+        voicePollJob?.cancel()
+        voicePollJob = null
+        runCatching { voicePlayer?.release() }
+        voicePlayer = null
+        voicePlaying = false
+    }
+
+    /** The seekbar was dragged: move the playhead, without leaving play mode. */
+    private fun onVoiceSeek(ms: Float) {
+        val p = voicePlayer
+        if (p != null) runCatching { p.seekTo(ms.toInt()) }
+        voicePosMs = ms
+        if (voicePlaying && ms >= voiceTrimEndMs) voicePlaybackEnded()
+    }
+
+    /**
+     * The voice's trim handles moved.
+     *
+     * Keeps at least a third of a second, like the video trim (the encoder needs a frame;
+     * the mouth needs a window). The driving audio is re-decoded with the new range on the
+     * next preview refresh, so the scrubbed preview and the eventual run agree on which
+     * part of the voice drives which frame.
+     */
+    private fun onVoiceTrimChanged(start: Float, end: Float) {
+        voiceTrimStartMs = start
+        voiceTrimEndMs = end
+        // Keep the playhead inside the selection: scrubbing the handles past where the
+        // playhead sits should not leave play previewing a part that was just cut away.
+        if (voicePosMs < start) { voicePosMs = start; onVoiceSeek(start) }
+        if (voicePosMs > end) { voicePosMs = end; onVoiceSeek(end) }
+        if (opts.lipSync) previewOptionsChanged(reloads = false)
+    }
+
+    /**
+     * Where a finished video lands until the user saves it or moves on.
+     *
+     * `getExternalFilesDir`, not `cacheDir`: a result the user has not saved yet must not
+     * evaporate because the OS wanted space. The price is that NOTHING else ever cleans
+     * this directory -- "Clear cache" does not touch it, only "Clear data" does -- so every
+     * path that drops the reference has to delete the file too. See [discardOutput].
+     */
+    private fun outputDir(): File = getExternalFilesDir(null) ?: filesDir
+
+    /**
+     * Drop the finished video AND the file behind it.
+     *
+     * Setting `outputFile = null` on its own leaked one MP4 per run into
+     * `Android/data/<pkg>/files`, where the user cannot reach it and clearing the cache does
+     * not remove it -- reported from the field. A still target never had the bug: its result
+     * is a Bitmap that only ever reaches disk through Save.
+     *
+     * Safe after a gallery save. `GallerySaver` COPIES into MediaStore, so what the user
+     * kept is a different file and this does not touch it.
+     */
+    private fun discardOutput() {
+        val gone = outputFile
+        gone?.delete()
+        outputFile = null; outputPartial = false; savedUri = null; savedPathLabel = null
+        // ⚠ A QUEUE ROW MAY BE POINTING AT WHAT WAS JUST DELETED. The row is the only way
+        // back to a batch clip, so leaving it Done with a dead File means a thumbnail that
+        // opens a black pane and a Save that writes nothing. The clip goes back to being
+        // queued, which is what it now is.
+        if (gone != null && batchQueue.any { it.output == gone })
+            batchQueue = batchQueue.map {
+                if (it.output == gone)
+                    it.copy(state = BatchState.Waiting, output = null, thumb = null,
+                            detail = null)
+                else it
+            }
+    }
+
+    /**
+     * Delete finished videos that nothing can reach any more.
+     *
+     * `outputFile` is Activity state with no saved-instance backing, so process death --
+     * and plain rotation, which recreates this Activity -- orphans whatever was on screen.
+     * `onCreate` is therefore the one moment at which no output is reachable BY DEFINITION,
+     * which is what makes it the only safe place to sweep.
+     *
+     * Scoped to `swapped_*.mp4` in this one directory. The API server writes its own
+     * `api_out.mp4` to `cacheDir`, which the OS already manages, and `selftest.mp4` is a
+     * debug artefact somebody may still want to pull over adb.
+     */
+    private fun sweepOrphanedOutputs() {
+        val swept = outputDir().listFiles { f: File ->
+            f.isFile && f.name.startsWith("swapped_") && f.name.endsWith(".mp4")
+        }?.count { it.delete() } ?: 0
+        if (swept > 0) android.util.Log.i("ffmain", "swept $swept orphaned output(s)")
+    }
+
+    /**
+     * Drop the target — and ONLY the target.
+     *
+     * A finished video deliberately survives this. The trash icon sits on the TARGET pane
+     * and says "Remove target"; taking an unsaved result with it means one mistap destroys
+     * minutes of NPU time with no undo. The output pane and its Save/Share row are gated on
+     * `outputFile`, not on the target, so they stay usable with nothing loaded.
+     *
+     * The file is still not leaked: it goes when a new target is picked, when the next run
+     * starts, or in [sweepOrphanedOutputs] on the next launch. At most one can be waiting.
+     */
+    /**
+     * Drop the source face.
+     *
+     * The warm pipeline is holding this face's EMBEDDING, so the preview has to be
+     * invalidated for exactly the reason picking a different source does: otherwise the
+     * swapped pane keeps showing a face the user has just removed.
+     */
+    /**
+     * Why the pipeline could not be taken, naming whoever has it.
+     *
+     * ⚠ All three callers used to print "the remote API is using the NPU" no matter who
+     * actually held it. PipeGuard has recorded the holder since it was written and nothing
+     * asked. Reported from the field as Live blaming the API on the GPU backend -- where
+     * the preview holds the pipe far longer, so it is the preview that loses the race.
+     * The message also claimed an NPU on devices whose whole point is not having one.
+     */
+    private fun pipeBusyMessage(): String = getString(R.string.status_pipe_busy,
+        getString(when (PipeGuard.holder) {
+            "preview" -> R.string.pipe_holder_preview
+            "swap" -> R.string.pipe_holder_swap
+            "api", "api-stop" -> R.string.pipe_holder_api
+            "live" -> R.string.pipe_holder_live
+            else -> R.string.pipe_holder_other
+        }))
+
+    /**
+     * The Swap pane's delete: drop the source it is SHOWING, not the whole list.
+     *
+     * Not destructive -- it drops a reference to a photo the user still has -- so unlike
+     * the output it does not confirm.
+     */
+    private fun clearSource() {
+        if (sources.isEmpty()) return
+        removeSource(swapSourceIndex)
+    }
+
+    private fun clearTarget() {
+        resetSwapPersonState()
+        dropLipReferenceFace()
+        lipPickMode = false
+        // The queue is a list of TARGETS and item 0 was this one. Keeping the rest after
+        // the visible clip goes away would leave a run that starts on a clip nothing on
+        // screen mentions.
+        batchQueue = emptyList()
+        previews.closeTarget()
+        targetFile = null
+        targetImage = null
+        targetName = null
+        durationMs = 0L
+        trimStartMs = 0f; trimEndMs = 0f
+        targetAspect = 16f / 9f
+        originalFrame = null
+        targetVersion++
+        invalidatePreview()
+        status = ""
+    }
+
+    /**
+     * The video path, and only the video path.
+     *
+     * A still target used to have a branch in here, reached by the Swap button. It is gone
+     * with the button: the swapped PANE is already that image -- full resolution, same
+     * pipeline, same options, and gated on both the source and the frame in
+     * [refreshSwapped] -- so a run could only spend a model reload to produce a second copy
+     * of what was on screen. An unreachable branch that processes pixels is exactly the
+     * kind of thing a content-gate audit has to keep re-proving, so it is not left behind.
+     */
+    /**
+     * Start or stop the live feed.
+     *
+     * Live owns the pipeline for as long as it runs, through the same [PipeGuard] the API
+     * and the screen contend for -- a camera pump and a preview refresh both calling
+     * processFrame on one global is exactly what that guard exists to prevent.
+     */
+    /**
+     * ⚠ Live must not survive the activity leaving the foreground. CameraX unbinds itself
+     * -- it is lifecycle-bound -- but nothing else does: the pipeline would stay loaded and
+     * PipeGuard would stay HELD, so the next run anywhere in the app reports the NPU busy
+     * with no way to clear it short of killing the process.
+     */
+    override fun onStop() {
+        super.onStop()
+        if (liveRunning) stopLive()
+    }
+
+    private fun toggleLive() {
+        if (liveRunning) { stopLive(); return }
+        liveNote = null
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            askCamera.launch(android.Manifest.permission.CAMERA)
+            return
+        }
+        startLive()
+    }
+
+    /**
+     * Take one clip out of the batch queue, whatever state it is in.
+     *
+     * ⚠ EVERY ROW, INCLUDING THE FIRST. Row 0 is the visible target, and the first version
+     * refused to touch it on the reasoning that the target is cleared from the target pane
+     * instead -- which left the one row on screen that the user could not delete, in a list
+     * where the other eleven had a bin next to them. Deleting it now does what deleting the
+     * single target does, then promotes the next clip into the pane so the rest of the queue
+     * survives. Only when nothing is left does it become a plain clearTarget().
+     *
+     * ⚠ The output file goes WITH the row. The row was the only way to reach it, so leaving
+     * the file behind would strand a full-size video in the app's storage that nothing lists
+     * and nothing can play.
+     */
+    private fun removeFromBatch(i: Int) {
+        if (busy) return
+        val item = batchQueue.getOrNull(i) ?: return
+        confirmBatchDelete = null
+
+        item.output?.let { f ->
+            // Step the pane off it first: the player holds the file, and a pane pointing at
+            // a deleted path shows a black rectangle with no way back.
+            if (outputFile == f) { outputFile = null; savedUri = null; savedPathLabel = null }
+            runCatching { f.delete() }
+        }
+
+        if (i == 0) {
+            val rest = batchQueue.drop(1)
+            if (rest.isEmpty()) { clearTarget(); return }
+            // ⚠ Order matters: loadTarget does NOT touch batchQueue (only clearTarget does),
+            // so the shortened queue set here survives the load that follows it.
+            batchQueue = rest
+            loadTarget(rest.first().uri)
+            return
+        }
+        // ⚠ DELETE ONE ROW, LOSE ONE ROW. This used to collapse the queue to empty
+        // whenever a single item was left, on the reasoning that one clip is not a queue --
+        // which meant that deleting either row of a TWO-clip list made both disappear, and
+        // from outside that is indistinguishable from a delete button that wipes the list.
+        // Reported as exactly that.
+        //
+        // The list now shows whatever is left, down to one. Swap still routes a queue of
+        // one to the single-run path, so it keeps its trim; that decision belongs at the
+        // button, not in a rule that quietly deletes rows the user did not ask to delete.
+        batchQueue = batchQueue.filterIndexed { j, _ -> j != i }
+    }
+
+    /**
+     * Flip the lens, restarting the pump if it was running.
+     *
+     * stop-then-start, not a rebind: see [LiveEngine.frontCamera]. It also means the
+     * pipeline is released and re-acquired around the switch, so PipeGuard's ownership and
+     * the tracker's state are exactly as they are for any other start -- a switch invents
+     * no new lifecycle, which is the point while roadmap 11 is still open.
+     */
+    /**
+     * Tap faces to lip-sync them; tap one again to take it out.
+     *
+     * Add-vs-remove is decided HERE by tap position: a tap inside an existing
+     * green marker removes that entry, anywhere else on a face adds a new one.
+     * Never by embedding guess -- two similar faces must both be listable.
+     * Empty list = every face is synced. Works whether or not Assign per person
+     * is on (assign drives the swapper, this drives the lip syncer).
+     */
+    private fun pickLipReferenceFace(x: Float, y: Float) {
+        val frame = originalFrame ?: return
+        if (busy) return
+        if (!previewWarm) {
+            status = getString(R.string.status_reference_warming)
+            refreshSwapped(force = true)
+            return
+        }
+        lifecycleScope.launch {
+            lipPickMutex.withLock {
+                // Re-read the lists HERE, inside the lock: an earlier tap may
+                // still be resolving, and deciding on a stale snapshot removes
+                // or duplicates the wrong entry.
+                val marked = lipBoxes.indexOfFirst { b ->
+                    b.size >= 4 && x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]
+                }
+                if (marked >= 0) {
+                    // Tap inside a green marker = take that entry out.
+                    if (NativePipe.removeLipReferenceAt(marked)) {
+                        lipBoxes = lipBoxes.filterIndexed { i, _ -> i != marked }
+                        lipIdentities = lipIdentities.filterIndexed { i, _ -> i != marked }
+                    }
+                    if (lipBoxes.isEmpty()) {
+                        lipPickMode = false
+                        status = getString(R.string.status_lips_cleared)
+                    } else status = lipsCountStatus()
+                    previewOptionsChanged()
+                    return@withLock
+                }
+                // FIVE floats: the box plus the new index in the lips list.
+                val prevCount = lipBoxes.size
+                // The tap runs the full analyse on the WARM pipeline without taking
+                // PipeGuard (taking it would read as another holder and force a reload),
+                // so at least do not start it on top of a render already in flight.
+                while (previewBusy) delay(50)
+                val got = withContext(Dispatchers.Default) {
+                    runCatching {
+                        val soft = frame.asArgb8888()
+                            ?: return@runCatching FloatArray(0)
+                        val px = IntArray(soft.width * soft.height)
+                        soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+                        NativePipe.addLipReferenceFaceAt(
+                            NativePipe.argbToBgr(px, soft.width, soft.height),
+                            soft.width, soft.height, x, y)
+                    }.getOrDefault(FloatArray(0))
+                }
+                if (got.size < 5) {
+                    status = getString(R.string.status_lips_missed)
+                    return@withLock
+                }
+                val box = got.copyOf(4)
+                val idx = got[4].toInt()
+                if (idx < 0 || idx > prevCount) {
+                    status = getString(R.string.status_lips_missed)
+                    return@withLock
+                }
+                lipBoxes = lipBoxes + box
+                // Keep the identity in Kotlin too: pressing Swap builds a fresh
+                // pipeline, and restoreLipReference hands them back (same pattern
+                // as the per-person assignments).
+                val emb = runCatching { NativePipe.lipReferenceEmbedding(idx) }
+                    .getOrNull()?.takeIf { it.size == 512 }
+                if (emb == null) {
+                    // Roll back the box: an identity that cannot be kept cannot be
+                    // restored at export either.
+                    runCatching { NativePipe.removeLipReferenceAt(idx) }
+                    lipBoxes = lipBoxes.dropLast(1)
+                    appendLog("lips target picked but its identity was lost")
+                    status = getString(R.string.status_lips_missed)
+                } else {
+                    // Same person tapped again elsewhere (they moved since the
+                    // marker was drawn)? Then refresh the old marker instead of
+                    // listing them twice. Strict cosine bar (0.05, not the loose
+                    // 0.30 match threshold): lookalikes must stay separately
+                    // listable, while two taps of one face are near-identical.
+                    val dup = lipIdentities.indexOfFirst { cosineDist(it, emb) < 0.05f }
+                    if (dup >= 0) {
+                        runCatching { NativePipe.removeLipReferenceAt(idx) }
+                        lipBoxes = lipBoxes.dropLast(1).mapIndexed { i, b ->
+                            if (i == dup) box else b
+                        }
+                    } else lipIdentities = lipIdentities + emb
+                    // Keep the mode on so further taps add more faces.
+                    status = lipsCountStatus()
+                }
+                previewOptionsChanged()
+            }
+        }
+    }
+
+    /** (1 - cosine) / 2 over L2-normalised 512-float identities, as natively. */
+    private fun cosineDist(a: FloatArray, b: FloatArray): Float {
+        var dot = 0.0
+        for (i in 0 until 512) dot += a[i] * b[i]
+        return ((1.0 - dot) * 0.5).toFloat()
+    }
+
+    /** "Lip sync on N face(s)", for the status line after each lips tap. */
+    private fun lipsCountStatus(): String {
+        val n = lipBoxes.size
+        return if (n <= 1) getString(R.string.status_lips_set)
+        else getString(R.string.status_lips_set_many, n)
+    }
+
+    private fun toggleLipPickMode() {
+        lipPickMode = !lipPickMode
+        if (lipPickMode) {
+            // Just ensure the overlay is on. The boxes are NOT cleared: they
+            // describe the current frame and stay valid, so taps work at once
+            // when the overlay was already on. When it was off, flipping it
+            // relaunches detection by itself (same as the Face button).
+            // No pipeline refresh: this is a pure UI mode toggle.
+            showFaceBoxes = true
+            // Plus a guaranteed fresh pass either way: same-frame taps resolve
+            // against boxes detected for THIS frame, not leftovers.
+            faceDetectNonce++
+            status = getString(R.string.swap_lips_pick_on)
+        } else {
+            status = getString(R.string.swap_lips_pick_off)
+        }
+    }
+
+    /**
+     * Start or finish recording what Live is showing -- roadmap 13b.
+     *
+     * Only while the pump is running: there is nothing to record otherwise, and a recorder
+     * armed before the camera would produce a zero-frame file.
+     */
+    private val askLiveMic = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()) { granted ->
+        liveMicrophone = granted
+        if (!granted) status = getString(R.string.status_mic_denied)
+    }
+
+    private fun changeLiveMicrophone(enabled: Boolean) {
+        if (liveRecording || liveFinalizing) return
+        if (enabled && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            askLiveMic.launch(android.Manifest.permission.RECORD_AUDIO)
+        } else liveMicrophone = enabled
+    }
+
+    private fun toggleLiveRecording() {
+        if (liveRecording) { finishLiveRecording(discard = false); return }
+        if (!liveRunning || liveFinalizing) return
+        if (liveMicrophone) {
+            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                liveMicrophone = false
+                status = getString(R.string.status_mic_denied)
+                return
+            }
+            if (recordingVoice) {
+                status = getString(R.string.live_mic_busy)
+                return
+            }
+        }
+        val f = File(outputDir(), "live_" + System.currentTimeMillis() + ".mp4")
+        val rec = LiveRecorder(f, if (liveMicrophone) LiveMicrophone(this) else null) { appendLog(it) }
+        liveRecorder = rec
+        live.recorder = rec
+        liveRecording = true
+        status = getString(R.string.status_live_recording)
+    }
+
+    private fun toggleSwapEnabled() {
+        liveSwapEnabled = !liveSwapEnabled
+        NativePipe.setSwapEnabled(liveSwapEnabled)
+    }
+
+    private fun toggleLiveAssign() {
+        liveAssignMode = !liveAssignMode
+        // Assign per person and "Target faces" (largest only) are mutually exclusive:
+        // both decide WHICH face gets WHICH source, and largest-only would silently
+        // ignore every pin but the biggest face. Turning assign on forces the selector
+        // back to "all faces" -- the UI also locks the switch while assign is on.
+        if (liveAssignMode && liveLargestOnly) {
+            liveLargestOnly = false
+            NativePipe.setSwapLargestOnly(false)
+        }
+        NativePipe.setFaceAssignEnabled(liveAssignMode)
+        live.faceBoxesEnabled = liveAssignMode
+        if (!liveAssignMode) live.cancelFaceSnapshot()
+        livePersonThumbs = emptyList()
+        livePersonSnapshotBoxes = null
+        liveFaceBoxes = null
+        livePersonSnapshotFaceCount = 0
+        liveSelectedPerson = -1
+        liveFaceSnapshotPending = false
+        liveAssignBox = null
+        liveBrushKeepOriginal = false
+        liveNote = if (liveAssignMode) getString(R.string.live_assign_hint)
+                   else null
+    }
+
+    private fun clearLiveAssignments() {
+        NativePipe.clearFaceSourceAssignments()
+        liveAssignBox = null
+        liveAssignCount = 0
+        liveBrushKeepOriginal = false
+        liveSelectedPerson = -1
+        liveNote = getString(R.string.live_assign_cleared)
+    }
+
+    /** Select a detected person from Live's fixed photo row, tracking them to the next frame. */
+    private fun selectLivePerson(person: Int) {
+        if (!liveRunning || !liveAssignMode) return
+        val reference = livePersonSnapshotBoxes?.asList()?.chunked(5)?.getOrNull(person)
+            ?: return
+        val current = liveFaceBoxes?.asList()?.chunked(5).orEmpty()
+        if (current.isEmpty()) {
+            liveNote = getString(R.string.live_assign_missed)
+            return
+        }
+        val rcx = (reference[0] + reference[2]) * 0.5f
+        val rcy = (reference[1] + reference[3]) * 0.5f
+        val rw = (reference[2] - reference[0]).coerceAtLeast(1f)
+        val rh = (reference[3] - reference[1]).coerceAtLeast(1f)
+        val best = current.minByOrNull { box ->
+            val cx = (box[0] + box[2]) * 0.5f
+            val cy = (box[1] + box[3]) * 0.5f
+            val cw = (box[2] - box[0]).coerceAtLeast(1f)
+            val ch = (box[3] - box[1]).coerceAtLeast(1f)
+            val distance = hypot(cx - rcx, cy - rcy) / maxOf(rw, rh)
+            // IoU helps when two people are close and their centres are similar.
+            val ix0 = maxOf(reference[0], box[0])
+            val iy0 = maxOf(reference[1], box[1])
+            val ix1 = minOf(reference[2], box[2])
+            val iy1 = minOf(reference[3], box[3])
+            val intersection = maxOf(0f, ix1 - ix0) * maxOf(0f, iy1 - iy0)
+            val union = rw * rh + cw * ch - intersection
+            distance + (1f - if (union > 0f) intersection / union else 0f) * 0.4f
+        }
+        if (best == null) return
+        val distance = hypot(
+            (best[0] + best[2]) * 0.5f - rcx,
+            (best[1] + best[3]) * 0.5f - rcy,
+        ) / maxOf(rw, rh)
+        if (distance > 3f) {
+            liveNote = getString(R.string.live_assign_missed)
+            return
+        }
+        liveSelectedPerson = person
+        assignLiveFace((best[0] + best[2]) * 0.5f,
+                       (best[1] + best[3]) * 0.5f)
+    }
+
+    private fun clearLiveFacePreview() {
+        livePersonThumbs = emptyList()
+        livePersonSnapshotBoxes = null
+        liveFaceBoxes = null
+        livePersonSnapshotFaceCount = 0
+        liveSelectedPerson = -1
+        liveFaceSnapshotPending = false
+    }
+
+    /**
+     * A tap on the live feed, in DISPLAY bitmap coordinates (LiveScreen already undid the
+     * mirror and the crop, so the point matches what the pipeline sees). The tap is
+     * queued natively and resolved against the NEXT frame's pre-swap detections; the
+     * result is polled in the shot callback below.
+     */
+    private fun assignLiveFace(dispX: Float, dispY: Float) {
+        if (!liveRunning || !liveAssignMode) return
+        if (assignTapPending) return   // one tap in flight at a time
+        // ⚠ The brush rides as its OWN argument, never as a reserved value of the slot
+        // index. Native reads "is there a tap" as `source >= 0` in several places, and a
+        // magic negative would have turned every one of them into "is there a tap that is
+        // not the one brush the user just picked".
+        NativePipe.requestFaceAssignment(dispX, dispY, liveSourceIndex,
+                                         liveBrushKeepOriginal)
+        assignTapPending = true
+    }
+
+    /**
+     * Close the recording and say where it went.
+     *
+     * ⚠ `discard` is TRUE on a gate refusal, and the file is deleted. A refused run
+     * produces no output anywhere else in this app -- runSwap throws before it writes one
+     * -- and a recording is not an exception just because some of its frames were checked
+     * before the refusal happened. Live samples once a second, so the seconds either side
+     * of the frame that was refused were never checked at all.
+     */
+    private fun finishLiveRecording(discard: Boolean) {
+        val rec = liveRecorder ?: return
+        live.recorder = null
+        liveRecorder = null
+        liveRecording = false
+        liveFinalizing = true
+        lifecycleScope.launch(kotlinx.coroutines.NonCancellable) {
+            // Finish even when the activity is destroyed, so codecs and the microphone close.
+            val out = withContext(Dispatchers.IO) { rec.stop() }
+            liveFinalizing = false
+            if (discard) {
+                out?.delete()
+                return@launch
+            }
+            val err = rec.error
+            when {
+                err != null -> status = getString(R.string.status_failed, err)
+                out == null -> status = getString(R.string.status_live_rec_empty)
+                else -> {
+                    outputFile = out
+                    outputPartial = false
+                    status = getString(R.string.status_live_rec_saved, rec.frameCount)
+                    saveToGallery(out)
+                }
+            }
+        }
+    }
+
+    private fun switchLiveCamera() {
+        val wasRunning = liveRunning
+        if (wasRunning) stopLive()
+        liveFrontCamera = !liveFrontCamera
+        // ⚠ The mirror goes back to following the lens. An answer the user gave about one
+        // camera is not an answer about the other: a front feed is a mirror because that
+        // is what every selfie preview does, and a back feed is not -- it points at what
+        // the user is already looking at, so a flip puts text backwards and moves the
+        // world the wrong way. Carrying the override across the switch would do exactly
+        // that, and it would look like the swap failing rather than the view being wrong.
+        liveMirrorOverride = null
+        liveNote = null
+        if (wasRunning) startLive()
+    }
+
+    private fun startLive() {
+        // Nothing to run with -- the guard the caller's button already relies on, kept so
+        // this method cannot be entered with an empty list by any other path.
+        if (sources.getOrNull(liveSourceIndex) == null) return
+        // Read at bind time by the engine, so it must be set before start() and not after.
+        live.frontCamera = liveFrontCamera
+        lifecycleScope.launch {
+            if (!PipeGuard.acquire("live", 5000)) {
+                liveNote = pipeBusyMessage(); return@launch
+            }
+            // The preview holds a warm pipeline configured for the Swap screen. Live needs
+            // its own configuration, so the preview's is dropped rather than mutated --
+            // sharing it would leave the Swap screen warm for options Live had changed.
+            previews.invalidate()
+            previewWarm = false
+
+            val base = SwapOptions.load(this@MainActivity)
+            // The forced preset. Tracking ON is the whole reason this is watchable; the
+            // enhancer and pixel boost are the two settings that most easily turn 25 fps
+            // into single digits, so they are pinned unless the override says otherwise.
+            val opts = (if (liveUseMySettings) base else base.copy(
+                faceEnhance = false, pixelBoost = 1, lipSync = false, trackPeriod = 4,
+                // The mask models are ~26 GFLOP each per face: real-time camera frames
+                // cannot afford them. "Use my settings" keeps whatever the user chose.
+                occlusionMask = false, regionMask = false, keepMouth = false,
+            )).copy(largestOnly = liveLargestOnly,
+                    // Swap-only, whatever the Swap screen has on: ~150 ms a face for the
+                    // editor is single-digit fps, and the animator moves a still.
+                    faceEdit = false, faceAnimate = false, swapEnabled = true)
+            val startError = withContext(Dispatchers.Default) {
+                val models = modelDir()
+                val libDir = applicationInfo.nativeLibraryDir
+                if (!NativePipe.init(libDir, libDir, models.absolutePath, opts))
+                    return@withContext "init: ${NativePipe.lastError()}"
+                NativePipe.setTrackPeriod(opts.trackPeriod)
+                NativePipe.setSequence(true)
+                // EVERY source is registered, in list order, so the native slots stay
+                // aligned with the chips. The first version registered only the ACTIVE
+                // one, which made `setActiveSource(i)` point at the wrong slot -- or at
+                // nowhere at all -- as soon as the list held more than one face.
+                // Each one is gated too: a face the user can switch to mid-run must not
+                // be the one input the gate never saw.
+                for ((i, ls) in sources.withIndex()) {
+                    val bmp = decodeOriented(ls.uri)
+                        ?: return@withContext "cannot read source ${i + 1}"
+                    val verdict = ContentGate.inspectStill(bmp)
+                    appendLog("live source ${i + 1} score %+.3f".format(verdict.score) +
+                              (if (verdict.detail.isNotBlank()) "  [" + verdict.detail + "]" else ""))
+                    if (!verdict.permitted)
+                        return@withContext ContentGate.message(
+                            this@MainActivity, R.string.gate_subject_source_image, verdict)
+                    val soft = bmp.asArgb8888()
+                    val px = IntArray(soft.width * soft.height)
+                    soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+                    val bgr = NativePipe.argbToBgr(px, soft.width, soft.height)
+                    val okOne = if (i == 0)
+                                    NativePipe.setSource(bgr, soft.width, soft.height)
+                                else NativePipe.addSource(bgr, soft.width, soft.height) >= 0
+                    if (!okOne) return@withContext "no face in source ${i + 1}"
+                }
+                // A fresh pipeline defaults swapEnabled to true; the switch can be OFF
+                // before the pump ever ran, so the UI's value is pushed onto it here.
+                // setActiveSource restores the chip the user had selected; the assignment
+                // switch rides in the same way (OFF by default natively), and the
+                // largest-only selector with it (already in the init config, pushed again
+                // so the invariant is "the UI's value is what the pipeline has").
+                NativePipe.setSwapEnabled(liveSwapEnabled)
+                NativePipe.setActiveSource(liveSourceIndex)
+                NativePipe.setFaceAssignEnabled(liveAssignMode)
+                NativePipe.setSwapLargestOnly(liveLargestOnly)
+                null
+            }
+            if (startError != null) {
+                liveNote = startError
+                NativePipe.release(); PipeGuard.release(); return@launch
+            }
+            liveRunning = true
+            live.mirrorRecording = liveMirror
+            live.faceBoxesEnabled = liveAssignMode
+            clearLiveFacePreview()
+            // THE GATE, on the live path. The source is already checked where it is picked
+            // (see the source_image branch above), so what is left is the camera itself --
+            // and a camera is the one input the user can change without touching the app.
+            //
+            // The threshold is set HERE rather than inside LiveEngine because the dev line
+            // deletes ContentGate.kt: the engine takes a number and knows nothing about the
+            // gate, so this single assignment is the whole of what dev has to remove.
+            live.gateThreshold = ContentGate.THRESHOLD
+            live.start(this@MainActivity, this@MainActivity) { shot ->
+                // The analyzer thread hands the result straight to Compose state, which is
+                // safe for snapshot state and avoids a per-frame main-thread post.
+                if (shot.error != null) liveNote = shot.error
+                // A refusal, or a check that could not run -- which is also a refusal: `ok`
+                // is ALLOW alone, here as everywhere else. The engine has already stopped
+                // its pump; this releases the pipeline and the camera, and says why.
+                if (shot.gate != LiveEngine.Gate.None) {
+                    liveNote = getString(
+                        if (shot.gate == LiveEngine.Gate.Blocked) R.string.gate_blocked
+                        else R.string.gate_error,
+                        getString(R.string.gate_subject_this_frame))
+                    // The recording goes with it. See finishLiveRecording: a refused
+                    // run leaves no output anywhere else in this app.
+                    runOnUiThread { finishLiveRecording(discard = true); stopLive() }
+                }
+                if (shot.bitmap != null) {
+                    liveFrame = shot.bitmap
+                    liveFaces = shot.faces
+                    liveFps = shot.fps
+                }
+                if (liveAssignMode && liveRunning) {
+                    liveFaceBoxes = shot.faceBoxes
+                    // First get a cheap boxes-only result, then request one original camera
+                    // frame. This keeps full-resolution pre-swap pixels out of every Live
+                    // frame and guarantees that the thumbnails are real faces, not output.
+                    val detectedCount = shot.faceBoxes?.size?.div(5) ?: 0
+                    // A person can enter the camera after Assign mode was enabled.
+                    // Refresh only when the count grows; the normal frame path still
+                    // never creates thumbnails, and existing native assignments remain.
+                    if (detectedCount < livePersonSnapshotFaceCount)
+                        livePersonSnapshotFaceCount = detectedCount
+                    if (detectedCount > livePersonSnapshotFaceCount &&
+                        !liveFaceSnapshotPending) {
+                        liveFaceSnapshotPending = true
+                        live.requestFaceSnapshot()
+                    }
+                    val raw = shot.originalBgr
+                    val display = shot.bitmap
+                    val boxes = shot.faceBoxes
+                    if (raw != null && display != null && boxes?.isNotEmpty() == true) {
+                        val argb = NativePipe.bgrToArgb(
+                            raw, shot.originalW, shot.originalH,
+                            display.width, display.height,
+                        )
+                        val original = Bitmap.createBitmap(
+                            argb, display.width, display.height, Bitmap.Config.ARGB_8888)
+                        livePersonSnapshotBoxes = boxes
+                        livePersonSnapshotFaceCount = boxes.size / 5
+                        liveSelectedPerson = -1
+                        livePersonThumbs = boxes.asList().chunked(5).mapNotNull {
+                            cropPersonThumb(original, it)
+                        }
+                        liveFaceSnapshotPending = false
+                    }
+                }
+                // A pending assignment tap resolves on the frame after it was queued;
+                // this callback runs on the analyzer thread that liveFrame just ran on,
+                // so the result is taken here. Empty means the request is still in
+                // flight (a slow frame -- ncnn at full size is 240-540 ms); [-1] means
+                // it was consumed and the tap was on no face.
+                if (assignTapPending) {
+                    val box = NativePipe.takeAssignmentResult()
+                    if (box.size >= 5) {
+                        assignTapPending = false
+                        liveAssignBox = box
+                        liveAssignNonce++
+                        liveAssignCount++
+                        // A negative slot in the confirmation means "keeps their own
+                        // face" -- the one answer that is a choice and not an index.
+                        liveNote = if (box[4] < 0)
+                                       getString(R.string.live_assign_kept)
+                                   else getString(R.string.live_assign_set,
+                                                  (box[4].toInt() + 1))
+                    } else if (box.size == 1) {
+                        assignTapPending = false
+                        // The miss also DESELECTED the person (empty tap = deselect).
+                        liveNote = getString(R.string.live_assign_missed)
+                    }
+                }
+                // The selected person's highlight, polled every shot so it follows them.
+                // Empty means no selection -- clear the stale box (person left, or a
+                // session reset), never draw yesterday's person.
+                val sel = NativePipe.takeSelectionBox()
+                liveSelectionBox = if (sel.size >= 5) sel else null
+            }
+        }
+    }
+
+    private fun stopLive() {
+        // Idempotent: reached from the button, from leaving the tab, and from onStop, and
+        // two of those can fire for one user action. Releasing the pipeline twice is a
+        // crash of exactly the kind this method was written to fix.
+        if (!liveRunning) return
+        // ⚠ This runs while the analyzer thread is STILL LIVE -- live.stop() below is what
+        // drains it. A frame already inside the pump therefore reaches the recorder after
+        // it has been finished, and LiveRecorder.stopped is what makes that harmless. An
+        // earlier comment here claimed the ordering was the protection; it is not, and a
+        // late frame would have built a second encoder over the same file.
+        finishLiveRecording(discard = false)
+        liveRunning = false
+        NativePipe.setTrackPeriod(0)
+        NativePipe.setSequence(false)
+        // Assignments die with the pipeline the engine is about to release; the UI state
+        // around them goes with them so a stale box or count cannot outlive the session.
+        live.faceBoxesEnabled = false
+        live.cancelFaceSnapshot()
+        clearLiveFacePreview()
+        liveFullscreen = false
+        assignTapPending = false
+        liveAssignBox = null; liveAssignCount = 0; liveSelectionBox = null
+        liveFrame = null; liveFps = 0.0; liveFaces = 0
+        // ⚠ The pipeline is freed by the ENGINE's callback, not here. stop() runs it inline
+        // when the pump drains (the normal case, ~60 ms) and from a watchdog thread when it
+        // does not -- and it is exactly the "does not" case that used to free the pipeline
+        // out from under a frame still inside processFrame. See LiveEngine.stop.
+        //
+        // Order matters: the native release first, PipeGuard second, because startLive
+        // acquires the guard before it inits. Releasing the guard first would let a restart
+        // begin against a pipeline this teardown is about to destroy.
+        live.stop {
+            NativePipe.release()
+            PipeGuard.release()
+        }
+    }
+
+    /**
+     * Start the dev-only live player on the current target.
+     *
+     * Mirrors [startLive] step for step, and for the same reasons: acquire [PipeGuard],
+     * drop the preview's warm pipeline rather than mutate it, init, set the source, then
+     * hand the pump a thread of its own. The differences are that the frames come from a
+     * file instead of a camera and that the options are the user's OWN -- there is no
+     * forced preset, because the whole point is to watch what the real run would produce.
+     *
+     * ⚠ THE SEVENTH GATED PATH, and the check below is what let it off the dev line. It
+     * shows swapped frames, so it is a processing path like any other and it carries the
+     * same two checks `runSwap` does in the same order -- source, then target, both after
+     * init and both before `setSource` reads a face. It was dev-only until this existed,
+     * exactly as the Live camera was dev-only until 0.6.3 gave it one; a feature behind
+     * `BuildConfig.DEV_BUILD` is ungated BY CONSTRUCTION, and the only way off that flag
+     * is onto this list.
+     *
+     * ⚠ The exposure is the same SET OF FRAMES `runSwap` has -- one file, played through
+     * from a position the user can move -- so `inspectClip`, which samples across the whole
+     * clip, is the same answer for both and neither is the weaker door.
+     */
+    private fun startPlayer() {
+        if (sources.isEmpty()) return
+        val tgt = targetFile ?: return
+        lifecycleScope.launch {
+            if (!PipeGuard.acquire("player", 5000)) {
+                status = pipeBusyMessage(); return@launch
+            }
+            // The preview holds a warm pipeline configured for the Swap screen. The player
+            // needs its own, so the preview's is dropped rather than shared -- sharing it
+            // would leave the Swap screen warm for a pipeline the player had replaced.
+            previews.invalidate()
+            previewWarm = false
+            playerNote = null
+            playerFrame = null
+            playerPos = 0; playerFps = 0.0; playerFaces = 0; playerDropped = 0
+            playerSeeking = false
+            playerOpen = true
+
+            // Swap-only, like Live: the editor at ~150 ms a face cannot keep up with playback.
+            val opts = SwapOptions.load(this@MainActivity)
+                .copy(faceEdit = false, faceAnimate = false, swapEnabled = true)
+            val err = withContext(Dispatchers.Default) {
+                val models = modelDir()
+                val libDir = applicationInfo.nativeLibraryDir
+                if (!NativePipe.init(libDir, libDir, models.absolutePath, opts))
+                    return@withContext "init: " + NativePipe.lastError()
+                NativePipe.setTrackPeriod(opts.trackPeriod)
+                val prepared = prepareSources()
+                    ?: return@withContext "cannot decode source image"
+
+                // THE GATE, before a single frame is decoded or drawn. Init first because
+                // the check is a graph and needs the models; `setSource` after, because it
+                // already detects, aligns and embeds -- the refusal has to land in the gap
+                // between the two. Same ordering, same subjects and same fail-closed `ok`
+                // as runSwap.
+                if (NativePipe.contentGateIsQuantised())
+                    appendLog("content gate: W8A16 build, biased " +
+                              "+${ContentGate.QUANTISED_BIAS} toward refusing")
+                screenSourceList(prepared.bitmaps, "player")?.let { return@withContext it }
+                ContentGate.inspectClip(tgt).let {
+                    // `detail` is an ARGUMENT, never interpolated into the format string:
+                    // it reads "0/11 flagged (0.0%)" and that trailing `%)` parses as a
+                    // conversion. See runSwap -- it cost a whole run once.
+                    appendLog("player target content: %s, worst %+.3f".format(it.detail, it.score))
+                    if (!it.permitted) return@withContext ContentGate.message(
+                        this@MainActivity, R.string.gate_subject_target_video, it)
+                }
+
+                registerSources(prepared)?.let { return@withContext it }
+                restoreSwapAssignments()
+                null
+            }
+            if (err != null) {
+                // The pipeline goes back before the overlay does, so a failed start cannot
+                // leave the guard held by a player that is not running.
+                NativePipe.release(); PipeGuard.release()
+                playerOpen = false
+                status = getString(R.string.status_failed, err)
+                return@launch
+            }
+            player.start(tgt.absolutePath) { shot ->
+                // The pump thread writes snapshot state directly, which is what
+                // LiveEngine's analyzer thread does and is safe for the same reason.
+                //
+                // ⚠ A null bitmap is a DROPPED frame, not a blank screen: the last picture
+                // stays and only the position moves. See LivePlayer.Shot.
+                shot.bitmap?.let { playerFrame = it }
+                playerPos = shot.positionMs
+                playerFps = shot.fps
+                playerFaces = shot.faces
+                playerDropped = shot.dropped
+                playerSeeking = shot.seeking
+                if (shot.error != null) playerNote = shot.error
+                if (shot.ended) playerPlaying = false
+            }
+            playerDuration = player.durationMs
+            player.play()
+            playerPlaying = true
+        }
+    }
+
+    /**
+     * Close the player and hand the pipeline back.
+     *
+     * The teardown runs OFF the main thread: [LivePlayer.stop] joins the pump, which can be
+     * mid-`processFrame`, and waiting for that on the UI thread is a visible stall at best.
+     * The order is the same one [stopLive] documents -- the pump first, then the native
+     * release, then the guard -- because the pump is what might still be inside the
+     * pipeline this is about to free.
+     */
+    private fun stopPlayer() {
+        if (!playerOpen) return
+        playerOpen = false
+        playerPlaying = false
+        lifecycleScope.launch {
+            withContext(Dispatchers.Default) { player.stop() }
+            playerFrame = null
+            NativePipe.release()
+            PipeGuard.release()
+            // The Swap screen's preview was invalidated on the way in and its pipeline is
+            // gone; this is what warms it again and redraws the swapped pane.
+            previewOptionsChanged()
+        }
+    }
+
+    private fun runSwap() {
+        if (opts.swapsFace && sourceUri == null) return
+        val tgt = targetFile ?: return
+        // Defence in depth: the Swap button in SwapScreen is already disabled without one
+        // when Lip Sync is on, but this is the actual place a no-op run would happen, so it
+        // is checked again here rather than trusted from the UI alone.
+        if (opts.lipSync && voiceFile == null) return
+        // The preview holds a loaded pipeline and `g_pipe` is a single global, so the run
+        // cannot start until it lets go.
+        invalidatePreview()
+        cancelRequested = false
+        busy = true; progress = 0f; log = ""
+        // Deletes the PREVIOUS run's file, not merely the reference to it.
+        discardOutput()
+        preview = null; framesDone = 0; framesTotal = 0; elapsedS = 0.0
+
+        lifecycleScope.launch {
+            // The run owns the pipeline for its whole length, minutes on a long clip. The
+            // API server gets 503 for the duration, which is the honest answer.
+            if (!PipeGuard.acquire("swap", 5000)) {
+                status = pipeBusyMessage()
+                busy = false
+                return@launch
+            }
+            val result = withContext(Dispatchers.Default) {
+                runCatching {
+                    val models = modelDir()
+                    val missing = listOf("yoloface", "fan2d", "arcface", opts.swapper)
+                        .filterNot { ModelPaths.present(models, tier, it) }
+                        .toMutableList()
+                    // The gate is mandatory because it blocks. Either build satisfies it:
+                    // fp32 (`nsfw_`) only finalizes on v79, so every other tier carries the
+                    // quantised `nsfwq2_` -- and ncnn has neither distinction.
+                    if (!ModelPaths.present(models, tier, "nsfw") &&
+                        !ModelPaths.present(models, tier, "nsfwq2"))
+                        missing += "nsfw"
+                    if (missing.isNotEmpty())
+                        error("cannot read ${missing.joinToString()} for tier $tier in " +
+                              "${models.absolutePath} -- run work/device/install_app.ps1")
+
+                    status = getString(R.string.status_loading_models)
+                    val libDir = applicationInfo.nativeLibraryDir
+                    val ok = NativePipe.init(libDir, libDir, models.absolutePath, opts)
+                    noteTierRejection()
+                    if (!ok) error("init: ${NativePipe.lastError()}")
+                    NativePipe.setSwapEnabled(opts.swapsFace)
+                    if (!opts.swapsFace) appendLog("face_swapper off")
+                    // WHICH UNIT, in the box the user can actually read, and only after
+                    // init: the GPU agreement check runs on the first open that asks for the
+                    // GPU, so before this line the note is still the optimistic answer.
+                    // A non-Qualcomm report that does not say this cannot be acted on.
+                    if (ModelPaths.backend(this@MainActivity) == ModelPaths.NCNN_TIER)
+                        appendLog(NativePipe.runtimeNote())
+                    appendLog("weight %.2f  blur %.2f  padding %s  boost %s%s"
+                        .format(opts.weight, opts.maskBlur,
+                                opts.maskPadding.joinToString("/"), opts.pixelBoostLabel,
+                                if (opts.largestOnly) "  largest face only" else ""))
+
+                    status = getString(R.string.status_reading_source)
+                    val prepared = prepareSources() ?: error("cannot decode source image")
+
+                    // The content gate, BEFORE anything is processed or previewed. It
+                    // blocks, as upstream does, so a refusal ends the run here -- there is
+                    // no partial output and nothing reaches the preview surface.
+                    status = getString(R.string.status_content_check)
+                    if (NativePipe.contentGateIsQuantised())
+                        appendLog("content gate: W8A16 build, biased " +
+                                  "+${ContentGate.QUANTISED_BIAS} toward refusing")
+                    screenSourceList(prepared.bitmaps, "run")?.let { throw ContentGate.Refused(it) }
+                    // The target, sampled across the clip.
+                    ContentGate.inspectClip(tgt).let {
+                        // `detail` is an ARGUMENT, never interpolated into the format
+                        // string: it reads "0/11 flagged (0.0%)", and that trailing `%)`
+                        // is parsed as a conversion -- UnknownFormatConversionException,
+                        // which killed the whole swap after the gate had already passed.
+                        appendLog("target content: %s, worst %+.3f".format(it.detail, it.score))
+                        if (!it.permitted)
+                            throw ContentGate.Refused(
+                                ContentGate.message(this@MainActivity,
+                                                    R.string.gate_subject_target_video, it))
+                    }
+
+                    registerSources(prepared)?.let { error(it) }
+                    // ⚠ This init built a fresh pipeline, so every per-person choice the
+                    // user made against the PREVIEW is gone from it. Without this the mode
+                    // would work perfectly on screen and do nothing in the file.
+                    val restored = restoreSwapAssignments()
+                    // Same for the lips targets: N faces when set, all faces when not.
+                    // Logged so a run that syncs everyone says whether it had a choice.
+                    val lipsN = pushLipSelection()
+                    if (opts.lipSync)
+                        appendLog("lips target: " +
+                            (if (lipsN > 0) "$lipsN face" + (if (lipsN > 1) "s" else "")
+                             else "all faces"))
+                    if (prepared.slots.isNotEmpty()) appendLog("source ready (${prepared.slots[0].width}x" +
+                              "${prepared.slots[0].height}, ${prepared.slots.size} source" +
+                              (if (prepared.slots.size == 1) "" else "s") +
+                              (if (restored > 0) ", $restored assigned" else "") + ")")
+
+                    val t0 = System.currentTimeMillis()
+
+                    val out = File(outputDir(),
+                        "swapped_${System.currentTimeMillis()}.mp4")
+                    status = getString(R.string.status_swapping)
+                    var lastPreview = 0L
+                    // Once per RUN: previewIntervalMs reads SharedPreferences and can probe
+                    // the backend, neither of which belongs on a per-frame callback.
+                    val previewInterval = previewIntervalMs()
+                    // The native loop calls onProgress for EVERY processed frame; writing
+                    // three top-level states at that rate re-composed the whole 1600-line
+                    // screen 25+ times a second and stalled the scroll. 10 Hz is past what
+                    // the progress readout can show, and the final tick always lands.
+                    var lastProgress = 0L
+
+                    VideoSwapper(
+                        outputFps = opts.outputFps,
+                        outputMaxShortEdge = opts.outputMaxShortEdge,
+                        trackPeriod = opts.trackPeriod,
+                        lipSync = opts.lipSync,
+                        voicePath = voiceFile?.absolutePath,
+                        voiceTrimStartUs = (voiceTrimStartMs * 1000).toLong(),
+                        voiceTrimEndUs = if (voiceTrimEndMs >= voiceDurationMs) Long.MAX_VALUE
+                                         else (voiceTrimEndMs * 1000).toLong(),
+                        trimStartUs = (trimStartMs * 1000).toLong(),
+                        trimEndUs = if (trimEndMs >= durationMs) Long.MAX_VALUE
+                                    else (trimEndMs * 1000).toLong(),
+                        onProgress = { done, total ->
+                            val now = System.currentTimeMillis()
+                            if (now - lastProgress >= 100 || done >= total) {
+                                lastProgress = now
+                                framesDone = done; framesTotal = total
+                                progress = if (total > 0) done.toFloat() / total else 0f
+                                elapsedS = (now - t0) / 1000.0
+                            }
+                        },
+                        onFrame = { bgr, w, h ->
+                            // Real-time on the NPU, throttled elsewhere -- see
+                            // previewIntervalMs for why the number is derived and not a
+                            // setting. Read once per run, not per frame.
+                            val now = System.currentTimeMillis()
+                            if (now - lastPreview >= previewInterval) {
+                                lastPreview = now
+                                val pw = 480
+                                val ph = (h.toLong() * pw / w).toInt().coerceAtLeast(1)
+                                val argb = NativePipe.bgrToArgb(bgr, w, h, pw, ph)
+                                preview = Bitmap.createBitmap(argb, pw, ph, Bitmap.Config.ARGB_8888)
+                            }
+                        },
+                        onLog = { appendLog(it) },
+                        isCancelled = { cancelRequested },
+                    ).swap(tgt!!.absolutePath, out.absolutePath).getOrThrow()
+
+                    appendLog("total %.1f s".format((System.currentTimeMillis() - t0) / 1000.0))
+                    out
+                }
+            }
+            result.onSuccess {
+                outputFile = it; progress = 1f
+                // The run kept whatever it had when Cancel was pressed, so say which it is.
+                outputPartial = cancelRequested
+                status = getString(R.string.status_done, it.length() / 1024)
+                // ⚠ RE-WARM THE PREVIEW. `runSwap` opens with invalidatePreview(), which
+                // clears previewWarm -- and `onTrimChanged` only redraws the swapped pane
+                // `if (previewWarm)`, on the reasoning that the first model load costs
+                // seconds and has to be asked for. True before the first run; false after
+                // one, where the models are demonstrably loaded and the user has already
+                // paid. The effect was a swapped pane frozen on its last frame while
+                // seeking moved the original beside it, which reads as the swap being
+                // wrong rather than the pane being stale.
+                //
+                // A forced refresh here rebuilds the engine once and puts previewWarm back,
+                // so every later seek takes the normal warm path.
+                refreshSwapped(force = true)
+            }.onFailure {
+                // A refusal is already a finished sentence aimed at the user, and it is not
+                // a fault: prefixing it with "Failed:" and dumping a stack trace would
+                // present a working safety check as a crash.
+                if (it.message == "cancelled") {
+                    // Asked for, not gone wrong: no "Failed:", no stack trace.
+                    status = getString(R.string.status_cancelled)
+                } else if (it is ContentGate.Refused) {
+                    // The gate's own finished sentence, already localized. NOT an
+                    // error: nothing malfunctioned, so this offers no bug report.
+                    status = it.message ?: getString(R.string.gate_blocked_generic)
+                } else {
+                    failStatus(getString(R.string.status_failed, it.message ?: ""))
+                    appendLog(it.stackTraceToString().take(700))
+                }
+            }
+            NativePipe.release()
+            PipeGuard.release()
+            busy = false
+        }
+    }
+
+    /**
+     * A video made FROM THE PHOTO target: face_animator (with a driver) or the talking photo
+     * (lip sync with a voice), then the editor and the enhancer -- see [PortraitVideo].
+     *
+     * ⚠ A GATED PATH like every other: the photo is checked, and so is the DRIVER, which the
+     * pipeline processes even though none of its pixels reach the output. No source is
+     * involved -- the animator never swaps -- so there is no source list to walk.
+     */
+    private fun runPortrait() {
+        val photo = targetImage ?: return
+        val animate = opts.faceAnimate
+        val driver = driverFile
+        if (animate && driver == null) return
+        if (opts.lipSync && voiceFile == null) return
+        if (!animate && !opts.lipSync) return
+        invalidatePreview()
+        cancelRequested = false
+        busy = true; progress = 0f; log = ""
+        discardOutput()
+        preview = null; framesDone = 0; framesTotal = 0; elapsedS = 0.0
+
+        lifecycleScope.launch {
+            if (!PipeGuard.acquire("swap", 5000)) {
+                status = pipeBusyMessage(); busy = false; return@launch
+            }
+            val result = withContext(Dispatchers.Default) {
+                runCatching {
+                    val models = modelDir()
+                    if (!ModelPaths.present(models, tier, ModelPaths.LIVEPORTRAIT) && animate)
+                        error("the face animator's models are not installed")
+                    status = getString(R.string.status_loading_models)
+                    val libDir = applicationInfo.nativeLibraryDir
+                    val runOpts = opts.copy(swapEnabled = false)
+                    val ok = NativePipe.init(libDir, libDir, models.absolutePath, runOpts)
+                    noteTierRejection()
+                    if (!ok) error("init: ${NativePipe.lastError()}")
+                    NativePipe.setSwapEnabled(false)
+                    if (animate && !NativePipe.hasFaceEditor())
+                        error("face animator: " + NativePipe.faceEditorError())
+                    appendLog(if (animate) "face_animator" + (if (opts.lipSync) " + lip_syncer" else "")
+                              else "talking photo (lip_syncer)")
+
+                    status = getString(R.string.status_content_check)
+                    ContentGate.inspectStill(photo).let {
+                        appendLog("target photo score %+.3f".format(it.score))
+                        if (!it.permitted) throw ContentGate.Refused(
+                            ContentGate.message(this@MainActivity, R.string.gate_subject_target_image, it))
+                    }
+                    if (driver != null && animate) ContentGate.inspectClip(driver).let {
+                        appendLog("driver content: %s, worst %+.3f".format(it.detail, it.score))
+                        if (!it.permitted) throw ContentGate.Refused(
+                            ContentGate.message(this@MainActivity, R.string.gate_subject_driver_video, it))
+                    }
+
+                    val soft = photo.asArgb8888() ?: error("cannot read the photo")
+                    val px = IntArray(soft.width * soft.height)
+                    soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+                    // Even edges for 4:2:0, as every video this app writes has.
+                    val w = soft.width and 1.inv(); val h = soft.height and 1.inv()
+                    var bgr = NativePipe.argbToBgr(px, soft.width, soft.height)
+                    if (w != soft.width || h != soft.height)
+                        bgr = NativePipe.resizeBgr(bgr, soft.width, soft.height, w, h)
+                              ?: error("resize failed")
+
+                    val t0 = System.currentTimeMillis()
+                    val out = File(outputDir(), "portrait_${System.currentTimeMillis()}.mp4")
+                    status = getString(R.string.status_running)
+                    var lastPreview = 0L; var lastProgress = 0L
+                    val previewInterval = previewIntervalMs()
+                    PortraitVideo(
+                        fps = 25,
+                        lipSync = opts.lipSync,
+                        voicePath = voiceFile?.absolutePath,
+                        voiceTrimStartUs = (voiceTrimStartMs * 1000).toLong(),
+                        voiceTrimEndUs = if (voiceTrimEndMs >= voiceDurationMs) Long.MAX_VALUE
+                                         else (voiceTrimEndMs * 1000).toLong(),
+                        onProgress = { done, total ->
+                            val now = System.currentTimeMillis()
+                            if (now - lastProgress >= 100 || done >= total) {
+                                lastProgress = now
+                                framesDone = done; framesTotal = total
+                                progress = if (total > 0) done.toFloat() / total else 0f
+                                elapsedS = (now - t0) / 1000.0
+                            }
+                        },
+                        onFrame = { f, fw, fh ->
+                            val now = System.currentTimeMillis()
+                            if (now - lastPreview >= previewInterval) {
+                                lastPreview = now
+                                val pw = 480
+                                val ph = (fh.toLong() * pw / fw).toInt().coerceAtLeast(1)
+                                preview = Bitmap.createBitmap(NativePipe.bgrToArgb(f, fw, fh, pw, ph),
+                                                              pw, ph, Bitmap.Config.ARGB_8888)
+                            }
+                        },
+                        onLog = { appendLog(it) },
+                        isCancelled = { cancelRequested },
+                    ).run(bgr, w, h, if (animate) driver?.absolutePath else null,
+                          out.absolutePath).getOrThrow()
+                    appendLog("total %.1f s".format((System.currentTimeMillis() - t0) / 1000.0))
+                    out
+                }
+            }
+            result.onSuccess {
+                outputFile = it; progress = 1f
+                outputPartial = cancelRequested
+                status = getString(R.string.status_done, it.length() / 1024)
+                refreshSwapped(force = true)
+            }.onFailure {
+                if (it.message == "cancelled") status = getString(R.string.status_cancelled)
+                else if (it is ContentGate.Refused)
+                    status = it.message ?: getString(R.string.gate_blocked_generic)
+                else {
+                    failStatus(getString(R.string.status_failed, it.message ?: ""))
+                    appendLog(it.stackTraceToString().take(700))
+                }
+            }
+            NativePipe.release()
+            PipeGuard.release()
+            busy = false
+        }
+    }
+
+    /**
+     * Every queued target, one after another, on one loaded pipeline -- roadmap 14.
+     *
+     * ⚠ THIS IS A SIXTH GATED PROCESSING PATH. `docs/gate.md` enumerates them and this is
+     * now on that list. Every item is checked with the SAME `ContentGate.inspectClip` a
+     * single run makes, and a refused clip is marked refused while the queue CONTINUES --
+     * one refusal is not a reason to abandon eleven other clips.
+     *
+     * The source is gated ONCE, at the top: it is the same image for every item, so
+     * checking it twelve times would be twelve identical answers. It was already checked
+     * when it was picked, too (setSourceFrom).
+     *
+     * What is hoisted out of the loop is what does not vary: the model check, init, and
+     * setSource. That is the entire performance argument for one-source-many-targets -- a
+     * twelve-clip batch loads ~266 MB of context binaries once rather than twelve times.
+     *
+     * ⚠ Trim and frame rate are NOT applied per item. A trim range means nothing across
+     * clips of different lengths, so the queue takes each clip whole; the visible target
+     * keeps its own trim only when it is run alone.
+     *
+     * ⚠ Lifetime: this runs in the Activity's scope, exactly as a single run does, so
+     * leaving the app is survivable but destroying the Activity is not. The foreground
+     * service that fixes that is the second half of roadmap 14 and is not written yet.
+     */
+    private fun runBatch() {
+        val src = sourceUri
+        if (opts.swapsFace && src == null) return
+        val first = targetFile ?: return
+        if (opts.lipSync && voiceFile == null) return
+        invalidatePreview()
+        cancelRequested = false
+        busy = true; progress = 0f; log = ""
+        discardOutput()
+        preview = null; framesDone = 0; framesTotal = 0; elapsedS = 0.0
+
+        // Item 0 IS the visible target; the queue has held it since the pick.
+        //
+        // ⚠ The PREVIOUS run's files are deleted here, not merely forgotten. Pressing Swap
+        // twice used to null out every `output` and leave twelve full-size videos on disk
+        // that nothing listed and nothing could play -- they survived until the next cold
+        // start, when onCreate's sweep found them. Anything auto-saved is already a
+        // separate copy in the gallery and is unaffected.
+        batchQueue = batchQueue.map {
+            it.output?.let { f -> runCatching { f.delete() } }
+            it.copy(state = BatchState.Waiting, output = null, detail = null, thumb = null)
+        }
+
+        // The foreground service, for the process rather than for the work. See
+        // BatchService: it stops Android reclaiming the app mid-batch and puts a progress
+        // line and a Cancel button in the shade. It does NOT make the batch outlive the
+        // Activity -- the loop below still runs in lifecycleScope.
+        BatchStatus.begin(batchQueue.size)
+        if (android.os.Build.VERSION.SDK_INT >= 33)
+            askNotify.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        BatchService.start(this)
+
+        lifecycleScope.launch {
+            if (!PipeGuard.acquire("batch", 5000)) {
+                status = pipeBusyMessage(); busy = false
+                BatchStatus.end(); BatchService.stop(this@MainActivity)
+                return@launch
+            }
+            // ⚠ try/finally around EVERYTHING after the acquire, for the same reason
+            // DownloadService wraps its whole run. This coroutine lives in lifecycleScope,
+            // so the Activity going away CANCELS it mid-clip -- and without this the
+            // pipeline is never released and PipeGuard is never handed back, so the preview
+            // and the API are locked out for the life of the process. BatchStatus.running
+            // would also stay true for ever, leaving BatchService's notify thread spinning
+            // behind an ongoing notification that cannot be swiped away.
+            try {
+            val t0 = System.currentTimeMillis()
+            val setup = withContext(Dispatchers.Default) {
+                runCatching {
+                    val models = modelDir()
+                    val missing = ModelPaths.missing(this@MainActivity, tier, opts.swapper)
+                    if (missing.isNotEmpty())
+                        error("cannot read " + missing.joinToString() + " for tier " + tier)
+                    status = getString(R.string.status_loading_models)
+                    val libDir = applicationInfo.nativeLibraryDir
+                    val ok = NativePipe.init(libDir, libDir, models.absolutePath, opts)
+                    noteTierRejection()
+                    if (!ok) error("init: " + NativePipe.lastError())
+                    NativePipe.setSwapEnabled(opts.swapsFace)
+
+                    // face_swapper off and no source: nothing to read or check here, and
+                    // every clip in the queue is still checked on its own below.
+                    if (src != null) {
+                        status = getString(R.string.status_reading_source)
+                        val bmp = decodeOriented(src) ?: error("cannot decode source image")
+                        status = getString(R.string.status_content_check)
+                        ContentGate.inspectStill(bmp).let {
+                            appendLog("source content score %+.3f".format(it.score))
+                            if (!it.permitted) throw ContentGate.Refused(
+                                ContentGate.message(this@MainActivity,
+                                                    R.string.gate_subject_source_image, it))
+                        }
+                        val soft = bmp.asArgb8888()
+                        val px = IntArray(soft.width * soft.height)
+                        soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+                        if (!NativePipe.setSource(
+                                NativePipe.argbToBgr(px, soft.width, soft.height),
+                                soft.width, soft.height))
+                            error("source: " + NativePipe.lastError())
+                    }
+                    val lipsN = pushLipSelection()
+                    appendLog((if (src != null) "source ready" else "face_swapper off") +
+                        " for " + batchQueue.size + " clips, lips target: " +
+                        (if (lipsN > 0) "$lipsN face" + (if (lipsN > 1) "s" else "")
+                         else "all faces"))
+                }
+            }
+            if (setup.isFailure) {
+                val e = setup.exceptionOrNull()
+                status = if (e is ContentGate.Refused)
+                             e.message ?: getString(R.string.gate_blocked_generic)
+                         else getString(R.string.status_failed, e?.message ?: "")
+                return@launch
+            }
+
+            var done = 0
+            var refused = 0
+            var failed = 0
+            for ((i, item) in batchQueue.withIndex()) {
+                // ⚠ BOTH cancel sources. The button in the app and the one in the
+                // notification are two ways to ask for the same thing, and watching only
+                // the first would ignore whichever the user actually reached for.
+                if (BatchStatus.cancelled) cancelRequested = true
+                if (cancelRequested) {
+                    batchQueue = batchQueue.mapIndexed { j, it ->
+                        if (j >= i && it.state == BatchState.Waiting)
+                            it.copy(state = BatchState.Skipped) else it
+                    }
+                    break
+                }
+                batchQueue = batchQueue.mapIndexed { j, it ->
+                    if (j == i) it.copy(state = BatchState.Running) else it
+                }
+                status = getString(R.string.status_batch_item, i + 1, batchQueue.size, item.name)
+                BatchStatus.item(i + 1, item.name)
+                framesDone = 0; framesTotal = 0; progress = 0f
+
+                // Captured so the failure path can clean up after itself: the file is
+                // created inside the block below, and a cancel mid-encode leaves it there
+                // half-written with nothing referencing it.
+                var partial: File? = null
+                val r = withContext(Dispatchers.Default) {
+                    runCatching {
+                        // Only the visible target is already a file; the queued ones are
+                        // URIs the picker handed back, and MediaExtractor wants a path.
+                        // Item 0 is already decoded at cacheDir/target.mp4 by loadTarget,
+                        // so it is used as it stands rather than copied a second time.
+                        val f = if (i == 0) first
+                                else if (item.uri.scheme == "file") File(item.uri.path!!)
+                                else copyToCache(item.uri, "batch_" + (i + 1) + ".mp4")
+                                    ?: error("cannot read " + item.name)
+
+                        // ⚠ THE GATE, PER ITEM. The same call a single run makes.
+                        ContentGate.inspectClip(f).let {
+                            appendLog(item.name + ": " + it.detail +
+                                      ", worst %+.3f".format(it.score))
+                            if (!it.permitted) throw ContentGate.Refused(
+                                ContentGate.message(this@MainActivity,
+                                                    R.string.gate_subject_target_video, it))
+                        }
+
+                        val out = File(outputDir(),
+                                       "swapped_" + System.currentTimeMillis() +
+                                       "_" + (i + 1) + ".mp4")
+                        partial = out
+                        var lastPreview = 0L
+                        val previewInterval = previewIntervalMs()
+                        // Same 10 Hz cap as the single-run path above: the native loop's
+                        // per-frame onProgress was a 25 Hz recomposition storm over the
+                        // whole screen, scroll included.
+                        var lastProgress = 0L
+                        VideoSwapper(
+                            outputFps = opts.outputFps,
+                            outputMaxShortEdge = opts.outputMaxShortEdge,
+                            trackPeriod = opts.trackPeriod,
+                            lipSync = opts.lipSync,
+                            voicePath = voiceFile?.absolutePath,
+                            // The voice is ONE file shared by every clip in the batch, so
+                            // ITS trim always applies -- unlike the target trim, which the
+                            // batch runner deliberately ignores (one range cannot mean
+                            // anything across clips of different lengths).
+                            voiceTrimStartUs = (voiceTrimStartMs * 1000).toLong(),
+                            voiceTrimEndUs =
+                                if (voiceTrimEndMs >= voiceDurationMs) Long.MAX_VALUE
+                                else (voiceTrimEndMs * 1000).toLong(),
+                            trimStartUs = 0L,
+                            trimEndUs = Long.MAX_VALUE,
+                            onProgress = { d, total ->
+                                val now = System.currentTimeMillis()
+                                if (now - lastProgress >= 100 || d >= total) {
+                                    lastProgress = now
+                                    framesDone = d; framesTotal = total
+                                    progress = if (total > 0) d.toFloat() / total else 0f
+                                    elapsedS = (now - t0) / 1000.0
+                                }
+                            },
+                            onFrame = { bgr, w, h ->
+                                // Same rule as the single-clip path above.
+                                val now = System.currentTimeMillis()
+                                if (now - lastPreview >= previewInterval) {
+                                    lastPreview = now
+                                    val pw = 480
+                                    val ph = (h.toLong() * pw / w).toInt().coerceAtLeast(1)
+                                    preview = Bitmap.createBitmap(
+                                        NativePipe.bgrToArgb(bgr, w, h, pw, ph),
+                                        pw, ph, Bitmap.Config.ARGB_8888)
+                                }
+                            },
+                            onLog = { appendLog(it) },
+                            isCancelled = { cancelRequested || BatchStatus.cancelled },
+                        ).swap(f.absolutePath, out.absolutePath).getOrThrow()
+                        // On THIS thread, while it is already off the main one: a retriever
+                        // call in the state update below would stutter the list exactly as
+                        // the next clip starts encoding.
+                        out to batchThumb(out)
+                    }
+                }
+                // Whatever it got to is not a result. Deleting it here keeps a cancelled
+                // twelve-clip batch from leaving a trail of unplayable fragments.
+                if (r.isFailure) partial?.let { f -> runCatching { f.delete() } }
+                batchQueue = batchQueue.mapIndexed { j, it ->
+                    if (j != i) it else r.fold(
+                        { (f, th) ->
+                            done++
+                            it.copy(state = BatchState.Done, output = f, thumb = th)
+                        },
+                        { e ->
+                            when {
+                                e.message == "cancelled" -> it.copy(state = BatchState.Skipped)
+                                e is ContentGate.Refused -> {
+                                    refused++
+                                    it.copy(state = BatchState.Refused, detail = e.message)
+                                }
+                                else -> {
+                                    failed++
+                                    it.copy(state = BatchState.Failed, detail = e.message)
+                                }
+                            }
+                        })
+                }
+                // The last finished clip is what the panes show, so the screen is not left
+                // on a frame from four clips ago.
+                r.getOrNull()?.let { (f, _) ->
+                    outputFile = f
+                    // AS IT FINISHES, not at the end. A batch is unattended by nature, and
+                    // saving twelve clips only once the last one lands means a cancel or a
+                    // crash at clip eleven loses ten that were already finished.
+                    if (opts.batchAutoSave) saveToGallery(f)
+                }
+                // The COPY, not the output. A twelve-clip batch would otherwise leave
+                // twelve full-size videos in the cache behind the twelve it produced.
+                if (i > 0 && item.uri.scheme != "file")
+                    runCatching { File(cacheDir, "batch_" + (i + 1) + ".mp4").delete() }
+            }
+
+            status = getString(R.string.status_batch_done, done, refused + failed)
+            appendLog("batch: %d done, %d refused, %d failed, %.1f s total"
+                .format(done, refused, failed, (System.currentTimeMillis() - t0) / 1000.0))
+            outputPartial = cancelRequested
+            } finally {
+                NativePipe.release()
+                PipeGuard.release()
+                busy = false
+                // Ends the notify thread, which stops the service itself.
+                BatchStatus.end()
+                BatchService.stop(this@MainActivity)
+            }
+        }
+    }
+
+    /**
+     * A small first frame of [f], for a batch queue row.
+     *
+     * MediaMetadataRetriever rather than FrameSeeker: this wants one thumbnail from a file
+     * this app just wrote, not an exact seek into an arbitrary container, and the retriever
+     * is a fraction of the cost. Failure is null -- a missing thumbnail is a cosmetic loss
+     * and must never take a finished clip down with it.
+     */
+    private fun batchThumb(f: File): Bitmap? = runCatching {
+        android.media.MediaMetadataRetriever().use { r ->
+            r.setDataSource(f.absolutePath)
+            val full = r.getFrameAtTime(0) ?: return@use null
+            val w = 160
+            val h = (full.height.toLong() * w / full.width).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(full, w, h, true).also {
+                if (it !== full) full.recycle()
+            }
+        }
+    }.getOrNull()
+
+    /**
+     * A small first frame of a PICKED clip ([uri]), for the queue row as soon as it is
+     * added -- before any swap runs. The queue used to show a play glyph until the clip
+     * FINISHED (the thumbnail came from the output), which read as "the row is empty"
+     * rather than "this clip is queued".
+     *
+     * Same retriever as [batchThumb], but on a content URI rather than an app-written
+     * file. Failure is null -- a missing thumbnail is cosmetic and must not refuse a clip.
+     */
+    /**
+     * How often a run's swapped frame is allowed to reach the SWAPPED pane, in ms.
+     *
+     * The pane has shown the run's own output since the video path existed -- `onFrame`
+     * hands over the frame that is about to be encoded, so this is the real result and not
+     * a re-render of it. What was missing is RATE: one frame every 250 ms reads as a
+     * slideshow, which is why the feature was not recognisable as one.
+     *
+     * ⚠ The cap is not allocation, it is RECOMPOSITION. Each frame is a new Bitmap in a new
+     * [PreviewUi], and a new instance is by definition not equal to the last, so the pane
+     * cannot be skipped and `SwapScreen` re-runs. That is the same cost the 10 Hz progress
+     * cap exists to bound; it is affordable here only because @Immutable now lets every
+     * card that did NOT change skip, which was not true when the 25 Hz storm was measured.
+     *
+     * So it is spent where it buys something. On the NPU a frame costs ~25-40 ms, so 50 ms
+     * delivers most of them and the pane genuinely tracks the encoder. On ncnn a frame is
+     * far slower, the extra updates would land on a pipeline that has nothing new to show,
+     * and the recomposition competes with the work -- so that path keeps 250 ms.
+     *
+     * Deliberately derived, not a setting: the answer follows from the runtime, and a
+     * switch would only let the user choose the worse one.
+     */
+    private fun previewIntervalMs(): Long {
+        val forced = ModelPaths.forcedBackend(this)
+        val active = if (forced.isNotEmpty()) forced else ModelPaths.backend(this)
+        return if (active == "qnn") 50L else 250L
+    }
+
+    private fun batchThumb(uri: Uri): Bitmap? = runCatching {
+        android.media.MediaMetadataRetriever().use { r ->
+            r.setDataSource(this@MainActivity, uri)
+            val full = r.getFrameAtTime(0) ?: return@use null
+            val w = 160
+            val h = (full.height.toLong() * w / full.width).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(full, w, h, true).also {
+                if (it !== full) full.recycle()
+            }
+        }
+    }.getOrNull()
+
+    /**
+     * Fill in [BatchItem.thumb] for freshly queued clips, off the main thread.
+     *
+     * [startIndex] is where [uris] landed in [batchQueue] (0 for a fresh queue, `head.size`
+     * when appended). The retriever is cheap -- one keyframe -- but not free, and running
+     * it on the picker's main-thread callback would stutter the row draw for every video
+     * added at once.
+     */
+    private fun seedBatchThumbs(uris: List<Uri>, startIndex: Int) {
+        if (uris.isEmpty()) return
+        lifecycleScope.launch(Dispatchers.IO) {
+            uris.forEachIndexed { k, uri ->
+                val th = batchThumb(uri) ?: return@forEachIndexed
+                withContext(Dispatchers.Main) {
+                    // Only the row that is still waiting on its thumbnail, and only the
+                    // position it was queued at: a user can have removed or reordered the
+                    // row while the seek was in flight.
+                    batchQueue = batchQueue.mapIndexed { j, it ->
+                        if (j == startIndex + k && it.thumb == null && it.uri == uri)
+                            it.copy(thumb = th) else it
+                    }
+                }
+            }
+        }
+    }
+
+    /** The finished video, into the shared Movies collection. */
+    private fun saveToGallery(file: File) {
+        lifecycleScope.launch {
+            val r = withContext(Dispatchers.IO) { GallerySaver.save(this@MainActivity, file) }
+            r.onSuccess {
+                savedUri = it
+                savedPathLabel = "Movies/FaceFusion/" + file.name
+                // Remember it against the CLIP as well as the screen, so swiping away and
+                // back does not offer to save it a second time.
+                if (batchQueue.any { q -> q.output == file })
+                    batchQueue = batchQueue.map { q ->
+                        if (q.output == file) q.copy(savedUri = it) else q
+                    }
+                status = getString(R.string.status_saved_movies)
+                toast(getString(R.string.toast_saved_to, savedPathLabel!!))
+            }.onFailure {
+                status = getString(R.string.status_save_failed, it.message ?: "")
+            }
+        }
+    }
+
+    /**
+     * The swapped STILL, which is the pane rather than a file.
+     *
+     * There is no run behind a still and so no output file to copy: the bitmap on screen is
+     * the result, produced by the same pipeline at the image's own resolution, and it is
+     * what goes to Pictures. Both the source and this exact frame were gated in
+     * [refreshSwapped] before it was ever drawn, so saving what is displayed cannot save
+     * anything the gate has not already passed.
+     */
+    private fun saveSwappedStill() {
+        val bmp = swappedFrame ?: return
+        lifecycleScope.launch {
+            val name = "facefusion_%d.png".format(System.currentTimeMillis())
+            val r = withContext(Dispatchers.IO) {
+                GallerySaver.saveImage(this@MainActivity, bmp, name)
+            }
+            r.onSuccess {
+                savedUri = it
+                savedPathLabel = "Pictures/FaceFusion/" + name
+                status = getString(R.string.status_saved_pictures)
+                toast(getString(R.string.toast_saved_to, savedPathLabel!!))
+            }.onFailure {
+                status = getString(R.string.status_save_failed, it.message ?: "")
+            }
+        }
+    }
+
+    /**
+     * Lift the frame currently on screen out of the finished video and save it as a PNG.
+     *
+     * MediaMetadataRetriever with OPTION_CLOSEST, the same option PreviewEngine uses and
+     * for the same reason: OPTION_PREVIOUS_SYNC snaps to a keyframe, so asking for the
+     * frame you are looking at would hand back a different one whenever the scrub position
+     * sits inside a GOP.
+     */
+    /**
+     * Save the frame the SWAPPED pane is showing, as an image.
+     *
+     * Distinct from [saveFrameAt], which reads a frame back out of the finished video and
+     * therefore needs a run to have happened first. This one saves what is already on
+     * screen -- so a single still can be pulled out of a clip without swapping the clip,
+     * which on the CPU backend is the difference between seconds and many minutes.
+     *
+     * The bitmap is the pane's own, at the resolution the pipeline produced it, not the
+     * scaled-down thing being displayed.
+     */
+    private fun savePreviewFrame() {
+        val bmp = swappedFrame ?: preview ?: return
+        lifecycleScope.launch {
+            val stem = targetName?.substringBeforeLast('.')?.take(40) ?: "facefusion"
+            // The timestamp only means something for a video; a still has exactly one frame
+            // and "_000000ms" on it is noise.
+            val name = if (durationMs > 0)
+                           stem + "_swapped_%06dms.png".format(previewAtMs.toInt())
+                       else stem + "_swapped.png"
+            val r = withContext(Dispatchers.IO) {
+                GallerySaver.saveImage(this@MainActivity, bmp, name)
+            }
+            r.onSuccess {
+                status = getString(R.string.status_frame_saved)
+                toast(getString(R.string.toast_saved_to, "Pictures/FaceFusion/" + name))
+            }
+             .onFailure {
+                 status = getString(R.string.status_save_frame_failed, it.message ?: "")
+             }
+        }
+    }
+
+    private fun saveFrameAt(positionMs: Int) {
+        val file = outputFile ?: return
+        // Hoisted out of the mapCatching that used to build it, so the toast can name the
+        // file it just wrote rather than the directory it went into.
+        val name = file.nameWithoutExtension + "_%06dms.png".format(positionMs)
+        lifecycleScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val mmr = MediaMetadataRetriever().apply { setDataSource(file.absolutePath) }
+                    val bmp = mmr.getFrameAtTime(positionMs * 1000L,
+                                                 MediaMetadataRetriever.OPTION_CLOSEST)
+                    mmr.release()
+                    bmp ?: error("no frame at that position")
+                }.mapCatching { bmp ->
+                    GallerySaver.saveImage(this@MainActivity, bmp, name).getOrThrow()
+                }
+            }
+            r.onSuccess {
+                status = getString(R.string.status_frame_saved)
+                toast(getString(R.string.toast_saved_to, "Pictures/FaceFusion/" + name))
+            }
+             .onFailure {
+                 status = getString(R.string.status_save_frame_failed, it.message ?: "")
+             }
+        }
+    }
+
+    private fun shareResult() {
+        val uri = savedUri ?: run {
+            status = getString(R.string.status_save_first)
+            return
+        }
+        // The mime has to match what was actually saved, or the chooser offers apps that
+        // cannot open it -- an image result went out as video/mp4 before image targets
+        // existed, and would have silently kept doing so.
+        val image = targetImage != null && !photoMakesVideo
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+            type = if (image) "image/png" else "video/mp4"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }, getString(if (image) R.string.share_swapped_image
+                     else R.string.share_swapped_video)))
+    }
+
+    /**
+     * Headless self-test, so the in-process DSP path can be checked over adb:
+     *   adb shell am start -n com.facefusion.mobile/.MainActivity --es selftest 1
+     *   adb logcat -s ffselftest
+     */
+    private fun selfTest(voiceName: String? = null, portrait: Boolean = false) {
+        val tag = "ffselftest"
+        lifecycleScope.launch(Dispatchers.Default) {
+            fun say(s: String) = android.util.Log.i(tag, s)
+            try {
+                val models = modelDir()
+                models.listFiles()?.forEach { say("  ${it.name} ${it.length()} readable=${it.canRead()}") }
+                val libDir = applicationInfo.nativeLibraryDir
+                // Which RUNTIME, first and by name. The CLI printed a hardcoded "NPU" over
+                // an ncnn run once and the label cost an afternoon three weeks later
+                // (docs/backends.md); the same mistake was sitting in this function as a
+                // hardcoded "QNN init OK".
+                val backend = ModelPaths.backend(this@MainActivity)
+                say("backend: $backend" +
+                    (if (forcedBackend.isNotEmpty()) " (forced)" else " (auto)"))
+                // WHICH UNIT, not just which runtime. ncnn on the GPU and ncnn on the CPU
+                // differ by ~1.8x and by the thermal behaviour that decided the backend, so
+                // a run that does not say which one it took cannot be compared with one
+                // that does -- this is the CLI's hardcoded "NPU" label again, one level in.
+                if (backend == ModelPaths.NCNN_TIER) {
+                    // Asked directly, not read off `deviceUi`: this path returns from
+                    // onCreate before probeDevice() ever runs, so that field is still its
+                    // default and would report "no GPU" on every device.
+                    val gpu = NativePipe.probeDeviceInfo(libDir, libDir).contains("gpu=1")
+                    say("vulkan: " + (if (gpu) "yes, GPU preferred" else
+                                      "NO, everything on the CPU"))
+                    say("ncnn unit pin: $ncnnGpu")
+                }
+                say("tier: $tier")
+                // The fp16 canary is a QNN measurement and brings QNN up to take it. On
+                // ncnn there is nothing to ask, and asking anyway would start the runtime
+                // this run is supposed to be avoiding.
+                if (backend != ModelPaths.NCNN_TIER)
+                    say("fp16: ${NativePipe.probeFp16(libDir, libDir, canaryDir().absolutePath)}")
+                val initOk = NativePipe.init(libDir, libDir, models.absolutePath, opts)
+                noteTierRejection()
+                if (!initOk) {
+                    say("INIT FAILED: ${NativePipe.lastError()}"); return@launch
+                }
+                say("$backend init OK")
+                NativePipe.setSwapEnabled(opts.swapsFace)
+                if (!opts.swapsFace) say("face_swapper off")
+                if (opts.faceEdit)
+                    say("face editor: " + (if (NativePipe.hasFaceEditor())
+                        SwapOptions.EDITOR_SLIDERS.zip(opts.editor).filter { it.second != 0f }
+                            .joinToString(",") { it.first + "=" + it.second }
+                        else "NOT LOADED (" + NativePipe.faceEditorError() + ")"))
+                // AFTER init on purpose: the GPU agreement check runs on the first open that
+                // wants the GPU, so before this line the note still says "Vulkan available"
+                // on a device whose Vulkan is about to be refused.
+                if (backend == ModelPaths.NCNN_TIER) say("runtime: ${NativePipe.runtimeNote()}")
+                say("content gate: " +
+                    (if (NativePipe.contentGateIsQuantised()) "W8A16 (biased)" else "fp32"))
+                // The app's OWN external files dir first. /sdcard/Download is owned by
+                // whichever app adb pushed through, mode 660, so this app cannot read it
+                // and File.exists() answers false with no hint why -- the real app never
+                // hits that because SAF hands it a content URI with access attached.
+                fun asset(name: String): File {
+                    val mine = File(getExternalFilesDir(null), name)
+                    return if (mine.canRead()) mine else File("/sdcard/Download/$name")
+                }
+                val srcFile = asset("ff_source.jpg")
+                val tgtFile = asset("ff_target.mp4")
+                val voiceFile = voiceName?.let(::asset)?.takeIf { it.canRead() }
+                if (voiceName != null && voiceFile == null) say("voice: cannot read $voiceName")
+                // Gate whatever assets are present, and say so per asset: this is the only
+                // way the JNI path gets exercised over adb, and a gate that is never run
+                // is a gate nobody knows is broken.
+                // ⚠ These BLOCK. They used to print the verdict and carry on, which is
+                // worse than not checking at all: the log said "gate source: BLOCK" and
+                // then a swapped selftest.mp4 appeared next to it. A gate that reports
+                // without refusing is decoration.
+                if (srcFile.exists()) {
+                    val b = decodeOriented(srcFile)
+                    if (b != null) ContentGate.inspectStill(b).let {
+                        say("gate source: %s score %+.4f %s"
+                            .format(it.verdict, it.score, it.detail))
+                        if (!it.permitted) { say("SELFTEST REFUSED: source"); return@launch }
+                    }
+                }
+                if (tgtFile.exists()) ContentGate.inspectClip(tgtFile).let {
+                    say("gate target: %s worst %+.4f %s"
+                        .format(it.verdict, it.score, it.detail))
+                    if (!it.permitted) { say("SELFTEST REFUSED: target"); return@launch }
+                }
+                if (!srcFile.exists() || !tgtFile.exists()) {
+                    say("SELFTEST PARTIAL: DSP reachable, no test assets"); return@launch
+                }
+                val bmp = decodeOriented(srcFile) ?: return@launch
+                val soft = bmp.asArgb8888()
+                val px = IntArray(soft.width * soft.height)
+                soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+                if (portrait) {
+                    // The source photo as the PHOTO target, the test clip as the driver --
+                    // both already gated above. The same PortraitVideo runPortrait uses.
+                    val w = soft.width and 1.inv(); val h = soft.height and 1.inv()
+                    var bgr = NativePipe.argbToBgr(px, soft.width, soft.height)
+                    if (w != soft.width || h != soft.height)
+                        bgr = NativePipe.resizeBgr(bgr, soft.width, soft.height, w, h) ?: return@launch
+                    NativePipe.setSwapEnabled(false)
+                    say("face animator on device: ${NativePipe.hasFaceEditor()}" +
+                        (if (!NativePipe.hasFaceEditor()) " (" + NativePipe.faceEditorError() + ")" else ""))
+                    val out = File(getExternalFilesDir(null), "selftest.mp4")
+                    val t1 = System.currentTimeMillis()
+                    PortraitVideo(lipSync = opts.lipSync, voicePath = voiceFile?.absolutePath,
+                                  onProgress = { d, tt -> if (d % 25 == 0) say("frame $d/$tt") },
+                                  onLog = { say(it) })
+                        .run(bgr, w, h, if (opts.faceAnimate) tgtFile.absolutePath else null,
+                             out.absolutePath)
+                        .fold({ say("SELFTEST OK -> $it in ${(System.currentTimeMillis() - t1) / 1000.0} s") },
+                              { say("PORTRAIT FAILED: ${it.message}") })
+                    return@launch
+                }
+                if (!NativePipe.setSource(NativePipe.argbToBgr(px, soft.width, soft.height),
+                                          soft.width, soft.height)) {
+                    say("SOURCE FAILED: ${NativePipe.lastError()}"); return@launch
+                }
+                val out = File(getExternalFilesDir(null), "selftest.mp4")
+                val t1 = System.currentTimeMillis()
+                say("lip syncer on device: ${NativePipe.hasLipSyncer()}, asked: ${opts.lipSync}" +
+                    (voiceFile?.let { ", voice: ${it.name}" } ?: ""))
+                VideoSwapper(onProgress = { d, t -> if (d % 25 == 0) say("frame $d/$t") },
+                             onLog = { say(it) },
+                             trackPeriod = opts.trackPeriod,
+                             lipSync = opts.lipSync,
+                             voicePath = voiceFile?.absolutePath)
+                    .swap(tgtFile.absolutePath, out.absolutePath)
+                    .fold({ say("SELFTEST OK -> $it in ${(System.currentTimeMillis() - t1) / 1000.0} s") },
+                          { say("SWAP FAILED: ${it.message}") })
+            } catch (t: Throwable) {
+                android.util.Log.e(tag, "SELFTEST EXCEPTION", t)
+            } finally {
+                NativePipe.release()
+            }
+        }
+    }
+}

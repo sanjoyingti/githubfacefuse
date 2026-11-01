@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FaceFusion</title>
+<style>
+  :root {
+    --bg: #0d0d10; --card: #17171c; --line: #2a2a33; --fg: #e8e8ee;
+    --dim: #9a9aa8; --accent: #d8d8e4; --err: #ff6b6b; --ok: #6bd48a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 24px 16px 60px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 4px; }
+  h1 { font-size: 20px; letter-spacing: .18em; font-weight: 300; margin: 0; }
+  h1 b { font-weight: 700; }
+  #health { color: var(--dim); font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  .pane {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 12px; min-height: 260px; display: flex; flex-direction: column;
+  }
+  .pane h2 {
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--dim); margin: 2px 2px 10px; font-weight: 500;
+  }
+  .drop {
+    flex: 1; border: 1px dashed var(--line); border-radius: 10px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+    color: var(--dim); text-align: center; padding: 10px; transition: border-color .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); color: var(--fg); }
+  .drop img, .drop video { max-width: 100%; max-height: 340px; border-radius: 8px; display: block; }
+  .opts {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px; margin-top: 14px; display: flex; flex-wrap: wrap;
+    gap: 18px; align-items: center;
+  }
+  label { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
+  input[type=range] { width: 130px; accent-color: var(--accent); }
+  select, button {
+    background: #22222a; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 10px; font: inherit;
+  }
+  button.go {
+    background: var(--accent); color: #101014; border: 0; font-weight: 600;
+    padding: 13px 20px; border-radius: 12px; cursor: pointer; width: 100%;
+    margin-top: 14px; font-size: 15px;
+  }
+  button.go:disabled { opacity: .45; cursor: default; }
+  #status { margin-top: 12px; min-height: 20px; font-size: 13px; }
+  #status.err { color: var(--err); }
+  #status.ok { color: var(--ok); }
+  a.dl { color: var(--accent); }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>FACE<b>FUSION</b></h1>
+    <span id="health" data-i18n="checking">checking...</span>
+  </header>
+  <div class="hint" data-i18n="hint">
+    Runs on the phone's NPU. The content check runs on every request, exactly as it does on
+    the phone's screen.
+  </div>
+
+  <div class="grid">
+    <div class="pane">
+      <h2 data-i18n="source">Source face</h2>
+      <div class="drop" id="srcDrop" data-i18n="dropSrc">Drop an image, or click to pick</div>
+    </div>
+    <div class="pane">
+      <h2 data-i18n="target">Target</h2>
+      <div class="drop" id="tgtDrop" data-i18n="dropTgt">Drop an image or a video, or click to pick</div>
+    </div>
+  </div>
+
+  <div class="opts">
+    <label><span data-i18n="weight">Weight</span> <input type="range" id="weight" min="0" max="1" step="0.05" value="0.5">
+      <span id="weightV">0.50</span></label>
+    <label><span data-i18n="detail">Detail</span>
+      <select id="boost">
+        <option value="1">256</option>
+        <option value="2">512</option>
+        <option value="3">768</option>
+        <option value="4">1024</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="enhancer"> <span data-i18n="enhancer">Face enhancer</span></label>
+    <label><input type="checkbox" id="largest"> <span data-i18n="largest">Largest face only</span></label>
+  </div>
+
+  <button class="go" id="go" data-i18n="swap" disabled>Swap</button>
+  <div id="status"></div>
+
+  <div class="pane" id="resultPane" style="margin-top:14px; display:none">
+    <h2 data-i18n="result">Result</h2>
+    <div class="drop" id="result" style="cursor:default"></div>
+    <div style="margin-top:10px"><a class="dl" id="dl" data-i18n="download" download>Download</a></div>
+  </div>
+</div>
+
+<script>
+// One page, no framework, no CDN: it is served by the phone itself and has to work on a
+// network with no internet on it.
+const $ = s => document.querySelector(s);
+let src = null, tgt = null, sourceSent = null;
+
+function picker(dropEl, accept, onPick) {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = accept; input.style.display = 'none';
+  document.body.appendChild(input);
+  dropEl.onclick = () => input.click();
+  input.onchange = () => input.files[0] && onPick(input.files[0]);
+  dropEl.ondragover = e => { e.preventDefault(); dropEl.classList.add('over'); };
+  dropEl.ondragleave = () => dropEl.classList.remove('over');
+  dropEl.ondrop = e => {
+    e.preventDefault(); dropEl.classList.remove('over');
+    if (e.dataTransfer.files[0]) onPick(e.dataTransfer.files[0]);
+  };
+}
+
+function show(el, file) {
+  const url = URL.createObjectURL(file);
+  el.innerHTML = '';
+  const node = document.createElement(file.type.startsWith('video') ? 'video' : 'img');
+  node.src = url;
+  if (node.tagName === 'VIDEO') { node.controls = true; node.muted = true; }
+  el.appendChild(node);
+}
+
+picker($('#srcDrop'), 'image/*', f => {
+  src = f; sourceSent = null; show($('#srcDrop'), f); ready();
+});
+picker($('#tgtDrop'), 'image/*,video/*', f => {
+  tgt = f; show($('#tgtDrop'), f); ready();
+});
+
+function ready() { $('#go').disabled = !(src && tgt); }
+$('#weight').oninput = e => $('#weightV').textContent = (+e.target.value).toFixed(2);
+
+function qs() {
+  const p = new URLSearchParams();
+  p.set('weight', $('#weight').value);
+  p.set('boost', $('#boost').value);
+  p.set('enhancer', $('#enhancer').checked ? 1 : 0);
+  p.set('largest', $('#largest').checked ? 1 : 0);
+  return '?' + p.toString();
+}
+
+// ---------------------------------------------------------------------------
+// Language.
+// ---------------------------------------------------------------------------
+// A SECOND, independent string table from the app's strings.xml, and deliberately so: this
+// page is read on a different machine by someone who may not be the phone's owner, so it
+// follows THE BROWSER, not the phone's locale. A PC in English driving a phone set to
+// Chinese should stay in English, and the reverse should work too.
+//
+// navigator.language is the browser's own Accept-Language in JS form, which is the same
+// preference the server would see -- but resolved on the client, so the page stays a single
+// static file that the app serves without negotiating anything.
+//
+// Kept INLINE. Being self-contained is the whole point of this file: it is served from a
+// phone with no network of its own, so a fetched translation bundle is a request that can
+// only fail.
+const STRINGS = {
+  'zh-CN': {
+    checking: '正在检查…',
+    hint: '在手机的 NPU 上运行。每次请求都会执行内容检查，与在手机屏幕上完全一致。',
+    source: '源人脸', dropSrc: '拖入一张图片，或点击选择',
+    target: '目标', dropTgt: '拖入图片或视频，或点击选择',
+    weight: '强度', detail: '细节', enhancer: '人脸增强', largest: '仅最大的人脸',
+    swap: '开始换脸', result: '结果', download: '下载',
+    readingSource: '正在读取源人脸…',
+    swappingVideo: '正在处理视频 —— 每帧约 18 毫秒…',
+    swapping: '正在换脸…',
+    restarted: '手机已重启 —— 正在重新发送源人脸…',
+    doneIn: function (s) { return '完成，用时 ' + s + ' 秒'; },
+    modelsMissing: '缺少模型：', enhancerTag: '  人脸增强', noAnswer: '手机没有响应',
+  },
+  'zh-TW': {
+    checking: '正在檢查…',
+    hint: '在手機的 NPU 上執行。每次請求都會執行內容檢查，與在手機螢幕上完全一致。',
+    source: '來源人臉', dropSrc: '拖入一張圖片，或點擊選擇',
+    target: '目標', dropTgt: '拖入圖片或影片，或點擊選擇',
+    weight: '強度', detail: '細節', enhancer: '人臉增強', largest: '僅最大的人臉',
+    swap: '開始換臉', result: '結果', download: '下載',
+    readingSource: '正在讀取來源人臉…',
+    swappingVideo: '正在處理影片 —— 每格約 18 毫秒…',
+    swapping: '正在換臉…',
+    restarted: '手機已重新啟動 —— 正在重新傳送來源人臉…',
+    doneIn: function (s) { return '完成，耗時 ' + s + ' 秒'; },
+    modelsMissing: '缺少模型：', enhancerTag: '  人臉增強', noAnswer: '手機沒有回應',
+  },
+};
+
+// Traditional for zh-TW / zh-HK / zh-Hant, simplified for every other Chinese tag.
+// Everything else falls through to the English already in the markup.
+const L = (function () {
+  const tags = navigator.languages || [navigator.language || ''];
+  for (const raw of tags) {
+    const t = String(raw).toLowerCase();
+    if (!t.startsWith('zh')) continue;
+    return (/hant|tw|hk|mo/.test(t)) ? STRINGS['zh-TW'] : STRINGS['zh-CN'];
+  }
+  return null;
+})();
+
+if (L) {
+  document.documentElement.lang = (L === STRINGS['zh-TW']) ? 'zh-Hant' : 'zh-Hans';
+  document.querySelectorAll('[data-i18n]').forEach(function (el) {
+    const v = L[el.getAttribute('data-i18n')];
+    if (v) el.textContent = v;
+  });
+}
+
+/** A key from the table, or the English fallback the caller supplies. */
+function t(key, fallback) { return (L && L[key]) || fallback; }
+
+function say(msg, cls) { const s = $('#status'); s.textContent = msg; s.className = cls || ''; }
+
+async function post(path, file) {
+  const r = await fetch(path, { method: 'POST', body: file });
+  if (!r.ok) {
+    let msg = 'HTTP ' + r.status;
+    try {
+      const j = await r.json();
+      msg = j.error || msg;
+      if (j.detail) msg += ' (' + j.detail + ')';
+    } catch (e) { /* not json */ }
+    throw new Error(msg);
+  }
+  return r;
+}
+
+$('#go').onclick = async () => {
+  $('#go').disabled = true;
+  const t0 = Date.now();
+  try {
+    // Only when it changed: embedding the face costs a round trip and the phone keeps it.
+    if (sourceSent !== src) {
+      say(t('readingSource', 'reading the source face...'));
+      await post('/source' + qs(), src);
+      sourceSent = src;
+    }
+    const video = tgt.type.startsWith('video');
+    say(video ? t('swappingVideo', 'swapping the clip -- this runs at about 18 ms a frame...')
+              : t('swapping', 'swapping...'));
+    let r;
+    try {
+      r = await post((video ? '/swap_video' : '/swap') + qs(), tgt);
+    } catch (e) {
+      // The phone forgets the source when the app is killed, which it will be: it holds
+      // ~275 MB of context binaries. Re-send it once rather than making the page look
+      // broken for a reason the person at the browser cannot see.
+      if (!/source first/i.test(e.message)) throw e;
+      say(t('restarted', 'the phone restarted -- re-sending the source face...'));
+      await post('/source' + qs(), src);
+      sourceSent = src;
+      r = await post((video ? '/swap_video' : '/swap') + qs(), tgt);
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    $('#resultPane').style.display = 'flex';
+    $('#result').innerHTML = '';
+    const node = document.createElement(video ? 'video' : 'img');
+    node.src = url;
+    if (video) { node.controls = true; node.autoplay = true; node.muted = true; }
+    $('#result').appendChild(node);
+    const dl = $('#dl');
+    dl.href = url;
+    dl.download = video ? 'swapped.mp4' : 'swapped.png';
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    say(L ? L.doneIn(secs) : 'done in ' + secs + ' s', 'ok');
+  } catch (e) {
+    say(e.message, 'err');
+  }
+  $('#go').disabled = false;
+};
+
+fetch('/health').then(r => r.json()).then(h => {
+  // The TIER is an identifier and stays as it is in every language; only the words
+  // around it are words.
+  $('#health').textContent =
+    h.tier +
+    (h.ready ? '' : '  ' + t('modelsMissing', 'models missing: ') +
+                    (h.models_missing || []).join(' ')) +
+    (h.enhancer ? t('enhancerTag', '  enhancer') : '');
+  if (!h.enhancer) { $('#enhancer').disabled = true; $('#enhancer').parentElement.style.opacity = .4; }
+}).catch(() => $('#health').textContent = t('noAnswer', 'no answer from the phone'));
+</script>
+</body>
+</html>

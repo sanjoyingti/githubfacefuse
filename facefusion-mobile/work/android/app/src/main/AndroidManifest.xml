@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The models are fetched on demand; nothing else here talks to the network. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+        A ~275 MB transfer outlives the Activity, so it runs in a foreground service.
+        POST_NOTIFICATIONS is a runtime grant from API 33; without it the service still
+        runs, the user just cannot see it.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+        <!-- Live tab (dev builds only). Not `required`: the app is a file-in/file-out
+         face swapper on every other screen and must install on a device with no
+         camera at all. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Recording a driving voice for the lip syncer, in-app. Nothing is uploaded: the
+         recording lands in cacheDir and is decoded by AudioDecoder like any picked file. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+<application
+        android:label="${appLabel}"
+        android:localeConfig="@xml/locales_config"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.FaceFusion"
+        android:largeHeap="true"
+        android:extractNativeLibs="true"
+        android:allowBackup="false">
+
+        <!--
+            Receives CAMERA CAPTURES. ACTION_IMAGE_CAPTURE / ACTION_VIDEO_CAPTURE write into
+            a URI we supply, and file:// across that boundary has thrown FileUriExposedException
+            since Android 7.
+
+            ⚠ The authority is derived from ${applicationId}, NOT hardcoded. main and dev are
+            two applicationIds installed side by side, and two providers claiming one
+            authority makes the SECOND install fail outright with INSTALL_FAILED_CONFLICTING_PROVIDER.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!--
+            The Hexagon DSP is reached through libcdsprpc.so, a VENDOR library.  It is
+            listed in /vendor/etc/public.libraries.txt on this device, so it is linkable in
+            principle, but from targetSdk 31 an app must ALSO name it here or the linker
+            refuses it and libQnnHtpV79Stub.so fails to load:
+
+                dlopen failed: library "libcdsprpc.so" not found:
+                needed by libQnnHtpV79Stub.so in namespace clns-9
+
+            which surfaces four layers up as the far less helpful
+            "Failed to load skel, error: 4000" / "Device Creation failure".
+
+            ⚠ required="false", and the "false" is the entire non-Qualcomm story.
+            `required` is an INSTALL GATE, not a link-time hint: with "true" the package
+            manager refuses to install on any device that does not carry the library, and
+            libcdsprpc.so is a QUALCOMM vendor library. So 0.4.0 shipped an ncnn backend
+            for phones that physically could not install the APK to run it. A Dimensity
+            Poco reported "no se instaló la app porque no es compatible con el teléfono"
+            and read this very comment on GitHub to work out why.
+
+            (Note for anyone editing this block: XML forbids a double hyphen inside a
+            comment, and one here failed the manifest merger rather than the build.)
+
+            "false" changes nothing on a Hexagon: naming the library here is what puts it
+            in the app's linker namespace, and that still happens wherever it exists. What
+            it stops doing is deciding, at install time, that a phone with no DSP has no
+            business running a build whose whole second backend is for phones with no DSP.
+        -->
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+        <uses-native-library android:name="libadsprpc.so" android:required="false" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="${appLabel}"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!--
+            The batch run's keep-alive. `dataSync` rather than `mediaProcessing`: the latter
+            arrived in API 34 and carries a system-imposed time budget, and a batch of long
+            clips is exactly the case that would be cut off by it. This service does no work
+            of its own (see BatchService); it only stops the process being reclaimed while
+            the Activity grinds through the queue.
+
+            NB: NO DOUBLE HYPHEN anywhere inside this comment. XML forbids it, and the
+            house style of writing asides that way turned this file into a build failure
+            whose entire message was "Error parsing AndroidManifest.xml".
+        -->
+        <service
+            android:name=".BatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!--
+            The HTTP API. exported=false is about INTENTS, not about the socket: nothing on
+            the phone can start or stop this service except the app itself, while the port
+            it opens is reachable by whoever the bind address allows. The token is what
+            guards that, not this attribute.
+        -->
+        <service
+            android:name=".ApiService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+</manifest>

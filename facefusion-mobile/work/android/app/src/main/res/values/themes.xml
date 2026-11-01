@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The WINDOW theme, not the app's theme.
+
+    Everything visible is Compose (see ui/Theme.kt); this only dresses the window itself.
+    It matters for exactly one moment: between the launcher tapping the icon and the first
+    composition, the window is painted with `windowBackground`.  Inheriting the platform
+    default made that flash white on a black app.
+
+    Parent is the platform Material theme rather than an AppCompat/MaterialComponents one
+    because the app has no appcompat dependency — ComponentActivity plus Compose needs
+    none, and adding one would pull a fetch we cannot rely on.
+-->
+<resources>
+    <style name="Theme.FaceFusion" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ff_background</item>
+        <!-- The top bar follows the theme background (day #F7F8FA / night #121212), so the
+             status bar is painted the same colour and its icons are dark on the light
+             scheme. "windowLightStatusBar" names the BAR, not the icons: true means the
+             bar is light and Android draws dark icons. values-night/ mirrors this. -->
+        <item name="android:statusBarColor">@color/ff_background</item>
+        <item name="android:navigationBarColor">@color/ff_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>
