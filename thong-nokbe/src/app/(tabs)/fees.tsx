@@ -191,6 +191,14 @@ export default function Fees() {
           <Text style={{ color: colors.muted }}>Collected ₹{collected}</Text>
         </View>
         {isAdmin && (
+          <Button
+            title="📊 Fee report: who paid how much"
+            variant="outline"
+            onPress={() => router.push({ pathname: '/group/fee-report', params: { id: group.id } })}
+            style={{ marginBottom: 10 }}
+          />
+        )}
+        {isAdmin && (
           <Button title="📢 Notify all members about fees" onPress={() => setNoticeOpen(true)} style={{ marginBottom: 10 }} />
         )}
         {isAdmin && unpaidOthers.length > 0 && (

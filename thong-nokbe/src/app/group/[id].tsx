@@ -4,7 +4,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
-import { approveJoin, cancelInvite, dismissAdmin, getOrCreateDirectChat, leaveGroup, makeAdmin, rejectJoin, removeMember, updateGroupInfo } from '../../lib/chats';
+import { approveJoin, cancelInvite, dismissAdmin, getOrCreateDirectChat, isMainAdmin, leaveGroup, makeAdmin, rejectJoin, removeMember, stepDownAdmin, updateGroupInfo } from '../../lib/chats';
 import { hasApp } from '../../lib/calls';
 import { inviteLink, syncInviteName } from '../../lib/invites';
 import { useCaller } from '../../components/useCaller';
@@ -42,6 +42,7 @@ export default function GroupInfo() {
 
   if (!chat || chat.type !== 'group') return <Empty title="Group not found" subtitle="You may no longer be a member of this group." />;
   const iAmAdmin = chat.admins.includes(me.uid);
+  const iAmMain = isMainAdmin(chat, me.uid);
 
   const run = (fn: () => Promise<unknown>) => fn().catch((e) => Alert.alert('Something went wrong', e?.message ?? String(e)));
 
@@ -57,11 +58,16 @@ export default function GroupInfo() {
           ]
         : []),
     ];
-    if (iAmAdmin) {
+    // Only the main admin appoints or dismisses admins. Second admins can remove normal members only.
+    if (iAmMain) {
       opts.push(
         isAdmin
-          ? { label: 'Dismiss as admin', onPress: () => run(() => dismissAdmin(chat, me, u)) }
-          : { label: 'Make group admin', onPress: () => run(() => makeAdmin(chat, me, u)) },
+          ? { label: '⬇️ Dismiss as admin', onPress: () => run(() => dismissAdmin(chat, me, u)) }
+          : { label: '⭐ Make second admin', onPress: () => run(() => makeAdmin(chat, me, u)) },
+      );
+    }
+    if (iAmMain || (iAmAdmin && !isAdmin)) {
+      opts.push(
         {
           label: `Remove ${u.name}`,
           destructive: true,
@@ -124,6 +130,7 @@ export default function GroupInfo() {
         <View style={styles.section}>
           <Row icon="person-add" label="Add members" onPress={() => router.push({ pathname: '/group/add-members', params: { id: chat.id } })} />
           <Row icon="link" label="Invite via link (SMS, WhatsApp, QR)" onPress={() => router.push({ pathname: '/group/invite', params: { id: chat.id } })} />
+          <Row icon="stats-chart" label="Fee report (who paid how much)" onPress={() => router.push({ pathname: '/group/fee-report', params: { id: chat.id } })} />
           <Row icon="qr-code" label="Fee & UPI payment settings" onPress={() => router.push({ pathname: '/group/fee-settings', params: { id: chat.id } })} />
         </View>
       )}
@@ -137,8 +144,10 @@ export default function GroupInfo() {
               <Text style={styles.memberName}>{u.uid === me.uid ? 'You' : displayName(u)}</Text>
               <Text style={styles.memberSub}>{u.phone ? formatPhone(u.phone) : ''}</Text>
             </View>
-            {chat.admins.includes(u.uid) ? (
-              <Chip text="Group admin" color={colors.primaryDark} bg={colors.paidBg} />
+            {isMainAdmin(chat, u.uid) ? (
+              <Chip text="👑 Main admin" color={colors.accent} bg={colors.warnBg} />
+            ) : chat.admins.includes(u.uid) ? (
+              <Chip text="⭐ Admin" color={colors.primary} bg={colors.paidBg} />
             ) : !hasApp(u) && u.uid !== me.uid ? (
               <Chip text="Not on app" color={colors.unpaid} bg={colors.unpaidBg} />
             ) : null}
@@ -201,6 +210,24 @@ export default function GroupInfo() {
         </View>
       )}
 
+      {iAmAdmin && !iAmMain && (
+        <View style={styles.section}>
+          <Row
+            icon="arrow-down-circle-outline"
+            label="Step down as admin"
+            danger
+            onPress={() =>
+              Alert.alert('Step down as admin?', 'You will stay in the group as a normal member. Only the main admin can make you admin again.', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Step down', style: 'destructive', onPress: () => run(() => stepDownAdmin(chat, me)) },
+              ])
+            }
+          />
+        </View>
+      )}
+
+      {iAmMain && <Text style={styles.adminHint}>👑 You are the main admin. Tap a member to make them a ⭐ second admin.</Text>}
+
       <View style={styles.section}>
         <Row
           icon="exit-outline"
@@ -244,6 +271,7 @@ const styles = StyleSheet.create({
   member: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10 },
   memberName: { fontSize: 16, fontWeight: '600', color: colors.text },
   memberSub: { color: colors.muted, fontSize: 13, marginTop: 2 },
+  adminHint: { color: colors.muted, paddingHorizontal: 16, marginBottom: 10, fontSize: 14 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 16, paddingVertical: 14 },
   rowLabel: { fontSize: 16, color: colors.text, fontWeight: '600' },
 });

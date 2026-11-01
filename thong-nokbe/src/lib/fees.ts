@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc } from '@react-native-firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, onSnapshot, serverTimestamp, setDoc } from '@react-native-firebase/firestore';
 import { db } from './firebase';
 import { getOrCreateDirectChat, sendMessage } from './chats';
 import type { FeePayment, UserProfile } from './types';
@@ -71,4 +71,22 @@ export async function sendFeeNoticeToAll(admin: UserProfile, groupId: string, te
   const body = text.trim();
   if (!body) return;
   await sendMessage(groupId, admin, `${FEE_NOTICE_PREFIX}: ${body}`);
+}
+
+/** All payments for the months of a year (for the admin fee report). month -> uid -> payment */
+export async function fetchYearPayments(chatId: string, year: number): Promise<Record<string, Record<string, FeePayment>>> {
+  const now = new Date();
+  const lastMonth = year < now.getFullYear() ? 12 : now.getMonth() + 1;
+  const months = Array.from({ length: lastMonth }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+  const results = await Promise.all(
+    months.map(async (m) => {
+      const snap = await getDocs(paymentsCol(chatId, m));
+      const byUid: Record<string, FeePayment> = {};
+      snap.forEach((d) => {
+        byUid[d.id] = { uid: d.id, ...(d.data() as Omit<FeePayment, 'uid'>) };
+      });
+      return [m, byUid] as const;
+    }),
+  );
+  return Object.fromEntries(results);
 }

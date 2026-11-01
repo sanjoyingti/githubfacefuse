@@ -50,6 +50,7 @@ function RootNavigator() {
         <Stack.Screen name="group/add-members" options={{ title: 'Add members' }} />
         <Stack.Screen name="group/fee-settings" options={{ title: 'Fee & UPI settings' }} />
         <Stack.Screen name="group/invite" options={{ title: 'Invite via link' }} />
+        <Stack.Screen name="group/fee-report" options={{ title: 'Fee report' }} />
         <Stack.Screen name="join/[code]" options={{ title: 'Join group' }} />
         <Stack.Screen name="new-group" options={{ title: 'New group' }} />
         <Stack.Screen name="new-chat" options={{ title: 'New chat' }} />

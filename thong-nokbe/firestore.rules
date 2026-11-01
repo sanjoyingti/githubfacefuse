@@ -59,8 +59,18 @@ service cloud.firestore {
       );
 
       allow update: if signedIn() && (
-        // Admins manage everything about a group: members, admins, name, UPI/fee settings.
-        (resource.data.type == 'group' && me() in resource.data.admins)
+        // Main admin (the group creator) manages everything, including who else is an admin.
+        (resource.data.type == 'group' && me() == resource.data.createdBy && me() in resource.data.admins)
+        ||
+        // Second admins (appointed by the main admin) manage members, name, fee settings, invite link…
+        // but can't appoint/dismiss admins (only step down themselves), can't remove other admins or
+        // the main admin, and can't change who the main admin is.
+        (resource.data.type == 'group' && me() in resource.data.admins && me() != resource.data.createdBy
+          && request.resource.data.createdBy == resource.data.createdBy
+          && (!(resource.data.createdBy in resource.data.members) || resource.data.createdBy in request.resource.data.members)
+          && (request.resource.data.admins.toSet() == resource.data.admins.toSet()
+              || request.resource.data.admins.toSet() == resource.data.admins.toSet().difference([me()].toSet()))
+          && resource.data.admins.toSet().difference([me()].toSet()).difference(request.resource.data.members.toSet()).size() == 0)
         ||
         // Any member may bump the last-message preview.
         (me() in resource.data.members && changed().hasOnly(['lastMessage', 'updatedAt']))

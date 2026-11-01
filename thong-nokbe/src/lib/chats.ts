@@ -82,10 +82,28 @@ export async function dismissAdmin(chat: Chat, me: UserProfile, target: UserProf
   await sendMessage(chat.id, me, `${target.name} is no longer an admin`, 'system');
 }
 
+/** A second admin steps down; they stay in the group as a normal member. */
+export async function stepDownAdmin(chat: Chat, me: UserProfile) {
+  await updateDoc(chatRef(chat.id), { admins: arrayRemove(me.uid) });
+  await sendMessage(chat.id, me, `${me.name} is no longer an admin`, 'system');
+}
+
+export const isMainAdmin = (chat: Chat, uid: string) => chat.createdBy === uid && chat.admins.includes(uid);
+
 export async function leaveGroup(chat: Chat, me: UserProfile) {
   await sendMessage(chat.id, me, `${me.name} left`, 'system');
   const remaining = chat.members.filter((m) => m !== me.uid);
   const remainingAdmins = chat.admins.filter((a) => a !== me.uid);
+  if (chat.createdBy === me.uid && remaining.length > 0) {
+    // The main admin is leaving: the next admin (or the first member) becomes the main admin.
+    const next = remainingAdmins[0] ?? remaining[0];
+    await updateDoc(chatRef(chat.id), {
+      createdBy: next,
+      admins: [...new Set([next, ...remainingAdmins])],
+      members: arrayRemove(me.uid),
+    });
+    return;
+  }
   if (remainingAdmins.length === 0 && remaining.length > 0) {
     // Like WhatsApp: if the last admin leaves, another member becomes admin.
     await updateDoc(chatRef(chat.id), { admins: [remaining[0]], members: arrayRemove(me.uid) });

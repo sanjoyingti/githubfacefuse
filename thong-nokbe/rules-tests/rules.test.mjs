@@ -194,3 +194,30 @@ test('auto-join: a number the admin added joins by itself after registering; oth
   });
   if (!snap.members.includes(INVITEE.uid) || snap.pendingPhones.includes(INVITEE.phone)) throw new Error('not joined');
 });
+
+test('main admin vs second admins', async () => {
+  // main admin appoints MEMBER as a second admin
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { admins: arrayUnion(MEMBER.uid) }));
+  const sec = as(MEMBER);
+  // second admin can add and remove normal members, rename the group
+  await assertSucceeds(updateDoc(doc(sec, 'chats/g1'), { members: arrayUnion('newbie') }));
+  await assertSucceeds(updateDoc(doc(sec, 'chats/g1'), { members: arrayRemove('newbie') }));
+  await assertSucceeds(updateDoc(doc(sec, 'chats/g1'), { name: 'Gym 2' }));
+  // …but can't appoint admins, dismiss or remove the main admin, or take over as main admin
+  await assertFails(updateDoc(doc(sec, 'chats/g1'), { admins: arrayUnion('newbie') }));
+  await assertFails(updateDoc(doc(sec, 'chats/g1'), { admins: arrayRemove(ADMIN.uid) }));
+  await assertFails(updateDoc(doc(sec, 'chats/g1'), { members: arrayRemove(ADMIN.uid) }));
+  await assertFails(updateDoc(doc(sec, 'chats/g1'), { createdBy: MEMBER.uid }));
+  // second admin steps down
+  await assertSucceeds(updateDoc(doc(sec, 'chats/g1'), { admins: arrayRemove(MEMBER.uid) }));
+  // main admin can appoint again and dismiss
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { admins: arrayUnion(MEMBER.uid) }));
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { admins: arrayRemove(MEMBER.uid) }));
+  // main admin leaving hands over the main-admin role
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { createdBy: MEMBER.uid, admins: [MEMBER.uid], members: arrayRemove(ADMIN.uid) }));
+});
+
+test('second admin cannot remove another admin', async () => {
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { admins: arrayUnion(MEMBER.uid, 'other'), members: arrayUnion('other') }));
+  await assertFails(updateDoc(doc(as(MEMBER), 'chats/g1'), { members: arrayRemove('other') }));
+});
