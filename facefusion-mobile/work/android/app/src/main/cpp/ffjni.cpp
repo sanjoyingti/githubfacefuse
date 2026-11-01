@@ -120,7 +120,7 @@ float g_faceEditor[14] = {};
  * every setOptions carries them. Defaults match ffpipe::Config.
  */
 struct Quality {
-  bool occlusion = true, region = false, keepMouth = false;
+  bool occlusion = true, region = false, keepMouth = false, keepLips = false;
   float poseFadeStart = 60.f;
   bool smooth = true, recover = true, rotated = false;
 };
@@ -135,6 +135,7 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.occlusionMask = g_quality.occlusion;
   cfg.regionMask = g_quality.region;
   cfg.keepMouth = g_quality.keepMouth;
+  cfg.keepLips = g_quality.keepLips;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -321,11 +322,13 @@ Java_com_facefusion_mobile_NativePipe_setTrackPeriod(JNIEnv*, jclass, jint frame
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setQuality(JNIEnv*, jclass, jboolean occlusion,
                                                  jboolean region, jboolean keepMouth,
+                                                 jboolean keepLips,
                                                  jfloat poseFadeStart, jboolean smooth,
                                                  jboolean recover, jboolean rotated) {
   g_quality.occlusion = occlusion == JNI_TRUE;
   g_quality.region = region == JNI_TRUE;
   g_quality.keepMouth = keepMouth == JNI_TRUE;
+  g_quality.keepLips = keepLips == JNI_TRUE;
   g_quality.poseFadeStart = std::isfinite(poseFadeStart)
                                 ? std::fmin(90.f, std::fmax(20.f, poseFadeStart)) : 60.f;
   g_quality.smooth = smooth == JNI_TRUE;

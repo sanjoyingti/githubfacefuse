@@ -260,7 +260,7 @@ struct Pipeline::Impl {
   // on `crop`, the TARGET face before any swap. Returns false only on an execution error.
   bool applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m, std::string& err);
   bool wantsMaskModels() const {
-    return cfg.occlusionMask || cfg.regionMask || cfg.keepMouth;
+    return cfg.occlusionMask || cfg.regionMask || cfg.keepMouth || cfg.keepLips;
   }
   // The combined per-face mask swapAll used on this frame, keyed by the face's alignment
   // points, so the enhancer (same template, same crop size) reuses it instead of running
@@ -717,6 +717,7 @@ void Pipeline::updateConfig(const Config& c) {
   live.occlusionMask     = c.occlusionMask;
   live.regionMask        = c.regionMask;
   live.keepMouth         = c.keepMouth;
+  live.keepLips          = c.keepLips;
   live.poseFadeStart     = c.poseFadeStart;
   live.motionSmooth      = c.motionSmooth;
   live.lowScoreRecovery  = c.lowScoreRecovery;
@@ -2128,6 +2129,7 @@ namespace {
 // skin, brows, eyes, glasses, nose, mouth, upper lip, lower lip.
 constexpr int kRegionLabels[] = {1, 2, 3, 4, 5, 6, 10, 11, 12, 13};
 constexpr int kMouthLabel = 11;   // the mouth INTERIOR: teeth, tongue, whatever is in it
+constexpr int kUpperLip = 12, kLowerLip = 13;
 
 void finishModelMask(ffcv::MatF& mm, int CS, ffcv::MatF& m) {
   ffcv::MatF r = ffmotion::resizeMask(mm, CS, CS);
@@ -2280,7 +2282,8 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
     std::memcpy(om.data.data(), out[0].data(), sizeof(float) * XS * XS);
     finishModelMask(om, CS, m);
   }
-  if ((cfg.regionMask || cfg.keepMouth) && maskNet("bisenet", 512, n.parse, n.parseTried)) {
+  if ((cfg.regionMask || cfg.keepMouth || cfg.keepLips) &&
+      maskNet("bisenet", 512, n.parse, n.parseTried)) {
     constexpr int PS = 512;
     const ffcv::Image s = ffcv::resizeLinear(crop, PS, PS);
     static const float mean[3] = {0.485f, 0.456f, 0.406f}, stdv[3] = {0.229f, 0.224f, 0.225f};
@@ -2299,12 +2302,18 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
       err = std::string("face parser: ") + ffnn::auxLastError();
       return false;
     }
+    // Labels left ORIGINAL by the mouth switches.
+    bool original[L] = {};
+    if (cfg.keepMouth) original[kMouthLabel] = true;
+    if (cfg.keepLips) { original[kUpperLip] = true; original[kLowerLip] = true; }
+    // With the region mask on only the face regions are swapped; without it everything the
+    // box mask covers is, except what the mouth switches keep original.
     bool keepLabel[L] = {};
-    for (int lab : kRegionLabels) keepLabel[lab] = true;
-    if (cfg.keepMouth) keepLabel[kMouthLabel] = false;
-    // keepMouth alone (region mask off) removes ONLY the mouth interior.
-    if (!cfg.regionMask)
-      for (int lab = 0; lab < L; ++lab) keepLabel[lab] = lab != kMouthLabel;
+    if (cfg.regionMask)
+      for (int lab : kRegionLabels) keepLabel[lab] = true;
+    else
+      for (int lab = 0; lab < L; ++lab) keepLabel[lab] = true;
+    for (int lab = 0; lab < L; ++lab) if (original[lab]) keepLabel[lab] = false;
     const float* lg = out[0].data();
     const size_t plane = (size_t)PS * PS;
     ffcv::MatF rm(PS, PS, 1);
@@ -2325,7 +2334,7 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
 bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
   p_->maskCache.clear();
   if (!p_->cfg.occlusionMask && !p_->n.occTried) setMaskState(0, "switched off");
-  if (!p_->cfg.regionMask && !p_->cfg.keepMouth && !p_->n.parseTried)
+  if (!p_->cfg.regionMask && !p_->cfg.keepMouth && !p_->cfg.keepLips && !p_->n.parseTried)
     setMaskState(1, "switched off");
   if (!p_->cfg.swapEnabled) return true;
   if (!p_->haveSource) { err_ = "setSource not called"; return false; }

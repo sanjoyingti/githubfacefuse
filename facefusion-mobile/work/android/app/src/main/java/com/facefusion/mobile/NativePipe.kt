@@ -102,12 +102,12 @@ object NativePipe {
      * See ffpipe::Config for what each one does.
      */
     @JvmStatic external fun setQuality(
-        occlusion: Boolean, region: Boolean, keepMouth: Boolean,
+        occlusion: Boolean, region: Boolean, keepMouth: Boolean, keepLips: Boolean,
         poseFadeStart: Float, smooth: Boolean, recover: Boolean, rotated: Boolean,
     )
 
     fun pushQuality(opts: SwapOptions) {
-        setQuality(opts.occlusionMask, opts.regionMask, opts.keepMouth,
+        setQuality(opts.occlusionMask, opts.regionMask, opts.keepMouth, opts.keepLips,
                    if (opts.poseFade) opts.poseFadeStart else 90f,
                    opts.motionSmooth, opts.motionSmooth, opts.detectRotated)
     }

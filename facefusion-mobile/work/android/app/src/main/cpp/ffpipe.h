@@ -57,6 +57,10 @@ struct Config {
   // original. keepMouth implies the parser runs.
   bool regionMask = false;
   bool keepMouth = false;
+  // Also leaves the LIPS (BiSeNet upper/lower lip) original, so the whole mouth is as filmed.
+  // For eating: the swapper draws lips in the shape of the source photo's mouth, which does
+  // not fit a mouth wrapped around something. Implies the parser runs.
+  bool keepLips = false;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;

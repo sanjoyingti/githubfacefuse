@@ -12,6 +12,8 @@
     <string name="opt_region_hint">Swaps only skin, eyes, brows, nose and lips (BiSeNet). Hair, ears and neck stay original.</string>
     <string name="opt_keep_mouth">Keep original mouth inside</string>
     <string name="opt_keep_mouth_hint">Teeth, tongue and whatever is in the mouth stay as filmed. Best for eating and talking.</string>
+    <string name="opt_keep_lips">Keep original lips too</string>
+    <string name="opt_keep_lips_hint">The lips also stay as filmed, so the whole mouth is the real one. Most natural while eating or with the mouth wide open; the lips are then the original person\'s, not the source face\'s.</string>
     <string name="opt_pose_fade">Fade out on big head turns</string>
     <string name="opt_pose_fade_hint">When the head turns too far left, right, up or down for the swapper, the original face shows through smoothly instead of a stretched one.</string>
     <string name="opt_pose_fade_start">Start fading at</string>

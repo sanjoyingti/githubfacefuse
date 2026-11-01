@@ -205,6 +205,8 @@ data class SwapOptions(
     val regionMask: Boolean = false,
     // Leave the mouth interior (teeth, tongue, food) original.
     val keepMouth: Boolean = false,
+    // Leave the lips original too, so the whole mouth is as filmed.
+    val keepLips: Boolean = false,
     // Fade the swap out on extreme head turns instead of stretching the face.
     val poseFade: Boolean = true,
     val poseFadeStart: Float = 60f,
@@ -258,6 +260,7 @@ data class SwapOptions(
             .putBoolean(K_OCCLUSION, occlusionMask)
             .putBoolean(K_REGION, regionMask)
             .putBoolean(K_KEEP_MOUTH, keepMouth)
+            .putBoolean(K_KEEP_LIPS, keepLips)
             .putBoolean(K_POSE_FADE, poseFade)
             .putFloat(K_POSE_FADE_START, poseFadeStart)
             .putBoolean(K_MOTION_SMOOTH, motionSmooth)
@@ -289,6 +292,7 @@ data class SwapOptions(
         private const val K_OCCLUSION = "occlusion_mask"
         private const val K_REGION = "region_mask"
         private const val K_KEEP_MOUTH = "keep_mouth"
+        private const val K_KEEP_LIPS = "keep_lips"
         private const val K_POSE_FADE = "pose_fade"
         private const val K_POSE_FADE_START = "pose_fade_start"
         private const val K_MOTION_SMOOTH = "motion_smooth"
@@ -362,6 +366,7 @@ data class SwapOptions(
                 occlusionMask = p.getBoolean(K_OCCLUSION, d.occlusionMask),
                 regionMask = p.getBoolean(K_REGION, d.regionMask),
                 keepMouth = p.getBoolean(K_KEEP_MOUTH, d.keepMouth),
+                keepLips = p.getBoolean(K_KEEP_LIPS, d.keepLips),
                 poseFade = p.getBoolean(K_POSE_FADE, d.poseFade),
                 poseFadeStart = p.getFloat(K_POSE_FADE_START, d.poseFadeStart).coerceIn(30f, 85f),
                 motionSmooth = p.getBoolean(K_MOTION_SMOOTH, d.motionSmooth),
