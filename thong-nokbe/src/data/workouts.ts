@@ -66,7 +66,3 @@ export function getWorkoutDay(key: DayKey): WorkoutDay | null {
 export function exerciseOfTheDay(day: WorkoutDay, d = new Date()): Exercise {
   return day.exercises[weekOfYear(d) % day.exercises.length];
 }
-
-export function youtubeSearchUrl(name: string) {
-  return `https://www.youtube.com/results?search_query=${encodeURIComponent('how to do ' + name + ' proper form')}`;
-}

@@ -6,7 +6,7 @@ The five tabs at the bottom are **Exercise · Chat · Call · Attendance · Fees
 
 | Tab | What it does |
 | --- | --- |
-| **Exercise** | 20 exercise videos for each day: **Mon chest · Tue biceps · Wed back · Thu triceps · Fri shoulders · Sat legs** (Sunday is rest). Each video has a play button and plays inside the app (YouTube). The top card shows a **"NEW TODAY"** exercise of the day, which rotates every week. |
+| **Exercise** | 20 exercise videos for each day: **Mon chest · Tue biceps · Wed back · Thu triceps · Fri shoulders · Sat legs** (Sunday is rest). Videos play in the app's own simple player (big play/pause, ±10 s, 🐢 slow motion, previous/next, **Mark as done** with a daily progress bar); nothing opens outside the app. Videos stream from YouTube, so they need internet. The top card shows a **"NEW TODAY"** exercise of the day, which rotates every week. |
 | **Chat** | WhatsApp-style groups and 1:1 chats. Create a group, then add members **from phone contacts or by typing a number**. The creator is the **admin** and can add or remove members and **make other members admin** (or dismiss them). Messages are real-time over the internet. |
 | **Call** | Call **any app user** one-to-one, or call a **whole gym group** at once (everyone in it rings). Every call offers 📞 **Voice** or 📹 **Video**. Video calls are live, with camera on/off and front/back flip; voice calls have mute and a speaker button. The call buttons are also in every chat's top bar and on the group info page. |
 | **Attendance** | Only **admins** can mark each member **Present / Absent** for a day. **Every member can view** attendance with a **Day / Week / Month** switch: Week and Month rank everyone by days they came, and tapping a name shows their calendar. |

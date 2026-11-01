@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { FlatList, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { DAY_EMOJI, WORKOUT_DAYS, exerciseOfTheDay, getWorkoutDay, todayKey, type Exercise, type WorkoutDayKey } from '../../data/workouts';
-import { VideoPlayerModal } from '../../components/VideoPlayerModal';
+import { useDoneToday } from '../../lib/workoutProgress';
 import { formatDayLong } from '../../lib/dates';
 import { colors } from '../../theme';
 
@@ -12,7 +13,8 @@ export default function Workouts() {
   const today = todayKey();
   const isRestDay = today === 'sunday';
   const [selected, setSelected] = useState<WorkoutDayKey>(isRestDay ? 'monday' : (today as WorkoutDayKey));
-  const [playing, setPlaying] = useState<Exercise | null>(null);
+  const done = useDoneToday();
+  const open = (e: Exercise) => router.push({ pathname: '/play', params: { day: e.day, i: String(Number(e.id.split('-')[1])) } });
   const day = getWorkoutDay(selected)!;
   const featured = useMemo(() => (isRestDay ? null : exerciseOfTheDay(getWorkoutDay(today)!)), [today, isRestDay]);
 
@@ -27,7 +29,7 @@ export default function Workouts() {
         </View>
       ) : (
         featured && (
-          <Pressable style={styles.hero} onPress={() => setPlaying(featured)}>
+          <Pressable style={styles.hero} onPress={() => open(featured)}>
             <View style={styles.newBadge}>
               <Text style={styles.newBadgeText}>NEW TODAY</Text>
             </View>
@@ -57,7 +59,17 @@ export default function Workouts() {
       <Text style={styles.sectionTitle}>
         {DAY_EMOJI[day.key]} {day.label}: {day.title}
       </Text>
-      <Text style={styles.sectionSub}>Tap any exercise to watch how to do it</Text>
+      <Text style={styles.sectionSub}>Tap any exercise to watch how to do it, right here in the app</Text>
+      {selected === today && (
+        <View style={styles.progressCard}>
+          <Text style={styles.progressText}>
+            ✅ {day.exercises.filter((e) => done.has(e.id)).length} of {day.exercises.length} done today
+          </Text>
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${(day.exercises.filter((e) => done.has(e.id)).length / day.exercises.length) * 100}%` }]} />
+          </View>
+        </View>
+      )}
     </View>
   );
 
@@ -69,7 +81,7 @@ export default function Workouts() {
         ListHeaderComponent={header}
         contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
         renderItem={({ item, index }) => (
-          <Pressable style={styles.row} onPress={() => setPlaying(item)}>
+          <Pressable style={[styles.row, done.has(item.id) && styles.rowDone]} onPress={() => open(item)}>
             <View style={styles.thumbWrap}>
               {item.videoId ? (
                 <Image source={{ uri: thumb(item.videoId) }} style={styles.thumb} />
@@ -81,7 +93,10 @@ export default function Workouts() {
               </View>
             </View>
             <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={styles.num}>#{index + 1}</Text>
+              <Text style={styles.num}>
+                #{index + 1}
+                {done.has(item.id) ? '  ✅ Done' : ''}
+              </Text>
               <Text style={styles.name}>{item.name}</Text>
               {item.channel ? <Text style={styles.channel} numberOfLines={1}>{item.channel}</Text> : null}
             </View>
@@ -92,12 +107,16 @@ export default function Workouts() {
           </Pressable>
         )}
       />
-      <VideoPlayerModal exercise={playing} onClose={() => setPlaying(null)} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  progressCard: { backgroundColor: '#fff', borderRadius: 14, padding: 12, marginBottom: 12 },
+  progressText: { fontWeight: '900', color: colors.text, fontSize: 16 },
+  progressTrack: { height: 10, borderRadius: 5, backgroundColor: colors.paidBg, marginTop: 8, overflow: 'hidden' },
+  progressFill: { height: 10, backgroundColor: colors.paid },
+  rowDone: { backgroundColor: colors.paidBg },
   date: { color: colors.muted, fontWeight: '600', marginBottom: 10 },
   hero: { backgroundColor: colors.header, borderRadius: 20, padding: 16, marginBottom: 16 },
   heroLabel: { color: '#a7f3d0', fontWeight: '800', marginBottom: 10, fontSize: 15 },

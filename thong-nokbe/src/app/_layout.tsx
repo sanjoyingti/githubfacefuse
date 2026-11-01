@@ -38,6 +38,7 @@ function RootNavigator() {
         <Stack.Screen name="new-group" options={{ title: 'New group' }} />
         <Stack.Screen name="new-chat" options={{ title: 'New chat' }} />
         <Stack.Screen name="profile" options={{ title: 'Me' }} />
+        <Stack.Screen name="play" options={{ title: 'Exercise', headerStyle: { backgroundColor: '#0b0f0d' } }} />
         <Stack.Screen name="call/[id]" options={{ headerShown: false, presentation: 'fullScreenModal', gestureEnabled: false }} />
       </Stack.Protected>
     </Stack>
