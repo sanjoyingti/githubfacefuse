@@ -12,7 +12,7 @@ name: Thong Nokbe Gym APK
 
 on:
   push:
-    paths: ['thong-nokbe/**', '.github/workflows/thong-nokbe-apk.yml']
+    paths: ['thong-nokbe/**', '!thong-nokbe/**/*.md', '.github/workflows/thong-nokbe-apk.yml']
   workflow_dispatch:
 
 permissions:

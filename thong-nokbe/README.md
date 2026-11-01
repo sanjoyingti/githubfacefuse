@@ -36,6 +36,8 @@ Members **must install the app** to be in a group. You can add someone who doesn
   The tests are in `rules-tests/` and run against the Firestore emulator.
 * **Videos**: `src/data/exerciseList.json` holds the 120 exercises. `scripts/fetch-exercise-videos.mjs` finds an embeddable YouTube tutorial for each one (all 120 are different videos) and writes `src/data/exerciseVideos.json`. Run `node scripts/fetch-exercise-videos.mjs --force` any time to refresh them.
 
+**New to this? Follow the plain-language [SETUP-GUIDE.md](SETUP-GUIDE.md) instead.**
+
 ## Quick start: connect the app to Firebase (about 15 minutes)
 
 The downloadable APK only signs in once it's connected to **your** Firebase project. Until then it shows "Setup not finished".
