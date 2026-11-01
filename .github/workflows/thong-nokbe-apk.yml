@@ -4,7 +4,7 @@
 # Secrets (repo Settings → Secrets and variables → Actions):
 #   GOOGLE_SERVICES_JSON – full contents of google-services.json from your Firebase project.
 #                          Without it a stand-in config is used: the APK installs and opens,
-#                          but phone sign-in, chat, calls, attendance and fees won't work.
+#                          but Google sign-in, chat, calls, attendance and fees won't work.
 #   AGORA_APP_ID         – Agora App ID for voice/video calls.
 #
 # Runs on every push that changes thong-nokbe/ (or this file), or manually from the Actions tab.

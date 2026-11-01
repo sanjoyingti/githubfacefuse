@@ -37,10 +37,18 @@ function ChatRow({ chat, meUid }: { chat: Chat; meUid: string }) {
 
 export default function Chats() {
   const me = useMe();
-  const { chats, loading } = useChats();
+  const { chats, loading, waitingGroups } = useChats();
   if (loading) return <Loading />;
   return (
     <View style={{ flex: 1, backgroundColor: '#fff' }}>
+      {waitingGroups.map((g) => (
+        <View key={g.id} style={styles.waiting}>
+          <Text style={{ fontSize: 22 }}>⏳</Text>
+          <Text style={styles.waitingText}>
+            You asked to join <Text style={{ fontWeight: '900' }}>{g.name}</Text>. Waiting for the group admin to approve.
+          </Text>
+        </View>
+      ))}
       <FlatList
         data={chats}
         keyExtractor={(c) => c.id}
@@ -74,6 +82,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 17, fontWeight: '800', color: colors.text, flex: 1, marginRight: 8 },
   time: { fontSize: 12, color: colors.muted },
   preview: { color: colors.muted, marginTop: 3, flex: 1, fontSize: 15 },
+  waiting: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#FEF3C7', margin: 10, marginBottom: 0, padding: 12, borderRadius: 14 },
+  waitingText: { flex: 1, color: '#92400E', fontSize: 15 },
   sep: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: 80 },
   fabs: { position: 'absolute', right: 16, bottom: 20, alignItems: 'flex-end', gap: 12 },
   fab: { flexDirection: 'row', gap: 8, height: 56, paddingHorizontal: 20, borderRadius: 28, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', elevation: 4, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 6, shadowOffset: { width: 0, height: 3 } },

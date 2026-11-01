@@ -4,7 +4,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
-import { cancelInvite, dismissAdmin, getOrCreateDirectChat, leaveGroup, makeAdmin, removeMember, updateGroupInfo } from '../../lib/chats';
+import { approveJoin, cancelInvite, dismissAdmin, getOrCreateDirectChat, leaveGroup, makeAdmin, rejectJoin, removeMember, updateGroupInfo } from '../../lib/chats';
 import { hasApp } from '../../lib/calls';
 import { useCaller } from '../../components/useCaller';
 import { displayName, useUsers } from '../../lib/users';
@@ -32,7 +32,7 @@ export default function GroupInfo() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const me = useMe();
   const chat = useChat(id);
-  const users = useUsers(chat?.members ?? []);
+  const users = useUsers([...(chat?.members ?? []), ...(chat?.joinRequests ?? [])]);
   const { callChat, callUser } = useCaller();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
@@ -138,6 +138,32 @@ export default function GroupInfo() {
           </Pressable>
         ))}
       </View>
+
+      {iAmAdmin && (chat.joinRequests?.length ?? 0) > 0 && (
+        <View style={[styles.section, { borderLeftWidth: 5, borderColor: colors.accent }]}>
+          <Text style={styles.sectionTitle}>🙋 Waiting for your approval</Text>
+          {chat.joinRequests!.map((uid) => {
+            const u = users[uid];
+            if (!u) return null;
+            return (
+              <View key={uid} style={styles.member}>
+                <Avatar name={u.name} size={42} />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.memberName}>{u.name}</Text>
+                  <Text style={styles.memberSub}>{formatPhone(u.phone)}{u.email ? ` · ${u.email}` : ''}</Text>
+                </View>
+                <Button small title="✓ Add" onPress={() => run(() => approveJoin(chat, me, u))} />
+                <Pressable onPress={() => run(() => rejectJoin(chat, u))} hitSlop={8} style={{ marginLeft: 12 }}>
+                  <Ionicons name="close-circle" size={28} color={colors.unpaid} />
+                </Pressable>
+              </View>
+            );
+          })}
+          <Text style={[styles.memberSub, { paddingHorizontal: 16, paddingBottom: 10 }]}>
+            Only add people you know. Phone numbers aren't checked by SMS in the free version.
+          </Text>
+        </View>
+      )}
 
       {chat.pendingPhones.length > 0 && (
         <View style={styles.section}>

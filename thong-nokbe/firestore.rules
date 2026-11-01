@@ -3,7 +3,11 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function me() { return request.auth.uid; }
-    function myPhone() { return request.auth.token.phone_number; }
+    // Free version: the phone number comes from the user's registered profile (claimed once, see phoneIndex).
+    function myPhone() {
+      let p = /databases/$(database)/documents/users/$(request.auth.uid);
+      return exists(p) ? get(p).data.phone : '';
+    }
     function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
     function chatData(chatId) { return get(/databases/$(database)/documents/chats/$(chatId)).data; }
     function isMemberOf(chatId) { return signedIn() && me() in chatData(chatId).members; }
@@ -13,11 +17,22 @@ service cloud.firestore {
     }
 
     // ---- Users: everyone signed in can look people up (to match contacts), only you edit yourself.
+    // A phone number can be registered by one account only (phoneIndex), and can't be changed afterwards.
     match /users/{uid} {
       allow read: if signedIn();
-      allow create, update: if signedIn() && me() == uid
-        && request.resource.data.phone == myPhone();
+      allow create: if signedIn() && me() == uid
+        && request.resource.data.phone is string
+        && request.resource.data.phone.matches('^[+][0-9]{8,15}$')
+        && getAfter(/databases/$(database)/documents/phoneIndex/$(request.resource.data.phone)).data.uid == me();
+      allow update: if signedIn() && me() == uid
+        && request.resource.data.phone == resource.data.phone;
       allow delete: if false;
+    }
+
+    match /phoneIndex/{phone} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == me() && phone.matches('^[+][0-9]{8,15}$');
+      allow update, delete: if false;
     }
 
     // ---- Chats (groups and 1:1)
@@ -26,6 +41,7 @@ service cloud.firestore {
         resource == null
         || me() in resource.data.members
         || myPhone() in resource.data.pendingPhones
+        || me() in resource.data.get('joinRequests', [])
       );
 
       allow create: if signedIn() && (
@@ -55,11 +71,10 @@ service cloud.firestore {
           && request.resource.data.members.toSet() == resource.data.members.toSet().difference([me()].toSet())
           && request.resource.data.admins.toSet() == resource.data.admins.toSet().difference([me()].toSet()))
         ||
-        // An invited phone number joins after installing the app.
+        // Someone whose number was invited asks to join; a group admin must approve.
         (resource.data.type == 'group' && myPhone() in resource.data.pendingPhones
-          && changed().hasOnly(['members', 'pendingPhones'])
-          && request.resource.data.members.toSet() == resource.data.members.toSet().union([me()].toSet())
-          && request.resource.data.pendingPhones.toSet() == resource.data.pendingPhones.toSet().difference([myPhone()].toSet()))
+          && changed().hasOnly(['joinRequests'])
+          && request.resource.data.joinRequests.toSet() == resource.data.get('joinRequests', []).toSet().union([me()].toSet()))
       );
 
       allow delete: if signedIn() && resource.data.type == 'group' && me() in resource.data.admins;

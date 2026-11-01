@@ -1,5 +1,3 @@
 {
-  "firestore": { "rules": "firestore.rules", "indexes": "firestore.indexes.json" },
-  "storage": { "rules": "storage.rules" },
-  "functions": [{ "source": "functions", "codebase": "default", "predeploy": ["npm --prefix \"$RESOURCE_DIR\" run build"] }]
+  "firestore": { "rules": "firestore.rules", "indexes": "firestore.indexes.json" }
 }

@@ -1,21 +1,25 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, signOut, type User } from '@react-native-firebase/auth';
-import { doc, onSnapshot, serverTimestamp, setDoc } from '@react-native-firebase/firestore';
+import { doc, getDoc, onSnapshot, serverTimestamp, updateDoc, writeBatch } from '@react-native-firebase/firestore';
 import { auth, db } from '../lib/firebase';
-import { joinPendingGroups } from '../lib/chats';
-import { registerForPush, unregisterPush } from '../lib/push';
-import { markActivated, takePendingName } from '../lib/registration';
+import { requestInvitedGroups } from '../lib/chats';
+import { signOutGoogle } from '../lib/googleAuth';
+import { setupNotifications } from '../lib/localNotify';
 import type { UserProfile } from '../lib/types';
 
 interface AuthState {
   user: User | null;
   profile: UserProfile | null;
   initializing: boolean;
-  saveProfile: (name: string, about?: string) => Promise<void>;
+  /** First-time registration: claims the phone number (one account per number) and creates the profile. */
+  register: (name: string, phone: string) => Promise<void>;
+  updateProfileInfo: (name: string, about: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
 const Ctx = createContext<AuthState | null>(null);
+
+export class PhoneTakenError extends Error {}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -43,26 +47,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return onSnapshot(
       doc(db, 'users', user.uid),
       (s) => {
-        if (!s.exists()) {
-          // New number that just verified its SMS code: activate the account with the registered name.
-          const pending = takePendingName();
-          if (pending && user.phoneNumber) {
-            markActivated();
-            setDoc(doc(db, 'users', user.uid), {
-              name: pending,
-              about: '',
-              phone: user.phoneNumber,
-              appInstalled: true,
-              activatedAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            }).catch((e) => {
-              console.warn('activation failed', e);
-              setProfile(null);
-              setProfileReady(true);
-            });
-            return; // the snapshot fires again once the profile exists
-          }
-        }
         setProfile(s.exists() ? ({ uid: user.uid, ...(s.data() as Omit<UserProfile, 'uid'>) } as UserProfile) : null);
         setProfileReady(true);
       },
@@ -70,35 +54,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     );
   }, [user]);
 
-  // Once signed in with a profile: register for push and join any groups that invited this number.
+  // Once registered: mark "has the app", allow notifications, and ask to join groups that invited this number.
   const hasProfile = !!profile;
   useEffect(() => {
     if (!user || !profile) return;
-    let unsub: (() => void) | undefined;
-    registerForPush(user.uid).then((u) => (unsub = u));
-    joinPendingGroups(profile).catch((e) => console.warn('joinPendingGroups', e));
-    return () => unsub?.();
+    if (profile.appInstalled === false) updateDoc(doc(db, 'users', user.uid), { appInstalled: true }).catch(() => {});
+    setupNotifications();
+    requestInvitedGroups(profile).catch((e) => console.warn('requestInvitedGroups', e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.uid, hasProfile]);
 
-  const saveProfile = async (name: string, about?: string) => {
-    if (!user?.phoneNumber) throw new Error('Not signed in with a phone number');
-    await setDoc(
-      doc(db, 'users', user.uid),
-      { name: name.trim(), about: about?.trim() ?? '', phone: user.phoneNumber, appInstalled: true, updatedAt: serverTimestamp() },
-      { merge: true },
-    );
+  const register = async (name: string, phone: string) => {
+    if (!user) throw new Error('Not signed in');
+    const phoneRef = doc(db, 'phoneIndex', phone);
+    const existing = await getDoc(phoneRef);
+    if (existing.exists() && existing.data()?.uid !== user.uid) throw new PhoneTakenError('This phone number is already registered by another account.');
+    const batch = writeBatch(db);
+    if (!existing.exists()) batch.set(phoneRef, { uid: user.uid, createdAt: serverTimestamp() });
+    batch.set(doc(db, 'users', user.uid), {
+      name: name.trim(),
+      about: '',
+      phone,
+      email: user.email ?? null,
+      appInstalled: true,
+      activatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    await batch.commit();
+  };
+
+  const updateProfileInfo = async (name: string, about: string) => {
+    if (!user) return;
+    await updateDoc(doc(db, 'users', user.uid), { name: name.trim(), about: about.trim(), updatedAt: serverTimestamp() });
   };
 
   const logout = async () => {
-    if (user) await unregisterPush(user.uid);
+    // This person can't be called until they sign in again.
+    if (user && profile) await updateDoc(doc(db, 'users', user.uid), { appInstalled: false }).catch(() => {});
+    await signOutGoogle();
     await signOut(auth);
   };
 
   return (
-    <Ctx.Provider value={{ user, profile, initializing: !authReady || !profileReady, saveProfile, logout }}>
-      {children}
-    </Ctx.Provider>
+    <Ctx.Provider value={{ user, profile, initializing: !authReady || !profileReady, register, updateProfileInfo, logout }}>{children}</Ctx.Provider>
   );
 }
 

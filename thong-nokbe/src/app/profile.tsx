@@ -8,7 +8,7 @@ import { APP_NAME, colors } from '../theme';
 
 export default function Profile() {
   const me = useMe();
-  const { saveProfile, logout } = useAuth();
+  const { updateProfileInfo, logout } = useAuth();
   const { groups } = useChats();
   const [name, setName] = useState(me.name);
   const [about, setAbout] = useState(me.about ?? '');
@@ -32,7 +32,7 @@ export default function Profile() {
           onPress={async () => {
             setBusy(true);
             try {
-              await saveProfile(name, about);
+              await updateProfileInfo(name, about);
             } catch (e: any) {
               Alert.alert('Could not save', e?.message ?? String(e));
             } finally {

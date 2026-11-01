@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { onSnapshot } from '@react-native-firebase/firestore';
 import { ChannelProfileType, ClientRoleType, createAgoraRtcEngine, RtcSurfaceView, type IRtcEngine } from 'react-native-agora';
 import { useMe } from '../../context/AuthProvider';
-import { agoraUid, callRef, getAgoraToken, leaveCall } from '../../lib/calls';
+import { agoraUid, callRef, leaveCall } from '../../lib/calls';
 import { useUsers } from '../../lib/users';
 import { AGORA_APP_ID } from '../../config';
 import { colors } from '../../theme';
@@ -78,14 +78,9 @@ export default function CallScreen() {
         );
       }
       const myUid = agoraUid(me.uid);
-      let token: string;
-      try {
-        token = await getAgoraToken(id, myUid); // server only gives this to people in the call
-      } catch (e: any) {
-        Alert.alert("Can't join the call", e?.message ?? String(e));
-        hangUp();
-        return;
-      }
+      // Free version: Agora project in "Testing mode (App ID)", so no server-issued token is needed.
+      // The room name is the call's random 20-character id, which only the people in the call can read.
+      const token = '';
       if (cancelled) return;
       const e = createAgoraRtcEngine();
       engine.current = e;

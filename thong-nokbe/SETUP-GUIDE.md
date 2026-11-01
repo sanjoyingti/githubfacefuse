@@ -1,121 +1,111 @@
-# Thong Nokbe Gym: easy setup guide (no coding needed)
+# Thong Nokbe Gym: free setup guide (no card, no coding)
 
-Do this **once, on a computer** (it's easier than on a phone). It takes about 30 minutes.
-You need: your Gmail account, a debit/credit card (for Google's pay-as-you-go plan), and your GitHub login.
+This version is **100% free**. You don't need a credit or debit card.
+Do this **once, on a computer**. It takes about 25 minutes. You need your Gmail and GitHub logins.
 
-Everything except video/voice calling runs on **Google** (Firebase is Google's app service).
-Calls use **Agora**, which has a free monthly allowance, because Google has no ready-made calling service for apps.
+| Part | Free service | Used for |
+|---|---|---|
+| A | **Firebase (Google), free "Spark" plan** | Google login, chat, attendance, fees |
+| B | **Agora, 10,000 free minutes every month** | Voice and video calls |
+| C | **GitHub** | Builds the app (APK) for you |
+| D | **Google Cloud Shell** | Uploads the security rules (one time) |
 
 ---
 
-## Part A: Firebase (Google) for login by SMS, chat, attendance and fees
+## Part A: Firebase (Google)
 
 **1. Create the project**
-1. Open **https://console.firebase.google.com** and sign in with your Gmail.
-2. Click **Create a project** (or **Add project**).
-3. Name it **thong-nokbe-gym** → **Continue**.
-4. Turn **Google Analytics off** → **Create project** → **Continue**.
+1. Open **https://console.firebase.google.com** and sign in with Gmail.
+2. **Create a project** → name `thong-nokbe-gym` → **Continue**.
+3. Turn **Google Analytics off** → **Create project** → **Continue**.
+4. Stay on the free **Spark** plan. **Don't** click Upgrade.
 
-**2. Turn on the pay-as-you-go plan (needed for SMS codes)**
-1. At the bottom-left you'll see **Spark**. Click **Upgrade**.
-2. Choose **Blaze**, then add your card.
-3. When asked, set a **budget alert** (for example ₹200), so you get an email if costs go up.
-   A small gym normally pays nothing or very little. Each SMS code costs a small amount.
-
-**3. Turn on login by phone number**
+**2. Turn on Google login**
 1. Left menu: **Build → Authentication → Get started**.
-2. Tab **Sign-in method** → click **Phone** → switch **Enable** on.
-3. (Recommended) Open **Phone numbers for testing** → add your own number, e.g. `+91 70023 97371`, with code `123456`.
-   That number can then log in with code 123456 without any SMS (free, good for testing).
-4. Click **Save**.
+2. **Sign-in method** → **Google** → switch **Enable** on.
+3. Pick your Gmail as the **support email** → **Save**.
 
-**4. Create the database**
-1. Left menu: **Build → Firestore Database → Create database**.
-2. Location: **asia-south1 (Mumbai)** → **Next**.
-3. Choose **Start in production mode** → **Create**.
+**3. Create the database**
+1. **Build → Firestore Database → Create database**.
+2. Location **asia-south1 (Mumbai)** → **Next** → **Start in production mode** → **Create**.
 
-**5. Create file storage (for the UPI QR picture)**
-1. Left menu: **Build → Storage → Get started**.
-2. Choose **production mode**, the same location → **Done**.
-
-**6. Connect the Android app**
-1. Click the **⚙️ gear (top-left) → Project settings**.
-2. Scroll to **Your apps** → click the **Android** icon.
-3. Fill in:
-   * **Android package name:** `com.thongnokbe.app`
+**4. Connect the Android app**
+1. **⚙️ (top-left) → Project settings** → scroll to **Your apps** → **Android** icon.
+2. Fill in:
+   * **Package name:** `com.thongnokbe.app`
    * **App nickname:** `Thong Nokbe Gym`
-   * **Debug signing certificate SHA-1:** `5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25`
-4. Click **Register app** → **Download google-services.json**. Keep this file.
-5. Click **Next → Next → Continue to console**.
-6. Back in **Project settings → Your apps**, under the Android app click **Add fingerprint** and paste the SHA-256:
+   * **SHA-1:** `5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25`
+3. **Register app** → click **Next / Continue to console** (you'll download the file in step 5).
+4. Back in **Project settings → Your apps**, under the Android app, click **Add fingerprint** → paste the SHA-256:
    `FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C` → **Save**.
-7. Note your **Project ID** shown at the top of this page (e.g. `thong-nokbe-gym-1a2b3`). You'll need it in Part D.
+
+**5. Download the app's connection file**
+1. Still in **Project settings → Your apps**, click **google-services.json** to download it.
+   *(Download it **after** steps 2 and 4. Google login only works with a file downloaded after turning on Google sign-in and adding SHA-1.)*
+2. Note your **Project ID** shown at the top of this page (e.g. `thong-nokbe-gym-1a2b3`).
 
 ---
 
-## Part B: Agora for voice and video calls (free monthly minutes)
+## Part B: Agora for voice and video calls
 
-1. Open **https://console.agora.io** and sign up (Google sign-in works).
+1. Open **https://console.agora.io** → sign up (Google login works). No card is needed.
 2. **Projects → Create a new project** → name `Thong Nokbe Gym`.
-3. Authentication: choose **Secured mode: APP ID + Token** → **Submit**.
-4. Copy two values and keep them private:
-   * **App ID**
-   * **Primary Certificate** (click the eye/copy icon)
+3. Authentication: choose **Testing mode: APP ID** → **Submit**.
+4. Copy the **App ID**.
 
 ---
 
-## Part C: Put the keys into GitHub, so it builds the full app
+## Part C: GitHub builds the app
 
-1. Open **https://github.com/sanjoyingti/githubfacefuse** → **Settings** (top tabs).
-2. Left menu: **Secrets and variables → Actions → New repository secret**.
-3. Add secret 1:
+1. Open **https://github.com/sanjoyingti/githubfacefuse** → **Settings** → **Secrets and variables → Actions**.
+2. **New repository secret**:
    * Name: `GOOGLE_SERVICES_JSON`
-   * Value: open **google-services.json** with Notepad (Windows) or TextEdit (Mac), press **Ctrl+A** then **Ctrl+C**, and paste here.
-   * **Add secret**.
-4. Add secret 2:
+   * Value: open **google-services.json** with Notepad → **Ctrl+A**, **Ctrl+C** → paste → **Add secret**.
+3. **New repository secret**:
    * Name: `AGORA_APP_ID`
-   * Value: your Agora **App ID** → **Add secret**.
-5. Tell Claude "secrets added". Claude starts the build and sends you the download link (about 15 minutes).
+   * Value: your Agora App ID → **Add secret**.
+4. Tell Claude **"secrets added"**. Claude starts the build and sends you the download link (about 15 minutes).
 
 ---
 
-## Part D: Upload the server part (one time, copy & paste)
+## Part D: Upload the security rules (one time, copy & paste)
 
-This uploads the security rules (who may see and change what) and the small server programs (call passes, notifications, fee reminders).
-You do it in **Google Cloud Shell**, a terminal that runs in your browser. Nothing gets installed on your computer.
+These rules decide who can see and change what. For example, only admins mark attendance.
+Until they're uploaded, the app can't read or save anything.
 
-1. Open **https://shell.cloud.google.com** with the same Gmail. Wait until you see a black terminal with a `$` prompt.
-2. Copy this whole block, paste it into the terminal, and press **Enter**:
+1. Open **https://shell.cloud.google.com** with the same Gmail. Wait for the black terminal with a `$`.
+2. Paste this and press **Enter**:
    ```bash
    git clone -b ccr-a6556477-keal6c https://github.com/sanjoyingti/githubfacefuse.git
    cd githubfacefuse/thong-nokbe
-   npm install -g firebase-tools
-   (cd functions && npm install)
-   firebase login --no-localhost
+   npx -y firebase-tools@latest login --no-localhost
    ```
-3. The last command shows a link. Open it, choose your Gmail, **Allow**, copy the code it shows, paste it back into the terminal, and press **Enter**.
-4. Paste this, **replacing `YOUR-PROJECT-ID`** with the Project ID from Part A step 6:
+   Open the link it shows → choose your Gmail → **Allow** → copy the code → paste it in the terminal → **Enter**.
+3. Paste this, **replacing `YOUR-PROJECT-ID`** (Part A step 5), and press **Enter**:
    ```bash
-   firebase use YOUR-PROJECT-ID
-   firebase functions:secrets:set AGORA_APP_CERTIFICATE
+   npx -y firebase-tools@latest deploy --only firestore --project YOUR-PROJECT-ID
    ```
-   When asked, paste your **Agora Primary Certificate** and press **Enter**.
-5. Paste this and press **Enter**:
-   ```bash
-   firebase deploy --only firestore,storage,functions
-   ```
-   * If it asks for **AGORA_APP_ID**, paste your Agora App ID.
-   * If it asks to **enable APIs** or to **allow cross-service rules**, type `y` and press **Enter**.
-   * It takes 3–5 minutes. At the end you'll see **Deploy complete!**
+   Wait for **Deploy complete!** This is free on the Spark plan.
 
 ---
 
-## Part E: Install and register
+## Part E: Install and use
 
-1. On your Android phone, open the APK link Claude sends you → download → tap it → allow **Install unknown apps** → **Install**.
-2. Open **Thong Nokbe Gym** → **📝 Register** → type your name and phone number → **Send activation code**.
-3. Type the 6-digit code from the SMS (or `123456` for your test number) → **Activate my account ✅**.
-4. Go to **Chat → New group** to create your gym group and add members. You become the group admin.
-5. In **Fees**, tap **Add your UPI ID** to set your UPI ID and monthly fee.
+1. Open the APK link on your Android phone → download → tap it → allow **Install unknown apps** → **Install**.
+2. Open **Thong Nokbe Gym** → **Continue with Google** → pick your Gmail.
+3. Type your **name** and **phone number** → **Activate my account ✅**.
+4. **Chat → New group** → name your gym group and add members from contacts or by number. You're the admin.
+5. **Fees → Add your UPI ID** → enter your UPI ID and monthly fee. The app makes your UPI QR code automatically.
 
-Share the same APK link with your members. They install it, register, and you add them to the group.
+**Members:** they install the same APK, tap **Continue with Google**, and register with their phone number.
+* If you already added them as app users, they're in the group straight away.
+* If you invited their number before they registered, you'll see **"🙋 Waiting for your approval"** in **Group info**. Tap **✓ Add**.
+  (In the free version numbers aren't checked by SMS, so only approve people you know.)
+
+---
+
+## What's different from the paid version
+* Login is with **Google** instead of an SMS code.
+* Message and call alerts appear while the app is open or running in the background. If the app is fully closed, nothing pops up until it's opened.
+* The fee reminder is an alarm on each phone on the **1st of every month at 9 AM**.
+* Calls use Agora's free **Testing mode**. Each call room has a long random name only the people in that call can see.

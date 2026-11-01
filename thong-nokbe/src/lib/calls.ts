@@ -1,6 +1,5 @@
 import { addDoc, arrayRemove, arrayUnion, collection, doc, getDoc, runTransaction, serverTimestamp, updateDoc } from '@react-native-firebase/firestore';
-import { httpsCallable } from '@react-native-firebase/functions';
-import { db, functions } from './firebase';
+import { db } from './firebase';
 import { getOrCreateDirectChat, sendMessage } from './chats';
 import type { Call, CallKind, Chat, UserProfile } from './types';
 import { APP_NAME } from '../theme';
@@ -81,15 +80,4 @@ export async function leaveCall(callId: string, me: UserProfile) {
 export async function getCall(callId: string): Promise<Call | null> {
   const s = await getDoc(callRef(callId));
   return s.exists() ? ({ id: s.id, ...(s.data() as Omit<Call, 'id'>) } as Call) : null;
-}
-
-/**
- * Gets a one-call pass from our server. The server only hands it to people who are in this call,
- * so nobody outside the app (or outside the call) can join the room.
- */
-export async function getAgoraToken(channel: string, uid: number): Promise<string> {
-  const fn = httpsCallable<{ channel: string; uid: number }, { token: string }>(functions, 'agoraToken');
-  const res = await fn({ channel, uid });
-  if (!res.data?.token) throw new Error('Calling is not set up on the server yet.');
-  return res.data.token;
 }

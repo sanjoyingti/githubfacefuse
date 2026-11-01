@@ -27,7 +27,7 @@ function RootNavigator() {
         <Stack.Screen name="(auth)/login" options={{ headerShown: false }} />
       </Stack.Protected>
       <Stack.Protected guard={signedIn && !profile}>
-        <Stack.Screen name="(auth)/profile" options={{ title: 'Your profile', headerBackVisible: false }} />
+        <Stack.Screen name="(auth)/profile" options={{ title: 'Register', headerBackVisible: false }} />
       </Stack.Protected>
       <Stack.Protected guard={ready}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

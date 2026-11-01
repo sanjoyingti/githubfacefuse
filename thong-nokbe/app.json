@@ -15,7 +15,6 @@
         "NSCameraUsageDescription": "Thong Nokbe Gym uses the camera for video calls with your gym group.",
         "NSMicrophoneUsageDescription": "Thong Nokbe Gym uses the microphone for voice and video calls with your gym group.",
         "NSContactsUsageDescription": "Thong Nokbe Gym uses your contacts to find gym friends and add them to groups.",
-        "NSPhotoLibraryUsageDescription": "Thong Nokbe Gym needs photo access so admins can upload their UPI QR code.",
         "LSApplicationQueriesSchemes": [
           "upi",
           "gpay",
@@ -25,7 +24,6 @@
           "bhim"
         ],
         "UIBackgroundModes": [
-          "remote-notification",
           "audio"
         ]
       }
@@ -58,7 +56,6 @@
       "expo-router",
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
-      "@react-native-firebase/messaging",
       [
         "expo-build-properties",
         {
@@ -77,12 +74,6 @@
         }
       ],
       [
-        "expo-image-picker",
-        {
-          "photosPermission": "Thong Nokbe Gym needs photo access so admins can upload their UPI QR code."
-        }
-      ],
-      [
         "expo-splash-screen",
         {
           "backgroundColor": "#0B1F14",
@@ -90,7 +81,14 @@
           "imageWidth": 160
         }
       ],
-      "expo-font"
+      "expo-font",
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-notifications",
+        {
+          "color": "#16A34A"
+        }
+      ]
     ]
   }
 }

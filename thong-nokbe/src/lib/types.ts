@@ -7,7 +7,7 @@ export interface UserProfile {
   name: string;
   phone: string; // E.164, e.g. +919876543210
   about?: string;
-  pushTokens?: string[];
+  email?: string | null;
   /** false once the user logs out on every phone or uninstalls the app. */
   appInstalled?: boolean;
 }
@@ -16,7 +16,6 @@ export interface UpiSettings {
   vpa: string; // e.g. gymowner@okaxis
   payeeName: string;
   amount: number; // monthly fee in INR
-  qrUrl?: string | null;
 }
 
 export interface Chat {
@@ -27,7 +26,8 @@ export interface Chat {
   members: string[];
   admins: string[]; // groups only (direct chats: empty)
   createdBy: string;
-  pendingPhones: string[]; // invited numbers that haven't installed the app yet
+  pendingPhones: string[]; // invited numbers that haven't joined yet
+  joinRequests?: string[]; // uids of people with an invited number, waiting for an admin to approve
   lastMessage?: { text: string; senderId: string; senderName: string; at: Timestamp | null } | null;
   updatedAt?: Timestamp | null;
   upi?: UpiSettings | null;

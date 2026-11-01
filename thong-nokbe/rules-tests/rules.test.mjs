@@ -2,14 +2,14 @@
 import { readFileSync } from 'node:fs';
 import { after, before, beforeEach, test } from 'node:test';
 import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing';
-import { arrayRemove, arrayUnion, collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, updateDoc, where, deleteDoc } from 'firebase/firestore';
+import { arrayRemove, arrayUnion, collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, updateDoc, where, deleteDoc, writeBatch } from 'firebase/firestore';
 
 let env;
 const ADMIN = { uid: 'admin', phone: '+919000000001' };
 const MEMBER = { uid: 'member', phone: '+919000000002' };
 const OUTSIDER = { uid: 'outsider', phone: '+919000000003' };
 const INVITEE = { uid: 'invitee', phone: '+919000000004' };
-const as = (u) => env.authenticatedContext(u.uid, { phone_number: u.phone }).firestore();
+const as = (u) => env.authenticatedContext(u.uid, { email: `${u.uid}@gmail.com` }).firestore(); // Google sign-in: no phone in the token
 
 before(async () => {
   env = await initializeTestEnvironment({
@@ -23,6 +23,10 @@ beforeEach(async () => {
   await env.clearFirestore();
   await env.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
+    for (const u of [ADMIN, MEMBER, OUTSIDER, INVITEE]) {
+      await setDoc(doc(db, 'users', u.uid), { name: u.uid, phone: u.phone, appInstalled: true });
+      await setDoc(doc(db, 'phoneIndex', u.phone), { uid: u.uid });
+    }
     await setDoc(doc(db, 'chats/g1'), {
       type: 'group', name: 'Gym', members: [ADMIN.uid, MEMBER.uid], admins: [ADMIN.uid], createdBy: ADMIN.uid,
       pendingPhones: [INVITEE.phone], upi: null, updatedAt: new Date(),
@@ -30,10 +34,25 @@ beforeEach(async () => {
   });
 });
 
-test('users: can only create own profile with own verified phone', async () => {
-  await assertSucceeds(setDoc(doc(as(MEMBER), 'users/member'), { name: 'M', phone: MEMBER.phone }));
-  await assertFails(setDoc(doc(as(MEMBER), 'users/member'), { name: 'M', phone: '+911111111111' }));
-  await assertFails(setDoc(doc(as(MEMBER), 'users/admin'), { name: 'X', phone: MEMBER.phone }));
+test('register: claim a free phone number once; taken numbers and other profiles are refused', async () => {
+  const NEW = { uid: 'newbie', phone: '+919000000009' };
+  const db = as(NEW);
+  // profile without claiming the number
+  await assertFails(setDoc(doc(db, 'users/newbie'), { name: 'N', phone: NEW.phone }));
+  // someone else's number (already in phoneIndex)
+  const b1 = writeBatch(db);
+  b1.set(doc(db, 'phoneIndex', MEMBER.phone), { uid: NEW.uid });
+  b1.set(doc(db, 'users/newbie'), { name: 'N', phone: MEMBER.phone });
+  await assertFails(b1.commit());
+  // a free number: claim + profile together
+  const b2 = writeBatch(db);
+  b2.set(doc(db, 'phoneIndex', NEW.phone), { uid: NEW.uid });
+  b2.set(doc(db, 'users/newbie'), { name: 'N', phone: NEW.phone });
+  await assertSucceeds(b2.commit());
+  // can't change the number later, can't write someone else's profile
+  await assertFails(updateDoc(doc(db, 'users/newbie'), { phone: '+919000000010' }));
+  await assertSucceeds(updateDoc(doc(db, 'users/newbie'), { name: 'Newbie' }));
+  await assertFails(setDoc(doc(db, 'users/admin'), { name: 'X', phone: NEW.phone }));
 });
 
 test('groups: creator must be sole admin', async () => {
@@ -53,12 +72,20 @@ test('groups: member can leave, outsider cannot read', async () => {
   await assertSucceeds(updateDoc(doc(as(MEMBER), 'chats/g1'), { members: arrayRemove(MEMBER.uid), admins: arrayRemove(MEMBER.uid) }));
 });
 
-test('invites: invited phone can find and join the group, nobody else can', async () => {
+test('invites: invited number can ask to join, only an admin can let them in', async () => {
   const q = query(collection(as(INVITEE), 'chats'), where('pendingPhones', 'array-contains', INVITEE.phone));
   const snap = await assertSucceeds(getDocs(q));
   if (snap.size !== 1) throw new Error('invitee should see 1 group');
-  await assertFails(updateDoc(doc(as(OUTSIDER), 'chats/g1'), { members: arrayUnion(OUTSIDER.uid), pendingPhones: arrayRemove(INVITEE.phone) }));
-  await assertSucceeds(updateDoc(doc(as(INVITEE), 'chats/g1'), { members: arrayUnion(INVITEE.uid), pendingPhones: arrayRemove(INVITEE.phone) }));
+  // can't add themselves as a member
+  await assertFails(updateDoc(doc(as(INVITEE), 'chats/g1'), { members: arrayUnion(INVITEE.uid), pendingPhones: arrayRemove(INVITEE.phone) }));
+  // someone whose number wasn't invited can't even ask
+  await assertFails(updateDoc(doc(as(OUTSIDER), 'chats/g1'), { joinRequests: arrayUnion(OUTSIDER.uid) }));
+  // invited number asks
+  await assertSucceeds(updateDoc(doc(as(INVITEE), 'chats/g1'), { joinRequests: arrayUnion(INVITEE.uid) }));
+  await assertSucceeds(getDocs(query(collection(as(INVITEE), 'chats'), where('joinRequests', 'array-contains', INVITEE.uid))));
+  // a normal member can't approve, the admin can
+  await assertFails(updateDoc(doc(as(MEMBER), 'chats/g1'), { members: arrayUnion(INVITEE.uid), joinRequests: arrayRemove(INVITEE.uid) }));
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { members: arrayUnion(INVITEE.uid), joinRequests: arrayRemove(INVITEE.uid), pendingPhones: arrayRemove(INVITEE.phone) }));
 });
 
 test('messages: members only, as themselves', async () => {
@@ -127,7 +154,6 @@ test('calls: any app user can call any other app user 1:1', async () => {
 });
 
 test('users: can mark own app as installed/uninstalled only', async () => {
-  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'users/member'), { name: 'M', phone: MEMBER.phone, appInstalled: true }));
   await assertSucceeds(updateDoc(doc(as(MEMBER), 'users/member'), { appInstalled: false }));
   await assertFails(updateDoc(doc(as(ADMIN), 'users/member'), { appInstalled: true }));
 });

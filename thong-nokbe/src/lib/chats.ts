@@ -121,16 +121,34 @@ export async function getOrCreateDirectChat(me: UserProfile, other: UserProfile)
   return id;
 }
 
-/** When someone installs the app, join every group that invited their phone number. */
-export async function joinPendingGroups(me: UserProfile) {
+/**
+ * When someone registers with a phone number a group invited, they ask to join.
+ * Phone numbers aren't checked by SMS in the free version, so a group admin approves each request.
+ */
+export async function requestInvitedGroups(me: UserProfile) {
   const snap = await getDocs(query(collection(db, 'chats'), where('pendingPhones', 'array-contains', me.phone)));
   for (const d of snap.docs) {
-    await updateDoc(d.ref, { members: arrayUnion(me.uid), pendingPhones: arrayRemove(me.phone) });
-    await sendMessage(d.id, me, `${me.name} joined using the invite`, 'system');
+    const c = d.data() as Chat;
+    if (c.members?.includes(me.uid) || c.joinRequests?.includes(me.uid)) continue;
+    await updateDoc(d.ref, { joinRequests: arrayUnion(me.uid) });
   }
   return snap.size;
 }
 
+/** Admin approves a join request: the person becomes a member. */
+export async function approveJoin(chat: Chat, admin: UserProfile, person: UserProfile) {
+  await updateDoc(chatRef(chat.id), {
+    members: arrayUnion(person.uid),
+    joinRequests: arrayRemove(person.uid),
+    pendingPhones: arrayRemove(person.phone),
+  });
+  await sendMessage(chat.id, admin, `${admin.name} added ${person.name}`, 'system');
+}
+
+export async function rejectJoin(chat: Chat, person: UserProfile) {
+  await updateDoc(chatRef(chat.id), { joinRequests: arrayRemove(person.uid) });
+}
+
 export function toChat(id: string, data: any): Chat {
-  return { id, members: [], admins: [], pendingPhones: [], ...data } as Chat;
+  return { id, members: [], admins: [], pendingPhones: [], joinRequests: [], ...data } as Chat;
 }

@@ -1,15 +1,13 @@
 import React, { useState } from 'react';
-import { Alert, Image, ScrollView, Text, View } from 'react-native';
+import { Alert, ScrollView, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import * as ImagePicker from 'expo-image-picker';
 import { updateDoc } from '@react-native-firebase/firestore';
-import { getDownloadURL, putFile, ref } from '@react-native-firebase/storage';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
 import { chatRef, sendMessage } from '../../lib/chats';
-import { storage } from '../../lib/firebase';
 import { isValidVpa } from '../../lib/upi';
 import { Button, Card, Empty, Input } from '../../components/ui';
+import { UpiQr } from '../../components/UpiQr';
 import { colors } from '../../theme';
 
 export default function FeeSettings() {
@@ -19,26 +17,9 @@ export default function FeeSettings() {
   const [vpa, setVpa] = useState(chat?.upi?.vpa ?? '');
   const [payeeName, setPayeeName] = useState(chat?.upi?.payeeName ?? me.name);
   const [amount, setAmount] = useState(chat?.upi?.amount ? String(chat.upi.amount) : '');
-  const [qrUrl, setQrUrl] = useState<string | null>(chat?.upi?.qrUrl ?? null);
   const [busy, setBusy] = useState(false);
-  const [uploading, setUploading] = useState(false);
 
   if (!chat || !chat.admins.includes(me.uid)) return <Empty title="Only group admins can change fee settings" />;
-
-  const pickQr = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
-    if (res.canceled || !res.assets[0]) return;
-    setUploading(true);
-    try {
-      const r = ref(storage, `groups/${chat.id}/upi-qr-${Date.now()}.jpg`);
-      await putFile(r, res.assets[0].uri);
-      setQrUrl(await getDownloadURL(r));
-    } catch (e: any) {
-      Alert.alert('Upload failed', e?.message ?? String(e));
-    } finally {
-      setUploading(false);
-    }
-  };
 
   const save = async () => {
     const amt = Number(amount);
@@ -47,7 +28,7 @@ export default function FeeSettings() {
     if (!amt || amt <= 0) return Alert.alert('Monthly fee', 'Enter the monthly gym fee in rupees.');
     setBusy(true);
     try {
-      await updateDoc(chatRef(chat.id), { upi: { vpa: vpa.trim(), payeeName: payeeName.trim(), amount: amt, qrUrl } });
+      await updateDoc(chatRef(chat.id), { upi: { vpa: vpa.trim(), payeeName: payeeName.trim(), amount: amt } });
       await sendMessage(chat.id, me, `${me.name} updated the gym fee: ₹${amt}/month, due on the 1st. Pay from the Fees tab.`, 'system');
       router.back();
     } catch (e: any) {
@@ -68,15 +49,13 @@ export default function FeeSettings() {
         <Input label="Payee name" placeholder="Name on the UPI account" value={payeeName} onChangeText={setPayeeName} />
         <Input label="Monthly fee (₹)" placeholder="800" keyboardType="number-pad" value={amount} onChangeText={setAmount} />
       </Card>
-      <Card>
-        <Text style={{ fontWeight: '800', fontSize: 16, color: colors.text, marginBottom: 4 }}>UPI QR code (optional)</Text>
-        <Text style={{ color: colors.muted, marginBottom: 12 }}>Upload a screenshot of your UPI QR so members can also scan it from another phone.</Text>
-        {qrUrl ? <Image source={{ uri: qrUrl }} style={{ width: 200, height: 200, alignSelf: 'center', marginBottom: 12, borderRadius: 12 }} /> : null}
-        <View style={{ flexDirection: 'row', gap: 10 }}>
-          <Button title={qrUrl ? 'Change QR' : 'Upload QR'} variant="outline" onPress={pickQr} loading={uploading} style={{ flex: 1 }} />
-          {qrUrl ? <Button title="Remove" variant="ghost" onPress={() => setQrUrl(null)} /> : null}
-        </View>
-      </Card>
+      {isValidVpa(vpa) && Number(amount) > 0 ? (
+        <Card>
+          <Text style={{ fontWeight: '800', fontSize: 16, color: colors.text }}>Your UPI QR code</Text>
+          <Text style={{ color: colors.muted, marginTop: 4 }}>Made automatically from your UPI ID. Members see it in the Fees tab.</Text>
+          <UpiQr upi={{ vpa: vpa.trim(), payeeName: payeeName.trim() || me.name, amount: Number(amount) }} size={160} />
+        </Card>
+      ) : null}
       <Button title="Save" onPress={save} loading={busy} />
     </ScrollView>
   );

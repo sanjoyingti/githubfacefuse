@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ActionSheetIOS, Alert, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActionSheetIOS, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
@@ -7,6 +7,7 @@ import { useMe } from '../../context/AuthProvider';
 import { useChats } from '../../context/ChatsProvider';
 import { GroupSwitcher, NoGroups } from '../../components/GroupSwitcher';
 import { Avatar, Button, Card, Loading } from '../../components/ui';
+import { UpiQr } from '../../components/UpiQr';
 import { clearPayment, recordPayment, useMonthPayments } from '../../lib/fees';
 import { IOS_UPI_APPS, makeTxnRef, payWithUpi } from '../../lib/upi';
 import { addMonths, formatMonth, monthKey, parseMonthKey } from '../../lib/dates';
@@ -148,7 +149,8 @@ export default function Fees() {
                 <Ionicons name="copy-outline" size={22} color={colors.primary} />
               </Pressable>
             </View>
-            {upi.qrUrl ? <Image source={{ uri: upi.qrUrl }} style={styles.qr} /> : null}
+            <UpiQr upi={upi} />
+            <Text style={{ color: colors.muted, marginTop: 6, fontSize: 13, textAlign: 'center' }}>Scan with any UPI app from another phone</Text>
             <Text style={{ color: colors.muted, marginTop: 8, fontSize: 12 }}>Monthly fee ₹{upi.amount} · due on the 1st of every month</Text>
           </Card>
         ) : null}
@@ -245,7 +247,6 @@ const styles = StyleSheet.create({
   payBtn: { marginTop: 14, backgroundColor: '#fff', borderRadius: 12, height: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   payText: { color: colors.unpaid, fontWeight: '900', fontSize: 16 },
   cardTitle: { color: colors.muted, fontWeight: '700', marginBottom: 6 },
-  qr: { width: 180, height: 180, alignSelf: 'center', marginTop: 12, borderRadius: 12 },
   totals: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: 8 },
   hint: { color: colors.muted, fontSize: 12, marginBottom: 8 },
   memberRow: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 14, marginBottom: 8, borderLeftWidth: 5 },

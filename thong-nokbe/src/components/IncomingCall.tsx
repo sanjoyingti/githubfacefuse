@@ -5,9 +5,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { collection, onSnapshot, query, where } from '@react-native-firebase/firestore';
 import { db } from '../lib/firebase';
 import { acceptCall, declineCall, RING_TIMEOUT_MS } from '../lib/calls';
+import { notifyIfAway } from '../lib/localNotify';
 import type { Call, UserProfile } from '../lib/types';
 import { colors } from '../theme';
 import { Avatar } from './ui';
+
+const notified = new Set<string>();
 
 /** Listens for calls ringing this user and shows a full-screen accept/decline prompt. */
 export function IncomingCall({ me }: { me: UserProfile }) {
@@ -27,7 +30,17 @@ export function IncomingCall({ me }: { me: UserProfile }) {
               !c.declined?.includes(me.uid) &&
               (!c.createdAt || now - c.createdAt.toMillis() < RING_TIMEOUT_MS),
           );
-        setCall(ringing[0] ?? null);
+        const c = ringing[0] ?? null;
+        if (c && !notified.has(c.id)) {
+          notified.add(c.id);
+          const kind = c.kind === 'voice' ? 'voice' : 'video';
+          notifyIfAway(
+            `${kind === 'video' ? '📹' : '📞'} ${c.isGroup ? c.chatName : c.callerName}`,
+            c.isGroup ? `${c.callerName} started a group ${kind} call. Tap to join` : `Incoming ${kind} call. Tap to answer`,
+            { kind: 'call', callId: c.id, chatId: c.chatId },
+          );
+        }
+        setCall(c);
       },
       (e) => console.warn('incoming call listener', e),
     );

@@ -11,7 +11,7 @@ export function isServerNotConnected(): boolean {
 }
 
 export const NOT_CONNECTED_MESSAGE =
-  "This copy of Thong Nokbe Gym isn't connected to its server yet, so sign-in can't work. The gym admin needs to finish the Firebase setup and install the full version of the app.";
+  "This copy of Thong Nokbe Gym isn't connected to its server yet, so sign-in can't work. The gym admin needs to finish the free setup (SETUP-GUIDE) and install the full version of the app.";
 
 /** Turns Firebase sign-in errors into short, plain messages. */
 export function friendlyAuthError(e: any): string {

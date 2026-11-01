@@ -1,13 +1,12 @@
-import React, { useEffect } from 'react';
-import { Alert, Pressable, Text } from 'react-native';
+import React from 'react';
+import { Pressable, Text } from 'react-native';
 import { router } from 'expo-router';
 import { Tabs } from 'expo-router/js-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMe } from '../../context/AuthProvider';
 import { Avatar } from '../../components/ui';
-import { consumeJustActivated } from '../../lib/registration';
-import { APP_NAME, colors } from '../../theme';
+import { colors } from '../../theme';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 const icon = (name: IconName) =>
@@ -27,13 +26,7 @@ function MeButton() {
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  const me = useMe();
-  useEffect(() => {
-    if (consumeJustActivated()) {
-      Alert.alert('✅ Account activated!', `Welcome to ${APP_NAME}, ${me.name}! 💪\n\nAsk your gym admin to add you to the gym group.`);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+
   return (
     <Tabs
       screenOptions={{
