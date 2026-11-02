@@ -288,6 +288,17 @@ float eyeOpenness(const float* l) {
   return std::min(el, er);
 }
 
+float mouthOpenness(const float* l) {
+  auto d = [&](int i, int j) {
+    const float dx = l[2 * i] - l[2 * j], dy = l[2 * i + 1] - l[2 * j + 1];
+    return std::sqrt(dx * dx + dy * dy);
+  };
+  const float w = d(48, 54);
+  if (!(w > 1e-3f)) return 1.f;
+  const float gap = (d(61, 67) + d(62, 66) + d(63, 65)) / 3.f;
+  return gap / w;
+}
+
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h) {
   if (src.w == w && src.h == h) return src;
   ffcv::MatF dst(w, h, 1);

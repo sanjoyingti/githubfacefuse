@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 22 fixes the crash in your bug report (a real crash this time, not memory): the CPU thread library inside the mask models aborted the app while starting up on Android 17 (OpenMP affinity setup). That setup is now switched off; the app never needed it. Smart speed also runs the face parser for "Keep original mouth inside" only while the mouth is open (and a few frames after), so videos with a closed mouth swap faster. Same result: tested byte-identical.
+
           Build 21 uses less memory while you use the app, too: the preview and the Live camera now load only the models your settings use (no lip syncer, face editor or enhancer unless they are switched on). Switching one of them on loads it then, which takes a few seconds the first time.
 
           Build 20 fixes the app closing by itself: the bug report showed Android stopping it for low memory, not a crash. During a swap the app now unloads the models your settings do not use (lip syncer, face editor, enhancer, when they are off), and when you leave the app while nothing is running it frees all models and reloads them when you come back. Same settings, same result. If a swap is still stopped, Continue picks it up.

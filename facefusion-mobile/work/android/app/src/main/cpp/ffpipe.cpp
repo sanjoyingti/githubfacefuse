@@ -253,6 +253,10 @@ struct Pipeline::Impl {
     int maskCS = 0, maskAge = 0;
     // Frames the expression restorer stays on after the eyes last closed.
     int restoreHold = 0;
+    // Frames the face parser stays on after the mouth was last open ("Keep original mouth
+    // inside" alone), and whether the stored mask had the parser in it.
+    int mouthHold = 0;
+    bool maskParsed = false;
   };
   // The sequence state of faces[fi] on THIS frame, or null outside a sequence. temporal()
   // writes this frame's faces first and in order, so index fi is face fi.
@@ -282,7 +286,14 @@ struct Pipeline::Impl {
   ffnn::Handle maskNet(const char* name, int size, ffnn::Handle& h, bool& tried);
   // Shrinks `m` (CS x CS, already the box mask) by the occlusion and region masks computed
   // on `crop`, the TARGET face before any swap. Returns false only on an execution error.
-  bool applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m, std::string& err);
+  // `skipParser`: leave the face parser out this time (Smart speed, mouth closed).
+  bool applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m, std::string& err,
+                       bool skipParser = false);
+  // The parser's only job is "Keep original mouth inside": with the face parser mask and
+  // "keep lips" off it changes nothing while the mouth is closed (no inside is visible).
+  bool parserOnlyForMouth() const {
+    return cfg.keepMouth && !cfg.regionMask && !cfg.keepLips;
+  }
   bool wantsMaskModels() const {
     return cfg.occlusionMask || cfg.regionMask || cfg.keepMouth || cfg.keepLips;
   }
@@ -2365,7 +2376,7 @@ ffnn::Handle Pipeline::Impl::maskNet(const char* name, int size, ffnn::Handle& h
 }
 
 bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
-                                     std::string& err) {
+                                     std::string& err, bool skipParser) {
   const int CS = crop.w;
   if (cfg.occlusionMask && maskNet("xseg", 256, n.occ, n.occTried)) {
     constexpr int XS = 256;
@@ -2387,7 +2398,7 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
     std::memcpy(om.data.data(), out[0].data(), sizeof(float) * XS * XS);
     finishModelMask(om, CS, m);
   }
-  if ((cfg.regionMask || cfg.keepMouth || cfg.keepLips) &&
+  if (!skipParser && (cfg.regionMask || cfg.keepMouth || cfg.keepLips) &&
       maskNet("bisenet", 512, n.parse, n.parseTried)) {
     constexpr int PS = 512;
     const ffcv::Image s = ffcv::resizeLinear(crop, PS, PS);
@@ -2533,9 +2544,19 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     Impl::SeqFace* sface = modelMasks ? p_->seqFaceFor(f, fi) : nullptr;
     std::vector<uint8_t> thumb;
     bool reuseMask = false;
+    // SMART SPEED, mouth: with "Keep original mouth inside" the parser only matters while
+    // the mouth is open. It runs while the inner lips are apart and for 6 frames after, so
+    // a mouth that is just opening is never missed; a closed mouth skips it.
+    bool skipParser = false;
+    if (sface && p_->parserOnlyForMouth()) {
+      if (ffmotion::mouthOpenness(f.landmark68) > 0.05f) sface->mouthHold = 6;
+      else if (sface->mouthHold > 0) --sface->mouthHold;
+      skipParser = sface->mouthHold == 0;
+    }
     if (sface) {
       thumb = ffmotion::thumbGray(crop, 32);
       reuseMask = sface->mask && sface->maskCS == CS && sface->maskAge < 10 &&
+                  (sface->maskParsed || skipParser) &&
                   ffmotion::thumbSame(thumb, sface->maskThumb);
     }
     const bool runModels = modelMasks && !reuseMask;
@@ -2553,9 +2574,9 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       faceMask = mask;
       Impl* impl = p_.get();
       join.w = &p_->maskWorker;
-      p_->maskWorker.post([impl, &crop, &faceMask, &maskErr, &maskOk] {
+      p_->maskWorker.post([impl, &crop, &faceMask, &maskErr, &maskOk, skipParser] {
         try {
-          maskOk = impl->applyMaskModels(crop, faceMask, maskErr);
+          maskOk = impl->applyMaskModels(crop, faceMask, maskErr, skipParser);
         } catch (const std::exception& e) {
           maskOk = false;
           maskErr = std::string("mask: ") + e.what();
@@ -2645,10 +2666,11 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
         ++sface->maskAge;
       } else {
         faceMask = mask;
-        if (runModels && !p_->applyMaskModels(crop, faceMask, err_)) return false;
+        if (runModels && !p_->applyMaskModels(crop, faceMask, err_, skipParser)) return false;
       }
       if (runModels && sface) {
         sface->mask = std::make_shared<ffcv::MatF>(faceMask);
+        sface->maskParsed = !skipParser;
         sface->maskThumb = std::move(thumb);
         sface->maskCS = CS;
         sface->maskAge = 0;

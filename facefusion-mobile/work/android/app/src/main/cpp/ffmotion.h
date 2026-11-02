@@ -80,6 +80,11 @@ bool thumbSame(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b);
 // about 0.25-0.35 open, under ~0.2 closing or closed.
 float eyeOpenness(const float* landmark68);
 
+// Mouth openness from the 68 landmarks: the gap between the inner lips (62-66) over the
+// mouth width (48-54). About 0-0.03 closed, over ~0.05 opening. Returns 1 (open) when the
+// landmarks are missing, so a caller that skips work on a closed mouth never skips blindly.
+float mouthOpenness(const float* landmark68);
+
 // Bilinear resize of a single-channel float mask.
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h);
 

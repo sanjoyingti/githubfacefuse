@@ -241,6 +241,18 @@ void verifyGpu() {
 
 }  // namespace
 
+// OpenMP's CPU affinity setup aborts the whole process on some phones (seen on Android 17,
+// Galaxy S25 Ultra: __kmp_affinity_initialize -> __kmp_create_affinity_none_places ->
+// __kmp_debug_assert -> abort, the first time a model loaded on the mask thread). The
+// app never pins OpenMP threads, so affinity is switched off before libomp can read its
+// settings: this runs when the library is loaded, ahead of any OpenMP call. ncnn's own
+// big/little core choice does not go through it and is unchanged.
+__attribute__((constructor)) static void ffDisableOmpAffinity() {
+  setenv("KMP_AFFINITY", "disabled", 1);
+  setenv("OMP_PROC_BIND", "false", 1);
+  unsetenv("OMP_PLACES");
+}
+
 // OpenMP worker threads spin-wait after every parallel region by default (KMP_BLOCKTIME,
 // 200 ms). Between frames that is pure CPU burn -- heat and battery for nothing -- so they
 // are told to sleep at once. Throughput of the work itself is unchanged.
