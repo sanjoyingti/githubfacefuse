@@ -8,11 +8,13 @@ import { ChatsProvider } from '../context/ChatsProvider';
 import { IncomingCall } from '../components/IncomingCall';
 import { NotificationRouter } from '../components/NotificationRouter';
 import { UpdateChecker } from '../components/UpdateChecker';
+import { useShareWhileOpen } from '../lib/liveLocation';
 import { Loading } from '../components/ui';
 import { colors } from '../theme';
 
 function RootNavigator() {
   const { user, profile, initializing } = useAuth();
+  useShareWhileOpen(); // keep my live location updating while the app is open (if I turned it on)
   const signedIn = !!user;
   const ready = !initializing && signedIn && !!profile;
 

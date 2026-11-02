@@ -5,7 +5,7 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
-import { startSharing, stopSharing, useForegroundUpdater, useGroupLocations, useIsSharing } from '../../lib/liveLocation';
+import { startSharing, stopSharing, useGroupLocations, useIsSharing } from '../../lib/liveLocation';
 import { mapHtml, pointsForMap } from '../../lib/mapHtml';
 import { Empty } from '../../components/ui';
 import { useBottomInset } from '../../components/useBottomInset';
@@ -23,7 +23,6 @@ export default function GroupMap() {
   const html = useMemo(() => mapHtml(), []);
   const points = useGroupLocations(id);
   const sharing = useIsSharing(id);
-  useForegroundUpdater(id);
 
   const mapPoints = useMemo(() => pointsForMap(points), [points]);
   const push = () => web.current?.postMessage(JSON.stringify(mapPoints));

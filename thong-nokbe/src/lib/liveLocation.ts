@@ -125,14 +125,34 @@ export function useIsSharing(chatId: string | undefined): boolean {
   return on;
 }
 
-/**
- * While the app is open, also push my point from here (covers phones that only gave "while using the
- * app" permission, and updates faster than the background service).
- */
-export function useForegroundUpdater(chatId: string | undefined) {
-  const sharing = useIsSharing(chatId);
+/** How many groups am I sharing with right now? (kept fresh so the updater starts/stops by itself) */
+function useSharingCount(): number {
+  const [n, setN] = useState(0);
   useEffect(() => {
-    if (!chatId || !sharing) return;
+    let alive = true;
+    const check = () => sharingGroups().then((g) => alive && setN(g.length));
+    check();
+    const sub = AppState.addEventListener('change', (s) => s === 'active' && check());
+    const t = setInterval(check, 3000);
+    return () => {
+      alive = false;
+      sub.remove();
+      clearInterval(t);
+    };
+  }, []);
+  return n;
+}
+
+/**
+ * Whenever the app is open AND I'm sharing with at least one group, keep pushing my point (to every
+ * group I share with). This runs from the app root, so my location updates no matter which screen
+ * I'm on — not only the map. Background updates (app closed) are handled by the foreground service.
+ */
+export function useShareWhileOpen() {
+  const count = useSharingCount();
+  const on = count > 0;
+  useEffect(() => {
+    if (!on) return;
     let sub: Location.LocationSubscription | null = null;
     Location.watchPositionAsync({ accuracy: Location.Accuracy.Balanced, timeInterval: 15_000, distanceInterval: 20 }, (p) =>
       pushPoint(p.coords.latitude, p.coords.longitude, p.coords.accuracy ?? undefined),
@@ -140,7 +160,7 @@ export function useForegroundUpdater(chatId: string | undefined) {
       .then((s) => (sub = s))
       .catch(() => {});
     return () => sub?.remove();
-  }, [chatId, sharing]);
+  }, [on]);
 }
 
 /** Everyone's live point in a group, updating in real time. */
