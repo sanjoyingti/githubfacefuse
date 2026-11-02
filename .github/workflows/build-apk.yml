@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 25 removes the part that kept crashing: the CPU thread library (LLVM OpenMP) that the mask models used is gone from the app. Its start-up stopped the app on Android 17 when the phone switched CPU cores off to save power, and no setting avoided it. ncnn is now built from its official source with its own small thread pool instead. Same features, settings and results (mask outputs checked against the previous build, and under a memory-error checker: no errors, no leaks, also with both masks running at the same time).
+
           Build 24 reads 10-bit (HDR) videos correctly, such as 4K HDR clips from Samsung phones: before, their frames came out as noise and no face was found. It also contains build 23. Checked before release: the native swap code ran under a memory-error checker (AddressSanitizer) on 4K frames with 8 faces and every mask, mouth, colour, smart-speed and rotation option on, with no errors and no leaks.
 
           Build 23 fixes the crash that build 22 did not: the CPU thread library (OpenMP) built into the app was visible to the rest of the phone, so on Android 17 another copy of it in the same app process could take over its settings, and it then stopped the app while starting the masks. The app's native library now keeps all of it private and shows Android only its own functions. Build 22's extra thread setting, which made the same check fail another way, is removed.
