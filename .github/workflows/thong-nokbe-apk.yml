@@ -12,8 +12,8 @@
 #
 # Every successful build is sent to everyone as an update: each phone gets a notification (even with
 # the app closed) and an update box when the app opens; "Update now" downloads and installs it in the app.
-# The first line of the commit message is the "what's new" text. Put [no-update] in the commit
-# message (or untick the box on a manual run) to build without telling anyone.
+# The first line of the commit message is the "what's new" text. Put [no-update] in that first
+# line (or untick the box on a manual run) to build without telling anyone.
 name: Thong Nokbe Gym APK
 
 on:
@@ -119,7 +119,7 @@ jobs:
           gh release upload thong-nokbe-latest ThongNokbeGym.apk --clobber
 
       - name: Send update to everyone (notification + in-app update box)
-        if: env.CONFIG == 'firebase' && ((github.event_name == 'workflow_dispatch' && inputs.announce) || (github.event_name == 'push' && !contains(github.event.head_commit.message, '[no-update]')))
+        if: env.CONFIG == 'firebase' && ((github.event_name == 'workflow_dispatch' && inputs.announce) || github.event_name == 'push')
         env:
           GH_TOKEN: ${{ github.token }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
@@ -128,8 +128,11 @@ jobs:
           INPUT_NOTES: ${{ inputs.notes }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
+          # Only the FIRST line of the commit message counts for [no-update] and for the "what's new" text.
+          FIRST_LINE="$(printf '%s' "$COMMIT_MESSAGE" | head -n1)"
+          case "$FIRST_LINE" in *"[no-update]"*) echo "First line has [no-update]: not telling anyone."; exit 0;; esac
           NOTES="$INPUT_NOTES"
-          if [ -z "$NOTES" ]; then NOTES="$(printf '%s' "$COMMIT_MESSAGE" | head -n1 | sed 's/\[[a-z-]*\]//g; s/^ *//; s/ *$//')"; fi
+          if [ -z "$NOTES" ]; then NOTES="$(printf '%s' "$FIRST_LINE" | sed 's/\[[a-z-]*\]//g; s/^ *//; s/ *$//')"; fi
           export NOTES
           node -e 'const fs=require("fs");fs.writeFileSync("version.json",JSON.stringify({build:Number(process.env.BUILD),notes:process.env.NOTES,url:process.env.APK_URL})+"\n")'
           cat version.json
