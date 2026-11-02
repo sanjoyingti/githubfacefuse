@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 32 runs cooler and saves battery, same results and settings: the AI chip is no longer held at full power while the app is just open (after a preview or a swap it used to stay pinned at maximum voltage, unable to sleep deeply); it goes to full power only for the frame being swapped, and stays there only while Live or the player is running. During a long swap it switches to its balanced mode at the first sign of warmth instead of waiting until the phone is already warm. The thread pool that replaced the crashing one sleeps between frames instead of spinning.
+
           Build 31 never throws swapped work away: Stop keeps every frame swapped so far and Continue starts at the very next frame (before, the piece in progress was swapped again); pressing Swap with an unfinished swap of the same video offers Continue instead of starting over, and on another video asks before replacing it; a video that finished in the background after the app was closed is shown again when you reopen the app.
 
           Build 30 makes Continue dependable: progress is saved every 2 seconds of video (was 5), an unfinished swap is offered even if it stopped before the first save, the app's copy of the video is kept outside the cache (which Android and cleaner tools empty), and a "Continue unfinished swap" button stays on the Swap screen until it is finished or a new swap replaces it. Continue carries on from the last save and gives you the whole video.

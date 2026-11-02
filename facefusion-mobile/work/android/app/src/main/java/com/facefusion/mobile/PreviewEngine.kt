@@ -472,7 +472,13 @@ class PreviewEngine {
             val frameIndex = if (loadedOpts?.lipSync == true && voicePath != null &&
                                  appliedVoice == voicePath)
                 (timeMs / 1000.0 * audioFps).roundToInt() else -1
-            val faces = NativePipe.processFrameAt(bgr, w, h, frameIndex)
+            // Full NPU power for this one frame, then back to the balanced profile so the
+            // NPU can clock down and sleep while the person looks at the result. Burst used
+            // to stay pinned (maximum voltage, shallow sleep only) for as long as the app
+            // was open after a preview -- warmth and battery for nothing.
+            NativePipe.setPowerProfile(0)
+            val faces = try { NativePipe.processFrameAt(bgr, w, h, frameIndex) }
+                        finally { NativePipe.setPowerProfile(2) }
             if (faces < 0) return@runCatching Swapped(null, 0, NativePipe.lastError())
             if (faces == 0) return@runCatching Swapped(null, 0, null)
 

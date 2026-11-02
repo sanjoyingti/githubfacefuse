@@ -600,9 +600,12 @@ class VideoSwapper(
                                else ""))
                     lastThermal = thermal
                 }
-                // Warm: the NPU also drops to its balanced profile until the phone cools.
+                // Warming: the NPU drops to its balanced profile until the phone cools. From
+                // the first sign of warmth (LIGHT, which includes Android's forecast that it
+                // is about to get warm) rather than waiting for MODERATE: less heat, the
+                // same frames.
                 NativePipe.setPowerProfile(
-                    if (thermal >= android.os.PowerManager.THERMAL_STATUS_MODERATE) 2 else 1)
+                    if (thermal >= android.os.PowerManager.THERMAL_STATUS_LIGHT) 2 else 1)
                 Thermal.pauseMs(thermal).takeIf { it > 0 }?.let { Thread.sleep(it) }
 
                 // Checked before the work, so Cancel stops the next frame rather than
@@ -720,7 +723,7 @@ class VideoSwapper(
         if (audioExtractor !== extractor) audioExtractor.release()
         NativePipe.setTrackPeriod(0)
         NativePipe.setSequence(false)
-        NativePipe.setPowerProfile(0)   // back to burst for previews
+        NativePipe.setPowerProfile(2)   // idle: balanced; a preview raises it for its frame
         onLog((if (cancelled) "partial: " else "") +
               "wrote ${File(outputPath).length() / 1024} KB, $swapped frames")
         // The headline number, spelled out rather than left to be divided out of the stage

@@ -4390,6 +4390,8 @@ class MainActivity : ComponentActivity() {
             // deletes ContentGate.kt: the engine takes a number and knows nothing about the
             // gate, so this single assignment is the whole of what dev has to remove.
             live.gateThreshold = ContentGate.THRESHOLD
+            // Live is real time: full NPU power while it runs (previews leave it balanced).
+            NativePipe.setPowerProfile(0)
             live.start(this@MainActivity, this@MainActivity) { shot ->
                 // The analyzer thread hands the result straight to Compose state, which is
                 // safe for snapshot state and avoids a per-frame main-thread post.
@@ -4511,6 +4513,7 @@ class MainActivity : ComponentActivity() {
         // acquires the guard before it inits. Releasing the guard first would let a restart
         // begin against a pipeline this teardown is about to destroy.
         live.stop {
+            runCatching { NativePipe.setPowerProfile(2) }   // idle: let the NPU clock down
             NativePipe.release()
             PipeGuard.release()
         }
@@ -4554,6 +4557,8 @@ class MainActivity : ComponentActivity() {
             playerPos = 0; playerFps = 0.0; playerFaces = 0; playerDropped = 0
             playerSeeking = false
             playerOpen = true
+            // Real-time playback: full NPU power while the player runs.
+            runCatching { NativePipe.setPowerProfile(0) }
 
             // Swap-only, like Live: the editor at ~150 ms a face cannot keep up with playback.
             val opts = SwapOptions.load(this@MainActivity)
@@ -4634,6 +4639,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             withContext(Dispatchers.Default) { player.stop() }
             playerFrame = null
+            runCatching { NativePipe.setPowerProfile(2) }   // idle: let the NPU clock down
             NativePipe.release()
             PipeGuard.release()
             // The Swap screen's preview was invalidated on the way in and its pipeline is
@@ -5055,7 +5061,7 @@ class MainActivity : ComponentActivity() {
           } finally {
             refreshResume()
             SwapService.stop()
-            runCatching { NativePipe.setPowerProfile(0) }   // burst again for previews
+            runCatching { NativePipe.setPowerProfile(2) }   // idle; previews raise it per frame
           }
         }
     }
@@ -5076,6 +5082,7 @@ class MainActivity : ComponentActivity() {
         if (opts.lipSync && voiceFile == null) return
         if (!animate && !opts.lipSync) return
         invalidatePreview()
+        runCatching { NativePipe.setPowerProfile(0) }
         cancelRequested = false
         busy = true; progress = 0f; log = ""
         discardOutput()
