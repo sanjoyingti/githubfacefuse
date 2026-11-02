@@ -159,9 +159,25 @@ object BugReport {
             out.toString()
         }
         if (text.isBlank()) return null
+        // THE LINES THAT SAY WHERE, first. A tombstone lists every thread, and the crashing
+        // thread's frames (and the abort message) can sit far past the 12 KB that fit, so
+        // they were cut off exactly when they mattered. These are pulled out and shown
+        // before the rest: the app's own functions, its native libraries, the signal and
+        // the abort reason.
+        val key = Regex("ffpipe::|ffcv::|ffnn::|ffqnn::|ffmotion::|ffportrait::|ffaudio::|" +
+                        "Java_com_facefusion|libffnative|ncnn::|libQnn|SIG[A-Z]+|SEGV_|BUS_|" +
+                        "FPE_|ILL_|[Aa]bort|terminat|uncaught|FORTIFY|assert|Scudo|" +
+                        "use-after|double free|out of memory|bad_alloc")
+        val keyLines = text.lineSequence().map { it.trim() }
+            .filter { it.isNotEmpty() && key.containsMatchIn(it) }
+            .distinct().take(120).toList()
+        val head = if (keyLines.isEmpty()) "" else
+            "  -- crash location (key lines) --" + System.lineSeparator() +
+            keyLines.joinToString(System.lineSeparator()) { "    " + it.take(300) } +
+            System.lineSeparator()
         val body = if (text.length <= MAX_TRACE_CHARS) text
                    else text.take(MAX_TRACE_CHARS) + "    ... [trace truncated] ..."
-        return "  -- trace --" + System.lineSeparator() + body.trimEnd('\n') +
+        return head + "  -- trace --" + System.lineSeparator() + body.trimEnd('\n') +
             System.lineSeparator()
     }
 
