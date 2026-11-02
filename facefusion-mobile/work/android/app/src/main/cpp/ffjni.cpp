@@ -37,7 +37,17 @@ std::unique_ptr<ffpipe::Pipeline> g_pipe;
 // call others.
 std::recursive_mutex g_pipeMu;
 #define FF_PIPE_LOCK std::lock_guard<std::recursive_mutex> ffPipeLock(g_pipeMu)
-std::string g_err;
+// The last error message, read by NativePipe.lastError(). Guarded: a video run now calls
+// the frame converters (rotateBgr, resizeBgr) on its decode thread while the swap thread
+// calls processFrameAt, and two threads assigning one std::string at once corrupts the heap.
+struct LockedError {
+  std::mutex m;
+  std::string s;
+  LockedError& operator=(const std::string& v) { std::lock_guard<std::mutex> l(m); s = v; return *this; }
+  LockedError& operator=(const char* v) { std::lock_guard<std::mutex> l(m); s = v ? v : ""; return *this; }
+  std::string get() { std::lock_guard<std::mutex> l(m); return s; }
+};
+LockedError g_err;
 std::string g_rejectedTier;
 std::string g_rejectedWhy;
 std::vector<std::string> g_skipTiers;
@@ -199,7 +209,8 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_facefusion_mobile_NativePipe_lastError(JNIEnv* env, jclass) {
-  return env->NewStringUTF(g_err.c_str());
+  const std::string e = g_err.get();
+  return env->NewStringUTF(e.c_str());
 }
 
 JNIEXPORT jboolean JNICALL

@@ -75,6 +75,11 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 29 is faster with the same result, and comes set up:
+          - Reading the video, swapping on the AI chip and saving the video now run at the same time instead of one after another, so the AI chip no longer waits for the file. Same frames, same order, same output.
+          - Ready-made settings on a new install: 512 pixel boost, occlusion mask, real mouth inside, skin-tone matching, expression restorer 80, face enhancer 50 (once its model is downloaded), head-turn fade, motion smoothing, Smart speed, Faster masks, Fast video 2, output 30 fps and 4K clips at 1080p. Settings you saved before are kept; Output settings -> source size for full 4K.
+          - Safer: the error text shared between threads is now guarded, and the video stages always stop before the video tools are closed.
+
           Build 28 makes the extra photos angle-aware: for every frame and every face, the photo whose head angle is closest to that face's counts most (a face turned left uses mostly your left-turned photo), blending smoothly as the head turns so there is no flicker, while every photo keeps a share of the identity. No extra memory or time.
 
           Build 27 adds up to 3 photos of the same person per source face, combined into one likeness for a steadier face on head turns and in different light. On the Swap screen: the + button in the source pane, or tap the selected face again. Each photo is content-checked like the main one, a photo of a different person is refused, and the combining happens once before the swap, so swapping is not slower. A face with one photo works exactly as before.

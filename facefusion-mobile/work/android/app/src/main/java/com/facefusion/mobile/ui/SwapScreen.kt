@@ -1172,7 +1172,10 @@ fun SwapScreen(
                 val srcName = if (srcShort > 0)
                                   stringResource(R.string.swap_size_source_at, srcShort)
                               else stringResource(R.string.swap_size_source)
-                val sizeLabel = if (opts.outputMaxShortEdge > 0)
+                // A cap at or above the clip's own size does nothing, so it reads as the
+                // source size (the 1080p default on a 720p clip is just "source").
+                val sizeLabel = if (opts.outputMaxShortEdge > 0 &&
+                                    (srcShort <= 0 || opts.outputMaxShortEdge < srcShort))
                                     opts.outputMaxShortEdge.toString() + "p"
                                 else srcName
                 val rateLabel = if (opts.outputFps in 1..inputFps) opts.outputFps.toString()

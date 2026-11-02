@@ -10,6 +10,9 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+/** Frames held between pipeline stages (decode -> swap -> encode), per queue. */
+private const val PIPE_DEPTH = 2
+
 /**
  * Decode -> swap -> encode, with the original audio copied through and an optional trim.
  *
@@ -427,120 +430,211 @@ class VideoSwapper(
             v
         }
 
-        val info = MediaCodec.BufferInfo()
-        var sawInputEOS = false
-        var sawDecodeEOS = false
         var swapped = 0
         // Zero the native counters so the line below is THIS run, not this run plus
         // every earlier one -- they accumulate for the life of the pipeline.
         NativePipe.resetStats()
         var cancelled = false
-        // The last output slot already written, for rate conversion. -1 so slot 0 is free.
-        var lastSlot = -1L
         var lastThermal = -1
 
-        while (!sawDecodeEOS) {
-            // HEAT: rest between frames once the phone is warm (see Thermal), so a long run
-            // is slowed a little instead of throttled hard or killed by the system.
-            val thermal = Thermal.status()
-            if (thermal != lastThermal) {
-                if (lastThermal >= 0 || Thermal.pauseMs(thermal) > 0)
-                    onLog("phone temperature: ${Thermal.label(thermal)}" +
-                          (if (Thermal.pauseMs(thermal) > 0)
-                               ", resting ${Thermal.pauseMs(thermal)} ms per frame to cool"
-                           else ""))
-                lastThermal = thermal
-            }
-            // Warm: the NPU also drops to its balanced profile until the phone cools.
-            NativePipe.setPowerProfile(
-                if (thermal >= android.os.PowerManager.THERMAL_STATUS_MODERATE) 2 else 1)
-            Thermal.pauseMs(thermal).takeIf { it > 0 }?.let { Thread.sleep(it) }
+        // ------------------------------------------------------------ the PIPELINE
+        //
+        // Three stages at once, so the NPU never waits for the video file:
+        //   decode thread : extractor + decoder -> upright, size-capped BGR frames
+        //   this thread   : the swap (NPU), the live preview, progress
+        //   encode thread : centre-crop + encoder + muxer
+        // Exactly the same frames, in the same order, with the same timestamps as the
+        // single-threaded loop this replaces -- only the waiting is gone. Each codec is
+        // touched by ONE thread while the stages run; the queues hold at most PIPE_DEPTH
+        // frames each, so memory stays bounded (two output-size frames per queue).
+        //
+        // ⚠ Shutdown order matters for crash-safety: the decode thread is stopped and
+        // JOINED, then the encode thread, before anything below releases a codec -- also
+        // when this thread throws, through the finally.
+        class Frame(val bgr: ByteArray, val ptsUs: Long)
+        val end = Frame(ByteArray(0), Long.MIN_VALUE)
+        val decodedQ = java.util.concurrent.ArrayBlockingQueue<Frame>(PIPE_DEPTH)
+        val encodeQ = java.util.concurrent.ArrayBlockingQueue<Frame>(PIPE_DEPTH)
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val decodeError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val encodeError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val encMuxing = java.util.concurrent.atomic.AtomicBoolean(false)
 
-            // Checked before the work, not after, so pressing Cancel stops the next frame
-            // rather than finishing it first.
-            if (isCancelled()) {
-                // KEEP what has already been swapped.
-                //
-                // This used to delete the output and throw, which threw away every frame
-                // the NPU had produced -- on a long clip that is minutes of work discarded
-                // because the user stopped a run that was already mostly useful.
-                //
-                // Instead, stop feeding the decoder and fall through to the SAME
-                // finalisation an ordinary run uses: signal EOS, drain the encoder, copy
-                // the audio, stop the muxer. The only thing cancelling changes is where the
-                // video ends.
-                onLog("cancelled after $swapped frames -- keeping them")
-                cancelled = true
+        fun <T> putOrStop(q: java.util.concurrent.BlockingQueue<T>, item: T): Boolean {
+            while (!stop.get()) {
+                if (q.offer(item, 50, java.util.concurrent.TimeUnit.MILLISECONDS)) return true
+            }
+            return false
+        }
+
+        val decodeThread = Thread({
+            try {
+                val info = MediaCodec.BufferInfo()
+                var sawInputEOS = false
+                var sawDecodeEOS = false
+                // The last output slot already written, for rate conversion. -1: slot 0 free.
+                var lastSlot = -1L
+                while (!sawDecodeEOS && !stop.get()) {
+                    if (!sawInputEOS) {
+                        val inIx = decoder.dequeueInputBuffer(10_000)
+                        if (inIx >= 0) {
+                            val n = extractor.readSampleData(decoder.getInputBuffer(inIx)!!, 0)
+                            val pts = extractor.sampleTime
+                            if (n < 0 || pts > trimEndUs) {
+                                decoder.queueInputBuffer(inIx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                sawInputEOS = true
+                            } else {
+                                decoder.queueInputBuffer(inIx, 0, n, pts, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                    val outIx = decoder.dequeueOutputBuffer(info, 10_000)
+                    if (outIx >= 0) {
+                        val pts = info.presentationTimeUs
+                        // frames between the sync point and the trim mark are decoded but dropped
+                        var inRange = info.size > 0 && pts >= trimStartUs && pts <= trimEndUs
+                        // Rate conversion, as decimation: a frame whose output slot is taken
+                        // is dropped BEFORE the swap, so a lower rate costs less NPU time.
+                        if (inRange && fps != inFps) {
+                            val slot = ((pts - trimStartUs) * fps) / 1_000_000L
+                            if (slot <= lastSlot) inRange = false else lastSlot = slot
+                        }
+                        var frame: Frame? = null
+                        if (inRange) {
+                            val image = decoder.getOutputImage(outIx)
+                            if (image != null) {
+                                // Upright FIRST, then the size cap -- detection, the swap, the
+                                // preview and the encoder all work on the frame the viewer sees.
+                                val decoded = try { imageToBgr(image, width, height) }
+                                              finally { image.close() }
+                                val upright = if (rotation == 0) decoded
+                                              else NativePipe.rotateBgr(decoded, width, height, rotation)
+                                                  ?: error("rotate ${rotation} failed")
+                                val bgr = if (!capped) upright
+                                          else NativePipe.resizeBgr(upright, uprightW, uprightH,
+                                                                    outW, outH)
+                                              ?: error("resize to ${outW}x$outH failed")
+                                frame = Frame(bgr, pts)
+                            }
+                        }
+                        val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                        decoder.releaseOutputBuffer(outIx, false)
+                        if (frame != null && !putOrStop(decodedQ, frame)) break
+                        if (eos) sawDecodeEOS = true
+                    }
+                }
+            } catch (t: Throwable) {
+                decodeError.set(t)
+            } finally {
+                // The swap thread waits on this queue: always end it.
+                while (!decodedQ.offer(end, 50, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    if (stop.get()) { decodedQ.clear() }
+                }
+            }
+        }, "ff-decode")
+
+        val encodeThread = Thread({
+            var m = false
+            try {
+                while (true) {
+                    val f = encodeQ.poll(20, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    if (f == null) {
+                        // Nothing new: keep the encoder's output moving meanwhile.
+                        m = drainEncoder(encoder, muxer, m, addTracks = addTracks)
+                        continue
+                    }
+                    if (f === end) break
+                    feedEncoder(encoder, cropBgr(f.bgr, outW, outH, encW, encH),
+                                encW, encH, f.ptsUs - trimStartUs)
+                    m = drainEncoder(encoder, muxer, m, addTracks = addTracks)
+                }
                 signalEncoderEOS(encoder)
-                sawInputEOS = true
-                sawDecodeEOS = true
-                break
+            } catch (t: Throwable) {
+                encodeError.set(t)
+                stop.set(true)
+            } finally {
+                encMuxing.set(m)
             }
-            if (!sawInputEOS) {
-                val inIx = decoder.dequeueInputBuffer(10_000)
-                if (inIx >= 0) {
-                    val n = extractor.readSampleData(decoder.getInputBuffer(inIx)!!, 0)
-                    val pts = extractor.sampleTime
-                    if (n < 0 || pts > trimEndUs) {
-                        decoder.queueInputBuffer(inIx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                        sawInputEOS = true
-                    } else {
-                        decoder.queueInputBuffer(inIx, 0, n, pts, 0)
-                        extractor.advance()
-                    }
-                }
+        }, "ff-encode")
+
+        decodeThread.start()
+        encodeThread.start()
+        var stagesJoined = false
+        fun joinStages() {
+            if (stagesJoined) return
+            stagesJoined = true
+            // Stop the decoder side first and let it finish its current frame.
+            stop.set(true)
+            decodedQ.clear()
+            decodeThread.join(15_000)
+            // Then let the encoder take what was already swapped, and finish.
+            stop.set(false)
+            while (encodeThread.isAlive && !encodeQ.offer(end, 50, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                if (encodeError.get() != null) break
             }
-            val outIx = decoder.dequeueOutputBuffer(info, 10_000)
-            if (outIx >= 0) {
-                val pts = info.presentationTimeUs
-                // frames between the sync point and the trim mark are decoded but dropped
-                var inRange = info.size > 0 && pts >= trimStartUs && pts <= trimEndUs
-                // Rate conversion, as decimation: which output slot would this frame fill?
-                // If that slot is taken, the frame is surplus and is dropped BEFORE the
-                // swap, so a lower rate genuinely costs less NPU time rather than just
-                // writing fewer frames.
-                if (inRange && fps != inFps) {
-                    val slot = ((pts - trimStartUs) * fps) / 1_000_000L
-                    if (slot <= lastSlot) inRange = false else lastSlot = slot
-                }
-                if (inRange) {
-                    val image = decoder.getOutputImage(outIx)
-                    if (image != null) {
-                        // Upright FIRST: everything after this -- detection, the swap, the
-                        // preview, the encoder -- works on the frame the viewer will see.
-                        val decoded = imageToBgr(image, width, height)
-                        image.close()
-                        val upright = if (rotation == 0) decoded
-                                      else NativePipe.rotateBgr(decoded, width, height, rotation)
-                        // Downscale BEFORE anything looks at the frame, so the detector,
-                        // the swap and the paste all work at the smaller size. Resizing at
-                        // encode time instead would shrink the file and save nothing else.
-                        val bgr = if (!capped) upright
-                                  else NativePipe.resizeBgr(upright, uprightW, uprightH,
-                                                            outW, outH)
-                                      ?: error("resize to ${outW}x$outH failed")
-                        // `swapped` is the OUTPUT frame index: it counts frames written,
-                        // so it already accounts for the ones decimation dropped.
-                        val faces = NativePipe.processFrameAt(bgr, outW, outH,
-                                                              if (syncing) swapped else -1)
-                        if (faces < 0) error("native: ${NativePipe.lastError()}")
-                        onFrame(bgr, outW, outH)
-                        feedEncoder(encoder, cropBgr(bgr, outW, outH, encW, encH),
-                                    encW, encH, pts - trimStartUs)
-                        swapped++
-                        onProgress(swapped, expected)
-                    }
-                }
-                val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                decoder.releaseOutputBuffer(outIx, false)
-                if (eos) { sawDecodeEOS = true; signalEncoderEOS(encoder) }
-            }
-            muxing = drainEncoder(encoder, muxer, muxing, addTracks = addTracks)
+            encodeThread.join(30_000)
+            if (decodeThread.isAlive || encodeThread.isAlive)
+                error("video stages did not stop in time")
         }
+
+        try {
+            while (true) {
+                // HEAT: rest between frames once the phone is warm (see Thermal), so a long
+                // run is slowed a little instead of throttled hard or killed by the system.
+                val thermal = Thermal.status()
+                if (thermal != lastThermal) {
+                    if (lastThermal >= 0 || Thermal.pauseMs(thermal) > 0)
+                        onLog("phone temperature: ${Thermal.label(thermal)}" +
+                              (if (Thermal.pauseMs(thermal) > 0)
+                                   ", resting ${Thermal.pauseMs(thermal)} ms per frame to cool"
+                               else ""))
+                    lastThermal = thermal
+                }
+                // Warm: the NPU also drops to its balanced profile until the phone cools.
+                NativePipe.setPowerProfile(
+                    if (thermal >= android.os.PowerManager.THERMAL_STATUS_MODERATE) 2 else 1)
+                Thermal.pauseMs(thermal).takeIf { it > 0 }?.let { Thread.sleep(it) }
+
+                // Checked before the work, so Cancel stops the next frame rather than
+                // finishing it first. What was already swapped is KEPT: the encoder
+                // finishes those frames and the file is finalised as usual.
+                if (isCancelled()) {
+                    onLog("cancelled after $swapped frames -- keeping them")
+                    cancelled = true
+                    break
+                }
+                encodeError.get()?.let { throw it }
+                val f = decodedQ.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                if (f === end) {
+                    decodeError.get()?.let { throw it }
+                    break
+                }
+                // `swapped` is the OUTPUT frame index: it already accounts for decimation.
+                val faces = NativePipe.processFrameAt(f.bgr, outW, outH,
+                                                      if (syncing) swapped else -1)
+                if (faces < 0) error("native: ${NativePipe.lastError()}")
+                onFrame(f.bgr, outW, outH)
+                while (!encodeQ.offer(f, 50, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    encodeError.get()?.let { throw it }
+                }
+                swapped++
+                onProgress(swapped, expected)
+            }
+        } finally {
+            joinStages()
+        }
+        encodeError.get()?.let { throw it }
+        muxing = encMuxing.get()
+        // The encoder has its end-of-stream; drain it to the end. Bounded, so a component
+        // that never reports EOS cannot hold the run (and the wake lock) for ever.
         var flushed = false
-        while (!flushed) {
+        val flushUntil = System.currentTimeMillis() + 10_000
+        while (!flushed && System.currentTimeMillis() < flushUntil) {
             muxing = drainEncoder(encoder, muxer, muxing, addTracks = addTracks) { flushed = true }
+            if (!flushed) Thread.sleep(2)
         }
+        if (!flushed) onLog("encoder did not report its end within 10 s; keeping what it wrote")
 
         // Cancelled before a single frame reached the encoder: the muxer never had a track
         // added, and an MP4 with no tracks is not a file anything can open. That is the one

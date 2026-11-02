@@ -29,19 +29,19 @@ data class SwapOptions(
     val weight: Float = 0.5f,
 
     /** `--face-mask-blur`, 0.0-1.0 step 0.05. How soft the swapped region's edge is. */
-    val maskBlur: Float = 0.3f,
+    val maskBlur: Float = 0.4f,
 
     /** `--face-mask-padding`, top/right/bottom/left, 0-100 percent. Shrinks the region. */
     val maskPadding: List<Int> = listOf(0, 0, 0, 0),
 
     /** `--face-detector-score`, 0.0-1.0 step 0.05. Raise it to ignore uncertain faces. */
-    val detectorScore: Float = 0.5f,
+    val detectorScore: Float = 0.35f,
 
     /** `--face-landmarker-score`, 0.0-1.0 step 0.05. Below it, the 5-point set is kept. */
     val landmarkerScore: Float = 0.5f,
 
     /** `--face-swapper-pixel-boost` as a per-axis factor: 1=256, 2=512, 3=768, 4=1024. */
-    val pixelBoost: Int = 1,
+    val pixelBoost: Int = 2,
 
     /** `--face-selector-mode`: false = `many`, true = `one` (largest face only). */
     val largestOnly: Boolean = false,
@@ -90,9 +90,10 @@ data class SwapOptions(
      * ⚠ It is a real trade, not a free win: swap quality follows how many pixels THE FACE
      * has, not the frame. A face filling a quarter of the frame has plenty either way; a
      * face far away in a 4K shot has half as many pixels at 1080p and will look worse.
-     * Hence 0 by default.
+     * 1080 by default since build 29 (a 4K clip is swapped at 1080p: about 4x less work per
+     * frame); 1080p and smaller clips are untouched. "Original" in Output settings is 0.
      */
-    val outputMaxShortEdge: Int = 0,
+    val outputMaxShortEdge: Int = 1080,
 
     /**
      * Frames between real face detections during a VIDEO run. 0 = detect every frame,
@@ -110,7 +111,7 @@ data class SwapOptions(
      * ⚠ Applies to video runs ONLY. The preview shares `Pipeline::analyse`, where
      * consecutive calls are unrelated frames the user seeked to.
      */
-    val trackPeriod: Int = 0,
+    val trackPeriod: Int = 2,
 
     /**
      * `--face-enhancer`, gpen_bfr_256. Off by default.
@@ -120,7 +121,7 @@ data class SwapOptions(
      * when the model is absent, and the UI only offers the switch when
      * [NativePipe.hasEnhancer] is true.
      */
-    val faceEnhance: Boolean = false,
+    val faceEnhance: Boolean = true,
 
     /**
      * `--face-enhancer-blend`, upstream's 0-100 as a 0.0-1.0 fraction, step 0.05.
@@ -128,7 +129,7 @@ data class SwapOptions(
      * 1.0 is the enhancer's output alone; 0.0 leaves the swap untouched. Upstream's
      * default is 80.
      */
-    val enhanceBlend: Float = 0.8f,
+    val enhanceBlend: Float = 0.5f,
 
     /**
      * `--processors lip_syncer`, edtalk_256. Off by default.
@@ -198,13 +199,13 @@ data class SwapOptions(
      * cost NPU time producing nothing new, so the cap is structural rather than validated
      * after the fact.
      */
-    val outputFps: Int = 0,
+    val outputFps: Int = 30,
     // Occlusion mask (XSeg): keep the swap off food, hands, cups and hair in front of the face.
     val occlusionMask: Boolean = true,
     // Face-parser mask (BiSeNet): swap only skin/eyes/brows/nose/lips.
     val regionMask: Boolean = false,
     // Leave the mouth interior (teeth, tongue, food) original.
-    val keepMouth: Boolean = false,
+    val keepMouth: Boolean = true,
     // Leave the lips original too, so the whole mouth is as filmed.
     val keepLips: Boolean = false,
     // Fade the swap out on extreme head turns instead of stretching the face.
@@ -219,7 +220,7 @@ data class SwapOptions(
     val colorMatchStrength: Float = 0.6f,
     // Put the target's own expression (closed eyes, mouth shape) back on the swapped face
     // (FaceFusion's expression_restorer, LivePortrait). Needs the face editor models.
-    val expressionRestore: Boolean = false,
+    val expressionRestore: Boolean = true,
     val expressionFactor: Float = 0.8f,
     // Run the mask models alongside the swap (GPU beside the NPU): faster with the masks on.
     val parallelMasks: Boolean = true,
@@ -274,7 +275,7 @@ data class SwapOptions(
         motionSmooth = true,
         detectorScore = 0.35f,
         landmarkerScore = 0.5f,
-        trackPeriod = 0,
+        trackPeriod = 2,
         colorMatch = true,
         colorMatchStrength = 0.6f,
         expressionRestore = true,
