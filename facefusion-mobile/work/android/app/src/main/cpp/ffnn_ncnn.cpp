@@ -241,15 +241,7 @@ void verifyGpu() {
 
 }  // namespace
 
-// KMP_AFFINITY=disabled: OpenMP never pins its threads. ncnn's own constructor sets the
-// same; this one runs first and only repeats it. NOT OMP_PROC_BIND=false: that turns the
-// affinity type back to "none" while it is disabled, which libomp aborts on
-// (__kmp_affinity_initialize: KMP_ASSERT(disabled)) -- the build 22 crash.
-// The crash before it is fixed in CMakeLists.txt (libomp's symbols are no longer exported).
-__attribute__((constructor)) static void ffDisableOmpAffinity() {
-  setenv("KMP_AFFINITY", "disabled", 1);
-}
-
+// (ncnn here is built with NCNN_SIMPLEOMP: no LLVM libomp, no affinity start-up to abort.)
 // OpenMP worker threads spin-wait after every parallel region by default (KMP_BLOCKTIME,
 // 200 ms). Between frames that is pure CPU burn -- heat and battery for nothing -- so they
 // are told to sleep at once. Throughput of the work itself is unchanged.

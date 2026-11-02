@@ -64,6 +64,11 @@ if(FF_NCNN)
     #
     # NCNN_SIMPLEVK=ON, so ncnn dlopen's the Vulkan loader itself: no -lvulkan, and a device
     # with no Vulkan fails at get_gpu_count() rather than at load.
-    target_link_options(ffnative PRIVATE -fopenmp -static-openmp)
+    # ncnn is built with NCNN_SIMPLEOMP=ON (see ../../../../ncnn/STAGED.txt): its archive
+    # carries ncnn's own small thread pool for the `#pragma omp` loops, so LLVM's libomp is
+    # NOT linked at all. libomp's CPU-affinity start-up aborted the app on Android 17 / Galaxy
+    # S25 Ultra (__kmp_affinity_initialize asserts, CPU cores going offline in power save),
+    # and no environment setting avoided it. No -fopenmp / -static-openmp here: they would
+    # link libomp back in beside simpleomp.
     target_link_libraries(ffnative android)
 endif()
