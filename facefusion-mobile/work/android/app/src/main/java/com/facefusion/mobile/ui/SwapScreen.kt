@@ -126,6 +126,10 @@ fun SwapScreen(
     sourceThumbs: List<Bitmap> = emptyList(),
     activeSource: Int = 0,
     onSelectSource: (Int) -> Unit = {},
+    /** Photos per source face, main photo included (SourcePhotos). */
+    sourcePhotoCounts: List<Int> = emptyList(),
+    /** Opens the photos panel for one source face; null hides the control. */
+    onOpenSourcePhotos: ((Int) -> Unit)? = null,
     /**
      * ASSIGN PER PERSON, the Swap screen's own. Live decides by tracking a person through
      * a sequence of frames; there is no sequence here, so a tap stores the person's
@@ -782,6 +786,16 @@ fun SwapScreen(
                     Icon(painterResource(R.drawable.ic_faces),
                          stringResource(R.string.faces_open), Modifier.size(16.dp))
                 }
+                // More photos of the same person for the face shown.
+                if (hasSource && idle && onOpenSourcePhotos != null) {
+                    IconButton({ onOpenSourcePhotos(activeSource) }, Modifier.size(28.dp)) {
+                        val n = sourcePhotoCounts.getOrNull(activeSource) ?: 1
+                        BadgedBox(badge = { if (n > 1) Badge { Text(n.toString()) } }) {
+                            Icon(Icons.Default.Add, stringResource(R.string.photos_open),
+                                 Modifier.size(16.dp))
+                        }
+                    }
+                }
                 if (hasSource && idle) {
                     IconButton(onSaveSource, Modifier.size(28.dp)) {
                         Icon(painterResource(if (sourceSaved) R.drawable.ic_saved_face
@@ -825,6 +839,8 @@ fun SwapScreen(
             onSelect = onSelectSource,
             onKeepOriginal = if (assignMode) onKeepOriginal else null,
             enabled = idle,
+            photoCounts = sourcePhotoCounts,
+            onOpenPhotos = onOpenSourcePhotos,
         )
 
         // ---- ASSIGN PER PERSON. Video and stills alike: the preview pane swaps

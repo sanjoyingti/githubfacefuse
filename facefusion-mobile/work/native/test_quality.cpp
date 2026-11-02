@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
   ffpipe::Config cfg;
   bool sequence = false;
   int track = 0;
-  std::vector<std::string> frames;
+  std::vector<std::string> frames, extras;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto v = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -156,6 +156,7 @@ int main(int argc, char** argv) {
     else if (a == "--sequence") sequence = v() == "1";
     else if (a == "--rotated") cfg.detectRotated = v() == "1";
     else if (a == "--track") track = atoi(v().c_str());
+    else if (a == "--extra") extras.push_back(v());   // another photo of the source person
     else frames.push_back(a);
   }
   setenv("FFBACKEND", "ncnn", 1);
@@ -173,6 +174,12 @@ int main(int argc, char** argv) {
   if (!readPpm(src, s) || !pipe.setSource(s)) {
     fprintf(stderr, "source: %s\n", pipe.error().c_str());
     return 3;
+  }
+  for (const std::string& ep : extras) {
+    ffcv::Image e;
+    if (!readPpm(ep, e)) { fprintf(stderr, "cannot read %s\n", ep.c_str()); return 4; }
+    const int r = pipe.addSourcePhoto(0, e);
+    printf("extra %s -> %d %s\n", ep.c_str(), r, r < 0 ? pipe.error().c_str() : "");
   }
   int idx = 0;
   for (const std::string& fp : frames) {

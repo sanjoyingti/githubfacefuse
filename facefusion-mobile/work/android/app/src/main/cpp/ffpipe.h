@@ -314,6 +314,13 @@ class Pipeline {
 
   bool setSource(const ffcv::Image& sourceImage);
   int addSource(const ffcv::Image& sourceImage);
+  // Another photo of the SAME person for source slot `slot`: the slot's identity becomes
+  // the average of its photos' embeddings (re-normalised), as FaceFusion does with several
+  // source images. Returns the slot's photo count on success; -1 no face (error() says
+  // why), -2 the face looks like a different person (cosine to the slot's first photo
+  // under kSamePersonCos), -3 no such slot, -4 the slot already has kMaxSourcePhotos.
+  int addSourcePhoto(int slot, const ffcv::Image& photo);
+  static constexpr int kMaxSourcePhotos = 3;
   void clearSourceSlots();
   void setActiveSource(int index);
   /**

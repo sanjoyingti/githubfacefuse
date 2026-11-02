@@ -407,6 +407,8 @@ object NativePipe {
 
     @JvmStatic external fun setSource(bgr: ByteArray, w: Int, h: Int): Boolean
     @JvmStatic external fun addSource(bgr: ByteArray, w: Int, h: Int): Int
+    /** Another photo of the same person for [slot]; see SourcePhotos. Count, or < 0. */
+    @JvmStatic external fun addSourcePhoto(slot: Int, bgr: ByteArray, w: Int, h: Int): Int
     @JvmStatic external fun setActiveSource(index: Int)
     @JvmStatic external fun setSwapEnabled(enabled: Boolean)
 

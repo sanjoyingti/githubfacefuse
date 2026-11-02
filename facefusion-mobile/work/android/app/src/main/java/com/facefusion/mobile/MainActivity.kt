@@ -53,7 +53,8 @@ private const val KEEP_ORIGINAL = -1
 class MainActivity : ComponentActivity() {
 
     /** One face the user has picked. [thumb] is the decode the pane and the row draw. */
-    private data class SourceItem(val uri: Uri, val thumb: Bitmap)
+    private data class SourceItem(val uri: Uri, val thumb: Bitmap,
+                                  val extras: List<Uri> = emptyList())
 
     /**
      * EVERY source face, shared by both screens, in the order the native slots hold them.
@@ -645,8 +646,77 @@ class MainActivity : ComponentActivity() {
             status = getString(R.string.status_cannot_read_source)
             return null
         }
-        sources = sources + SourceItem(kept, thumb)
+        sources = sources + SourceItem(kept, thumb, loadExtraPhotos(kept))
         return sources.lastIndex
+    }
+
+    // ------------------------------------------------- extra photos of the same person
+
+    /** Where a source face's extra photos live: one folder per main photo, app-private. */
+    private fun extrasDir(primary: Uri): File? {
+        val name = primary.path?.let { File(it).name } ?: return null
+        return File(File(filesDir, "source_extras"), name)
+    }
+
+    private fun loadExtraPhotos(primary: Uri): List<Uri> =
+        (extrasDir(primary)?.listFiles() ?: emptyArray())
+            .filter { it.isFile }
+            .sortedBy { it.lastModified() }
+            .take(SourcePhotos.MAX - 1)
+            .map { Uri.fromFile(it) }
+
+    /** Which source face the photos panel is open for, or -1. */
+    private var photosSheetFor by mutableStateOf(-1)
+    private var pendingExtraFor = -1
+
+    private val pickExtraPhoto =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            val index = pendingExtraFor
+            pendingExtraFor = -1
+            if (uri != null) addExtraPhoto(index, uri)
+        }
+
+    /** Copy [uri] in as another photo of source [index]'s person, then re-register. */
+    private fun addExtraPhoto(index: Int, uri: Uri) {
+        val item = sources.getOrNull(index) ?: return
+        if (item.extras.size >= SourcePhotos.MAX - 1) return
+        val dir = extrasDir(item.uri)?.apply { mkdirs() } ?: return
+        val kept = runCatching {
+            val bytes = (contentResolver.openInputStream(uri) ?: return).use { it.readBytes() }
+            val name = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+                .joinToString("") { "%02x".format(it) }.take(32) + ".img"
+            val f = File(dir, name)
+            if (!f.exists()) f.writeBytes(bytes)
+            Uri.fromFile(f)
+        }.getOrNull() ?: run {
+            status = getString(R.string.status_cannot_read_source); return
+        }
+        if (kept == item.uri || kept in item.extras) return
+        if (decodeOriented(kept) == null) {
+            runCatching { File(kept.path!!).safeDelete() }
+            status = getString(R.string.status_cannot_read_source); return
+        }
+        sources = sources.mapIndexed { i, s -> if (i == index) s.copy(extras = s.extras + kept) else s }
+        // The tag of this slot changed, so the warm pipeline re-registers the sources --
+        // with the content check over every photo -- on the next refresh.
+        previewOptionsChanged(reloads = false)
+    }
+
+    private fun removeExtraPhoto(index: Int, photo: Uri) {
+        val item = sources.getOrNull(index) ?: return
+        runCatching { File(photo.path!!).safeDelete() }
+        SourcePhotos.verdicts.remove(photo)
+        sources = sources.mapIndexed { i, s -> if (i == index) s.copy(extras = s.extras - photo) else s }
+        previewOptionsChanged(reloads = false)
+    }
+
+    /** Delete a removed face's extra photos and their folder. */
+    private fun dropExtraPhotos(primary: Uri) {
+        val dir = extrasDir(primary) ?: return
+        runCatching {
+            dir.listFiles()?.forEach { it.safeDelete() }
+            dir.safeDelete()
+        }
     }
 
     /** The row's own copies. App-private; nothing else on the phone can read it. */
@@ -809,6 +879,8 @@ class MainActivity : ComponentActivity() {
         // work until the next launch. The LIBRARY copy is a different file and is left
         // alone: keeping a face is what protects it from this.
         val gone = sources[index].uri
+        dropExtraPhotos(gone)
+        photosSheetFor = -1
         runCatching {
             if (gone.scheme == "file") {
                 val f = File(gone.path!!)
@@ -852,15 +924,25 @@ class MainActivity : ComponentActivity() {
         // Empty is a valid list only while face_swapper is off (SwapOptions.swapsFace).
         if (sources.isEmpty()) return if (opts.swapsFace) null else PreparedSources(emptyList(), emptyList())
         val bitmaps = sources.map { decodeOriented(it.uri) ?: return null }
+        // Every extra photo is CHECKED with the rest (it joins the screened list) and
+        // registered into its face's slot. One that cannot be read is left out.
+        val extraBitmaps = mutableListOf<Bitmap>()
         val slots = sources.zip(bitmaps).map { (item, bmp) ->
             val soft = bmp.asArgb8888() ?: return null
             val px = IntArray(soft.width * soft.height)
             soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+            val extras = item.extras.mapNotNull { u ->
+                val eb = decodeOriented(u) ?: return@mapNotNull null
+                extraBitmaps += eb
+                toExtra(u, eb)
+            }
             PreviewEngine.SourceSlot(
-                item.uri, NativePipe.argbToBgr(px, soft.width, soft.height),
-                soft.width, soft.height)
+                // The tag names the photos too: adding or removing one re-registers.
+                if (item.extras.isEmpty()) item.uri else (item.uri to item.extras),
+                NativePipe.argbToBgr(px, soft.width, soft.height),
+                soft.width, soft.height, extras)
         }
-        return PreparedSources(bitmaps, slots)
+        return PreparedSources(bitmaps + extraBitmaps, slots)
     }
 
     /**
@@ -887,6 +969,14 @@ class MainActivity : ComponentActivity() {
         return null
     }
 
+    private fun toExtra(tag: Any, bmp: Bitmap): SourcePhotos.Extra? {
+        val soft = bmp.asArgb8888() ?: return null
+        val px = IntArray(soft.width * soft.height)
+        soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+        return SourcePhotos.Extra(tag, NativePipe.argbToBgr(px, soft.width, soft.height),
+                                  soft.width, soft.height)
+    }
+
     /** Register a prepared list into the pipeline that is loaded now. Null on success. */
     private fun registerSources(prepared: PreparedSources): String? {
         if (prepared.slots.isEmpty()) {
@@ -896,10 +986,12 @@ class MainActivity : ComponentActivity() {
         val first = prepared.slots.first()
         if (!NativePipe.setSource(first.bgr, first.width, first.height))
             return "source: ${NativePipe.lastError()}"
+        SourcePhotos.register(0, first.extras)
         for ((i, slot) in prepared.slots.withIndex()) {
             if (i == 0) continue
             if (NativePipe.addSource(slot.bgr, slot.width, slot.height) < 0)
                 return "source ${i + 1}: ${NativePipe.lastError()}"
+            SourcePhotos.register(i, slot.extras)
         }
         NativePipe.setActiveSource(swapSourceIndex.coerceIn(0, prepared.slots.lastIndex))
         NativePipe.setFaceAssignEnabled(swapAssignMode)
@@ -1866,6 +1958,8 @@ class MainActivity : ComponentActivity() {
                                 sourceThumb = sourceThumb,
                                 sourceThumbs = sources.map { it.thumb },
                                 activeSource = swapSourceIndex,
+                                sourcePhotoCounts = sources.map { 1 + it.extras.size },
+                                onOpenSourcePhotos = { i -> photosSheetFor = i },
                                 onSelectSource = ::selectSwapSource,
                                 assignMode = swapAssignMode,
                                 personThumbs = swapPersonThumbs,
@@ -2218,6 +2312,29 @@ class MainActivity : ComponentActivity() {
                                     Text(stringResource(R.string.common_cancel))
                                 }
                             },
+                        )
+                    }
+
+                    sources.getOrNull(photosSheetFor)?.let { item ->
+                        val index = photosSheetFor
+                        val extraThumbs = androidx.compose.runtime.remember(item.extras) {
+                            item.extras.map { u -> u to decodeOriented(u) }
+                        }
+                        com.facefusion.mobile.ui.SourcePhotosDialog(
+                            faceLabel = getString(R.string.live_source_label, index + 1),
+                            photos = listOf(com.facefusion.mobile.ui.SourcePhotoTile(
+                                item.thumb, main = true, verdict = null)) +
+                                extraThumbs.mapNotNull { (u, b) ->
+                                    b?.let { com.facefusion.mobile.ui.SourcePhotoTile(
+                                        it, main = false, verdict = SourcePhotos.verdicts[u]) }
+                                },
+                            max = SourcePhotos.MAX,
+                            onAdd = {
+                                pendingExtraFor = index
+                                pickExtraPhoto.launch("image/*")
+                            },
+                            onRemove = { k -> item.extras.getOrNull(k)?.let { removeExtraPhoto(index, it) } },
+                            onDismiss = { photosSheetFor = -1 },
                         )
                     }
 
@@ -4204,6 +4321,18 @@ class MainActivity : ComponentActivity() {
                                     NativePipe.setSource(bgr, soft.width, soft.height)
                                 else NativePipe.addSource(bgr, soft.width, soft.height) >= 0
                     if (!okOne) return@withContext "no face in source ${i + 1}"
+                    // This face's other photos: each checked like the main one, then
+                    // averaged into the same slot.
+                    val extras = ls.extras.mapNotNull { u ->
+                        val eb = decodeOriented(u) ?: return@mapNotNull null
+                        val ev = ContentGate.inspectStill(eb)
+                        appendLog("live source ${i + 1} extra photo score %+.3f".format(ev.score))
+                        if (!ev.permitted)
+                            return@withContext ContentGate.message(
+                                this@MainActivity, R.string.gate_subject_source_image, ev)
+                        toExtra(u, eb)
+                    }
+                    SourcePhotos.register(i, extras)
                 }
                 // A fresh pipeline defaults swapEnabled to true; the switch can be OFF
                 // before the pump ever ran, so the UI's value is pushed onto it here.
@@ -5078,6 +5207,19 @@ class MainActivity : ComponentActivity() {
                                 NativePipe.argbToBgr(px, soft.width, soft.height),
                                 soft.width, soft.height))
                             error("source: " + NativePipe.lastError())
+                        // The same person's other photos, checked and averaged in.
+                        val extraUris = sources.getOrNull(swapSourceIndex)?.extras.orEmpty()
+                        val extras = extraUris.mapNotNull { u ->
+                            val eb = decodeOriented(u) ?: return@mapNotNull null
+                            ContentGate.inspectStill(eb).let {
+                                appendLog("source extra photo score %+.3f".format(it.score))
+                                if (!it.permitted) throw ContentGate.Refused(
+                                    ContentGate.message(this@MainActivity,
+                                                        R.string.gate_subject_source_image, it))
+                            }
+                            toExtra(u, eb)
+                        }
+                        SourcePhotos.register(0, extras)
                     }
                     val lipsN = pushLipSelection()
                     appendLog((if (src != null) "source ready" else "face_swapper off") +

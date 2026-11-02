@@ -181,6 +181,10 @@ struct Pipeline::Impl {
   float srcEmbeddingNorm[512]{};
   bool haveSource = false;
   std::vector<std::array<float, 512>> sourceSlots;
+  // Every photo's normalised embedding per slot, first photo first; sourceSlots[i] is
+  // their re-normalised mean. Kept in step with sourceSlots by setSource / addSource /
+  // addSourcePhoto / clearSourceSlots.
+  std::vector<std::vector<std::array<float, 512>>> slotPhotos;
   int activeSource = 0;
   // ONE remembered decision about ONE person: who they are, and what to do with them.
   //
@@ -1388,6 +1392,7 @@ bool Pipeline::setSource(const ffcv::Image& img) {
   std::array<float, 512> slot{};
   std::memcpy(slot.data(), best->embeddingNorm, sizeof(float) * 512);
   p_->sourceSlots.push_back(slot);
+  p_->slotPhotos.assign(1, {slot});
   p_->activeSource = 0;
   p_->faceAssignments.clear();
   p_->tracked.clear(); p_->frameSources.clear(); p_->frameSourcesValid = false;
@@ -1421,6 +1426,8 @@ int Pipeline::addSource(const ffcv::Image& img) {
   std::array<float, 512> slot{};
   std::memcpy(slot.data(), best->embeddingNorm, sizeof(float) * 512);
   p_->sourceSlots.push_back(slot);
+  p_->slotPhotos.resize(p_->sourceSlots.size() - 1);
+  p_->slotPhotos.push_back({slot});
   if (!p_->haveSource) {
     std::memcpy(p_->srcEmbeddingNorm, slot.data(), sizeof(float) * 512);
     std::memcpy(p_->srcEmbedding, best->embedding, sizeof(p_->srcEmbedding));
@@ -1429,7 +1436,56 @@ int Pipeline::addSource(const ffcv::Image& img) {
   return (int)p_->sourceSlots.size() - 1;
 }
 
+int Pipeline::addSourcePhoto(int slotIndex, const ffcv::Image& img) {
+  err_.clear();
+  if (slotIndex < 0 || slotIndex >= (int)p_->sourceSlots.size()) {
+    err_ = "no such source slot"; return -3;
+  }
+  p_->slotPhotos.resize(p_->sourceSlots.size());
+  auto& photos = p_->slotPhotos[(size_t)slotIndex];
+  if (photos.empty()) photos.push_back(p_->sourceSlots[(size_t)slotIndex]);
+  if ((int)photos.size() >= kMaxSourcePhotos) {
+    err_ = "this face already has the most photos"; return -4;
+  }
+  // Detected cold, like every source photo (see addSource): never from the tracker.
+  auto faces = analyse(img, /*boxesOnly=*/false, /*noTrack=*/true);
+  if (faces.empty()) { if (err_.empty()) err_ = "no face detected in this photo"; return -1; }
+  const Face* best = &faces[0]; float area = -1.f;
+  for (const auto& f : faces) {
+    const float a = (f.box[2] - f.box[0]) * (f.box[3] - f.box[1]);
+    if (a > area) { area = a; best = &f; }
+  }
+  // SAME PERSON: cosine of the normalised embeddings against the slot's FIRST photo.
+  // Photos of one person at different angles and light score well above this; different
+  // people score near zero. Averaging in a stranger would blend two identities.
+  constexpr float kSamePersonCos = 0.30f;
+  const auto& first = photos.front();
+  float cosv = 0.f;
+  for (int i = 0; i < 512; ++i) cosv += first[(size_t)i] * best->embeddingNorm[i];
+  if (!(cosv >= kSamePersonCos)) {
+    char msg[96];
+    snprintf(msg, sizeof(msg), "looks like a different person (match %.2f)", cosv);
+    err_ = msg;
+    return -2;
+  }
+  std::array<float, 512> e{};
+  std::memcpy(e.data(), best->embeddingNorm, sizeof(float) * 512);
+  photos.push_back(e);
+  // The slot's identity: the mean of its photos, re-normalised to unit length.
+  std::array<float, 512> mean{};
+  for (const auto& ph : photos)
+    for (int i = 0; i < 512; ++i) mean[(size_t)i] += ph[(size_t)i];
+  double n2 = 0;
+  for (float v : mean) n2 += (double)v * v;
+  const float inv = n2 > 0 ? (float)(1.0 / std::sqrt(n2)) : 0.f;
+  for (float& v : mean) v *= inv;
+  p_->sourceSlots[(size_t)slotIndex] = mean;
+  if (slotIndex == 0) std::memcpy(p_->srcEmbeddingNorm, mean.data(), sizeof(float) * 512);
+  return (int)photos.size();
+}
+
 void Pipeline::clearSourceSlots() {
+  p_->slotPhotos.clear();
   p_->sourceSlots.clear(); p_->faceAssignments.clear();
   p_->tracked.clear(); p_->frameSources.clear(); p_->frameSourcesValid = false;
   p_->selectedId = -1;

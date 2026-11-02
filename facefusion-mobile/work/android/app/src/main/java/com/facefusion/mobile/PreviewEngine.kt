@@ -28,7 +28,8 @@ class PreviewEngine {
      * it must identify the IMAGE and not the array (a fresh decode of the same file has
      * to compare equal, or every refresh would reload).
      */
-    data class SourceSlot(val tag: Any, val bgr: ByteArray, val width: Int, val height: Int)
+    data class SourceSlot(val tag: Any, val bgr: ByteArray, val width: Int, val height: Int,
+                          val extras: List<SourcePhotos.Extra> = emptyList())
 
     /** What a swap preview produced. [faces] is 0 when nothing was detected. */
     data class Swapped(val bitmap: Bitmap?, val faces: Int, val error: String? = null)
@@ -423,6 +424,7 @@ class PreviewEngine {
             invalidate()
             return@withContext "No face found in the source image"
         }
+        SourcePhotos.register(0, slots[0].extras)
         for ((i, slot) in slots.withIndex()) {
             if (i == 0) continue
             if (NativePipe.addSource(slot.bgr, slot.width, slot.height) < 0) {
@@ -432,6 +434,7 @@ class PreviewEngine {
                 invalidate()
                 return@withContext "No face found in source image ${i + 1}"
             }
+            SourcePhotos.register(i, slot.extras)
         }
         appliedSlots = tags
         NativePipe.setActiveSource(activeSource.coerceIn(0, slots.lastIndex))

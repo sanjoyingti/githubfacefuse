@@ -1084,6 +1084,21 @@ Java_com_facefusion_mobile_NativePipe_addSource(JNIEnv* env, jclass, jbyteArray 
   return (jint)g_pipe->addSource(img);
 }
 
+JNIEXPORT jint JNICALL
+Java_com_facefusion_mobile_NativePipe_addSourcePhoto(JNIEnv* env, jclass, jint slot,
+                                                     jbyteArray jBgr, jint w, jint h) {
+  FF_PIPE_LOCK;
+  if (!g_pipe) { g_err = "pipeline not initialised"; return -1; }
+  if (w <= 0 || h <= 0 || env->GetArrayLength(jBgr) != (jsize)((size_t)w * h * 3)) {
+    g_err = "addSourcePhoto: buffer is not w*h*3 bytes"; return -1;
+  }
+  ffcv::Image img(w, h, 3);
+  env->GetByteArrayRegion(jBgr, 0, (jsize)img.data.size(), (jbyte*)img.data.data());
+  const int r = g_pipe->addSourcePhoto(slot, img);
+  if (r < 0) g_err = g_pipe->error();
+  return (jint)r;
+}
+
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setActiveSource(JNIEnv* env, jclass, jint index) {
   FF_PIPE_LOCK;
