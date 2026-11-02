@@ -1286,6 +1286,21 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   return faces;
 }
 
+void Pipeline::trimModels(bool keepLipSync, bool keepPortrait, bool keepEnhancer) {
+  if (!p_) return;
+  auto drop = [](ffnn::Handle& h) {
+    if (h) ffnn::release(h);
+    h = nullptr;
+  };
+  if (!keepLipSync) { drop(p_->n.lip); p_->n.lipIsEdtalk = false; }
+  if (!keepPortrait) {
+    drop(p_->n.lpFeat); drop(p_->n.lpMotion); drop(p_->n.lpGen);
+    p_->lpMlps = ffportrait::Mlps();
+    std::vector<float>().swap(p_->lpHg);   // the 29 MB hourglass buffer too
+  }
+  if (!keepEnhancer) drop(p_->n.enh);
+}
+
 void Pipeline::setSequence(bool on) {
   if (!p_) return;
   p_->seq.on = on;

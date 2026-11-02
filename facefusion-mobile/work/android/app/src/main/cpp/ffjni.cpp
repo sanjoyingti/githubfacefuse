@@ -380,6 +380,13 @@ Java_com_facefusion_mobile_NativePipe_setQuality(JNIEnv*, jclass, jboolean occlu
   }
 }
 
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_trimModels(JNIEnv*, jclass, jboolean lip,
+                                                 jboolean portrait, jboolean enhancer) {
+  FF_PIPE_LOCK;
+  if (g_pipe) g_pipe->trimModels(lip == JNI_TRUE, portrait == JNI_TRUE, enhancer == JNI_TRUE);
+}
+
 // NPU clock profile -- see ffqnn::PowerProfile. Not a pipeline call, so no pipe lock.
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setPowerProfile(JNIEnv*, jclass, jint profile) {

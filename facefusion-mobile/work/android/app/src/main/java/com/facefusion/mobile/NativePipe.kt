@@ -124,6 +124,10 @@ object NativePipe {
      */
     @JvmStatic external fun setSequence(on: Boolean)
 
+    /** Release the optional models a run will not use (lip sync, face editor, enhancer). */
+    @JvmStatic external fun trimModels(keepLipSync: Boolean, keepPortrait: Boolean,
+                                       keepEnhancer: Boolean)
+
     /** NPU clock profile: 0 burst (previews), 1 sustained (video swaps), 2 balanced (warm). */
     @JvmStatic external fun setPowerProfile(profile: Int)
 

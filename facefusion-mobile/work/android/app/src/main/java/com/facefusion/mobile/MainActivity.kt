@@ -3713,15 +3713,31 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile private var appVisible = true
 
+    /** The models were released when the app went to the background; reload on return. */
+    private var releasedInBackground = false
+
     override fun onStart() {
         super.onStart()
         appVisible = true
+        if (releasedInBackground) {
+            releasedInBackground = false
+            // Back in front: load the models again for the preview of what is on screen.
+            if (targetFile != null || targetImage != null) refreshSwapped(force = true)
+        }
     }
 
     override fun onStop() {
         super.onStop()
         appVisible = false
         if (liveRunning) stopLive()
+        // IDLE in the background: give the models' memory back. With ~600 MB of models
+        // loaded the app is one of the first Android stops when another app needs memory
+        // (the "low memory" exits in the bug reports). Not while anything is running: a
+        // swap, a batch or the remote API keeps its models.
+        if (!busy && !BatchStatus.running && PipeGuard.holder == null && previewWarm) {
+            invalidatePreview()
+            releasedInBackground = true
+        }
     }
 
     private fun toggleLive() {
@@ -4596,6 +4612,11 @@ class MainActivity : ComponentActivity() {
                     noteTierRejection()
                     if (!ok) error("init: ${NativePipe.lastError()}")
                     NativePipe.setSwapEnabled(opts.swapsFace)
+                    // Less memory for the length of the run: drop what these options never
+                    // use, so Android is less likely to stop the app mid-swap.
+                    NativePipe.trimModels(opts.lipSync,
+                                          opts.faceEdit || opts.expressionRestore || opts.faceAnimate,
+                                          opts.faceEnhance)
                     if (!opts.swapsFace) appendLog("face_swapper off")
                     // WHICH UNIT, in the box the user can actually read, and only after
                     // init: the GPU agreement check runs on the first open that asks for the
@@ -5029,6 +5050,11 @@ class MainActivity : ComponentActivity() {
                     noteTierRejection()
                     if (!ok) error("init: " + NativePipe.lastError())
                     NativePipe.setSwapEnabled(opts.swapsFace)
+                    // Less memory for the length of the run: drop what these options never
+                    // use, so Android is less likely to stop the app mid-swap.
+                    NativePipe.trimModels(opts.lipSync,
+                                          opts.faceEdit || opts.expressionRestore || opts.faceAnimate,
+                                          opts.faceEnhance)
 
                     // face_swapper off and no source: nothing to read or check here, and
                     // every clip in the queue is still checked on its own below.

@@ -299,6 +299,11 @@ class Pipeline {
   // frames (the preview, photos, source images), where "the previous frame" means nothing.
   void setSequence(bool on);
 
+  // Releases the optional models this RUN will not use (lip sync, LivePortrait, enhancer),
+  // so a long video swap holds less memory and Android is less likely to stop the app for
+  // memory. The next init (the preview after the run) loads everything again.
+  void trimModels(bool keepLipSync, bool keepPortrait, bool keepEnhancer);
+
   // Whether the optional mask models opened and executed (they are opened lazily, on the
   // first frame that asks for them).
   bool hasOcclusionModel() const;
