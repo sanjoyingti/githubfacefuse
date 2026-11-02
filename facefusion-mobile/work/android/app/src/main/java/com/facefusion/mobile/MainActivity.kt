@@ -2074,6 +2074,11 @@ class MainActivity : ComponentActivity() {
                                 // ONE button. A queue of one is a single run, and the
                                 // batch runner would only add a loop around it -- and its
                                 // own trim rule, which the single case must keep.
+                                resumeLabel = resumeAvailable?.let { j ->
+                                    getString(R.string.resume_button, j.targetName,
+                                              fmt(j.doneUs / 1000f), fmt(j.totalUs / 1000f))
+                                },
+                                onResume = { resumeAvailable?.let { resumeSwap(it) } },
                                 onSwap = {
                                     // ⚠ size > 1, not isEmpty. A queue of exactly one is
                                     // the ordinary single-clip run and must keep its TRIM:
@@ -4670,10 +4675,19 @@ class MainActivity : ComponentActivity() {
      * crashed -- is offered once per start: Continue reloads its video with the same trim
      * and output settings and carries on at the next unfinished piece.
      */
+    /** The unfinished swap Continue would resume, for the Swap screen's button; or null. */
+    private var resumeAvailable by mutableStateOf<ResumeJob?>(null)
+
+    private fun refreshResume() {
+        resumeAvailable = runCatching { ResumeStore.load(this) }.getOrNull()
+    }
+
     private fun offerResume() {
-        val job = runCatching { ResumeStore.load(this) }.getOrNull() ?: return
+        refreshResume()
+        val job = resumeAvailable ?: return
+        // Offered even when no piece had finished yet: Continue then starts the same video
+        // with the same trim and output settings, which is still what the person wanted.
         // done == count too: every piece finished but the app stopped before joining them.
-        if (job.done <= 0) return
         pendingConfirm = Confirm(
             getString(R.string.resume_title),
             getString(R.string.resume_body, job.targetName,
@@ -4684,6 +4698,11 @@ class MainActivity : ComponentActivity() {
 
     private fun resumeSwap(job: ResumeJob) {
         if (busy) return
+        // Re-read: the record on disk is the truth (pieces may have been checked away).
+        val fresh = runCatching { ResumeStore.load(this) }.getOrNull() ?: run {
+            refreshResume(); return
+        }
+        if (fresh.targetPath != job.targetPath) { refreshResume(); return }
         loadTarget(Uri.fromFile(File(job.targetPath))) {
             trimStartMs = job.startUs / 1000f
             trimEndMs = if (job.toEnd) durationMs.toFloat() else job.endUs / 1000f
@@ -4970,6 +4989,7 @@ class MainActivity : ComponentActivity() {
             PipeGuard.release()
             busy = false
           } finally {
+            refreshResume()
             SwapService.stop()
             runCatching { NativePipe.setPowerProfile(0) }   // burst again for previews
           }

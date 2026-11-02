@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 30 makes Continue dependable: progress is saved every 2 seconds of video (was 5), an unfinished swap is offered even if it stopped before the first save, the app's copy of the video is kept outside the cache (which Android and cleaner tools empty), and a "Continue unfinished swap" button stays on the Swap screen until it is finished or a new swap replaces it. Continue carries on from the last save and gives you the whole video.
+
           Build 29 is faster with the same result, and comes set up:
           - Reading the video, swapping on the AI chip and saving the video now run at the same time instead of one after another, so the AI chip no longer waits for the file. Same frames, same order, same output.
           - Ready-made settings on a new install: 512 pixel boost, occlusion mask, real mouth inside, skin-tone matching, expression restorer 80, face enhancer 50 (once its model is downloaded), head-turn fade, motion smoothing, Smart speed, Faster masks, Fast video 2, output 30 fps and 4K clips at 1080p. Settings you saved before are kept; Output settings -> source size for full 4K.

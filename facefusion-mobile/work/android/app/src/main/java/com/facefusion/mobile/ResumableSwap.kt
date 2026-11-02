@@ -70,13 +70,15 @@ data class ResumeJob(
 
     companion object {
         /**
-         * 5 seconds of video per piece. Progress is only saved when a piece finishes, and
+         * 2 seconds of video per piece (5 until build 30: with the most realistic settings
+         * the first 5 s could take over a minute, and closing the app before it finished
+         * left nothing to continue). Progress is only saved when a piece finishes, and
          * with the heavy settings at 60 fps a 20-second piece took minutes -- closing the
          * app before the first one finished left nothing to continue. Each piece costs
          * only an encoder start and re-decoding from the nearest keyframe, which is small
          * next to swapping its frames.
          */
-        const val CHUNK_US = 5_000_000L
+        const val CHUNK_US = 2_000_000L
 
         fun fromJson(s: String): ResumeJob? = runCatching {
             val o = JSONObject(s)
@@ -102,7 +104,11 @@ object ResumeStore {
      * not change what a resumed swap reads. A hard link (no copy, no extra space) next to
      * the app's target copy; a copy if the link is not possible.
      */
-    fun targetFor(ctx: Context): File = File(ctx.cacheDir, "resume_target.mp4")
+    // In filesDir, NOT cacheDir: Android and phone-cleaner tools empty the cache, and
+    // with it went the video an unfinished swap needs. filesDir is on the same file
+    // system as the app's target copy (cacheDir), so the hard link still works.
+    fun targetFor(ctx: Context): File = File(ctx.filesDir, "resume_target.mp4")
+    private fun oldTargetFor(ctx: Context): File = File(ctx.cacheDir, "resume_target.mp4")
 
     fun load(ctx: Context): ResumeJob? {
         val f = jobFile(ctx)
@@ -128,6 +134,7 @@ object ResumeStore {
     fun clear(ctx: Context) {
         dir(ctx).listFiles()?.forEach { it.safeDelete() }
         targetFor(ctx).safeDelete()
+        oldTargetFor(ctx).safeDelete()
     }
 
     /** Start a new job for [target], replacing any old one. */

@@ -24,6 +24,7 @@
     <string name="resume_title">Continue unfinished swap?</string>
     <string name="resume_body">"%1$s" was stopped at %2$s of %3$s. Continue from where it stopped? The same video, trim and output settings are used.</string>
     <string name="resume_ok">Continue</string>
+    <string name="resume_button">Continue unfinished swap: %1$s (%2$s of %3$s done)</string>
     <string name="opt_parallel_masks">Faster masks</string>
     <string name="opt_parallel_masks_hint">Works out the masks on the graphics chip while the AI chip swaps the face, at the same time. Faster with the masks on, same result.</string>
     <string name="opt_smart_speed">Smart speed</string>

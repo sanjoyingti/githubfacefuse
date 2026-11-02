@@ -327,6 +327,9 @@ fun SwapScreen(
     onDeleteOutput: () -> Unit,
     onSwap: () -> Unit,
     onCancel: () -> Unit,
+    /** An unfinished swap can be continued: the button's text, or null for no button. */
+    resumeLabel: String? = null,
+    onResume: () -> Unit = {},
     modelsMissing: Boolean,
     /** Why the models are missing when it is not simply "never downloaded". */
     modelsMissingNote: String? = null,
@@ -1250,6 +1253,17 @@ fun SwapScreen(
                 }
                 }
             }
+        }
+
+        // ------------------------------------------------------------ continue
+        // An unfinished swap (stopped, closed or crashed) stays offered here until it is
+        // finished or a new swap replaces it -- not only in the one-time question at start.
+        if (resumeLabel != null && idle) OutlinedButton(
+            onClick = onResume,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Text(resumeLabel, fontSize = 14.sp, textAlign = TextAlign.Center)
         }
 
         // ---------------------------------------------------------------- run
