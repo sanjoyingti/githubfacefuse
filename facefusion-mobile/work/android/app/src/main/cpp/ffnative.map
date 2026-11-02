@@ -1,0 +1,12 @@
+/* Only the JNI entry points leave libffnative.so. Everything else -- above all the
+   statically linked OpenMP runtime (libomp), ncnn and glslang -- stays local, so no other
+   library in the process can interpose its symbols or share its globals. With libomp
+   exported, its internal calls went through the PLT and its state through the GOT, and
+   a second copy loaded elsewhere in the process could take them over: the
+   __kmp_affinity_initialize aborts in the Galaxy S25 Ultra / Android 17 bug reports. */
+{
+  global:
+    Java_*;
+  local:
+    *;
+};

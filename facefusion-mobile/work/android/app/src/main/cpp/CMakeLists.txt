@@ -20,6 +20,13 @@ target_include_directories(ffnative PRIVATE
 # setPixels. See liveFrame in ffjni.cpp.
 target_link_libraries(ffnative android log dl jnigraphics)
 target_compile_options(ffnative PRIVATE -O3 -fvisibility=hidden -Wall)
+# Export only the JNI functions and bind every internal reference inside this library:
+# the static libomp/ncnn/glslang symbols must not be visible to, or replaced by, any
+# other library in the app process (see ffnative.map).
+target_link_options(ffnative PRIVATE
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/ffnative.map"
+    -Wl,--exclude-libs,ALL -Wl,-Bsymbolic)
+set_property(TARGET ffnative APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ffnative.map")
 
 # ---------------------------------------------------------------------------
 # Optional ncnn backend (roadmap 6): CPU (NEON) or GPU (Vulkan), for parts with no Hexagon.
