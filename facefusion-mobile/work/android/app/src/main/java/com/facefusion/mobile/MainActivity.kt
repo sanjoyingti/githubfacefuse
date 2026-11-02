@@ -3255,11 +3255,10 @@ class MainActivity : ComponentActivity() {
                 targetFile = l.file; durationMs = l.durationMs
                 inputFps = l.fps
                 targetW = l.width; targetH = l.height
-                // ⚠ The output choices belong to the clip that is going away. "24 fps" and
-                // "720p" were answers about ITS 30 fps and ITS 2160p; carrying them onto a
-                // new clip applies a decision nobody made about it. Reset, not remembered.
-                if (opts.outputFps != 0 || opts.outputMaxShortEdge != 0)
-                    applyOpts(opts.copy(outputFps = 0, outputMaxShortEdge = 0))
+                // The output frame rate and size are KEPT for the next clip (the user's
+                // request: settings are never changed behind their back). Both are safe to
+                // carry over: VideoSwapper never raises a clip above its own frame rate and
+                // never scales it up, so "30 fps" on a 24 fps clip simply stays 24.
                 trimStartMs = 0f; trimEndMs = l.durationMs.toFloat()
                 targetAspect = if (l.width > 0 && l.height > 0)
                     l.width.toFloat() / l.height else 16f / 9f
@@ -4509,11 +4508,9 @@ class MainActivity : ComponentActivity() {
      * else stay as they were.
      */
     private fun enterSafeMode() {
-        val safe = opts.copy(expressionRestore = false, pixelBoost = 1, detectRotated = false,
-                             parallelMasks = false)
-        val changed = safe != opts
-        if (changed) { opts = safe; safe.save(this) }
-        val msg = getString(if (changed) R.string.status_safe_mode else R.string.status_safe_mode_same)
+        // Settings are NOT changed: the user decides. The message names what to try if the
+        // crashes repeat.
+        val msg = getString(R.string.status_safe_mode)
         appendLog(msg)
         status = if (status.isBlank()) msg else "$status\n$msg"
         val last = File(cacheDir, "target.mp4")
