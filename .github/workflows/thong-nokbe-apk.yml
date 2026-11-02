@@ -10,9 +10,10 @@
 #
 # Runs on every push that changes thong-nokbe/ (or this file), or manually from the Actions tab.
 #
-# Sending an update to everyone: put [update] in the commit message (the rest of its first line
-# becomes the "what's new" text), or run it manually with "Send update to everyone" ticked.
-# Every phone then gets a notification (even with the app closed) and an update box when the app opens.
+# Every successful build is sent to everyone as an update: each phone gets a notification (even with
+# the app closed) and an update box when the app opens; "Update now" downloads and installs it in the app.
+# The first line of the commit message is the "what's new" text. Put [no-update] in the commit
+# message (or untick the box on a manual run) to build without telling anyone.
 name: Thong Nokbe Gym APK
 
 on:
@@ -23,7 +24,7 @@ on:
       announce:
         description: Send update to everyone (notification + update box in the app)
         type: boolean
-        default: false
+        default: true
       notes:
         description: What's new (shown to members)
         type: string
@@ -118,7 +119,7 @@ jobs:
           gh release upload thong-nokbe-latest ThongNokbeGym.apk --clobber
 
       - name: Send update to everyone (notification + in-app update box)
-        if: env.CONFIG == 'firebase' && ((github.event_name == 'workflow_dispatch' && inputs.announce) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[update]')))
+        if: env.CONFIG == 'firebase' && ((github.event_name == 'workflow_dispatch' && inputs.announce) || (github.event_name == 'push' && !contains(github.event.head_commit.message, '[no-update]')))
         env:
           GH_TOKEN: ${{ github.token }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
@@ -128,7 +129,7 @@ jobs:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           NOTES="$INPUT_NOTES"
-          if [ -z "$NOTES" ]; then NOTES="$(printf '%s' "$COMMIT_MESSAGE" | head -n1 | sed 's/\[update\]//g; s/^ *//; s/ *$//')"; fi
+          if [ -z "$NOTES" ]; then NOTES="$(printf '%s' "$COMMIT_MESSAGE" | head -n1 | sed 's/\[[a-z-]*\]//g; s/^ *//; s/ *$//')"; fi
           export NOTES
           node -e 'const fs=require("fs");fs.writeFileSync("version.json",JSON.stringify({build:Number(process.env.BUILD),notes:process.env.NOTES,url:process.env.APK_URL})+"\n")'
           cat version.json

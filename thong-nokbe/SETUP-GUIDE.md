@@ -126,6 +126,9 @@ Each phone checks for a new version when the app opens, and gets a notification 
 **One-time setup (for the notification):** on GitHub, open the repository → **Settings → Secrets and variables → Actions → New repository secret**.
 Name: `FIREBASE_SERVICE_ACCOUNT`. Secret: the whole text of the Firebase service-account key file (the same file you put in Cloudflare). Tap **Add secret**.
 
-**Sending an update:** build with `[update]` in the commit message (the rest of the first line is the "what's new" text),
-or open **Actions → Thong Nokbe Gym APK → Run workflow**, tick **Send update to everyone**, type what's new, and run it.
+**Sending an update:** happens by itself. Every new build on GitHub is sent to everyone: a notification
+(even with the app closed) and an update box when the app opens. "Update now" downloads the new version
+inside the app and opens Android's installer; the person taps **Update** (the very first time Android also
+asks to "Allow from this source"). Android never lets apps from outside the Play Store update with no tap at all.
+The first line of the commit message is the "what's new" text; put `[no-update]` in it to build without telling anyone.
 Phones with the app before this feature (build 24 or older) must install the newest APK once by hand.

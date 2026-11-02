@@ -6,7 +6,7 @@ import { Avatar, Button, Card, Input } from '../components/ui';
 import { formatPhone } from '../lib/phone';
 import { APP_NAME, colors } from '../theme';
 import { useBottomInset } from '../components/useBottomInset';
-import { BUILD_NUMBER, downloadUpdate, fetchLatestUpdate } from '../lib/appUpdate';
+import { BUILD_NUMBER, fetchLatestUpdate, requestUpdateCheck } from '../lib/appUpdate';
 
 export default function Profile() {
   const me = useMe();
@@ -68,12 +68,8 @@ export default function Profile() {
             setChecking(true);
             const u = await fetchLatestUpdate();
             setChecking(false);
-            if (u && BUILD_NUMBER && u.build > BUILD_NUMBER) {
-              Alert.alert('🎉 New version available', `${u.notes ? u.notes + '\n\n' : ''}Download build ${u.build} now?`, [
-                { text: 'Later', style: 'cancel' },
-                { text: 'Update now', onPress: () => downloadUpdate(u.url) },
-              ]);
-            } else Alert.alert('✅ No new version', u ? `You have the newest version (build ${BUILD_NUMBER || u.build}).` : 'No update has been sent yet. (Or check your internet.)');
+            if (u && BUILD_NUMBER && u.build > BUILD_NUMBER) requestUpdateCheck(); // opens the update box
+            else Alert.alert('✅ No new version', u ? `You have the newest version (build ${BUILD_NUMBER || u.build}).` : 'No update has been sent yet. (Or check your internet.)');
           }}
         />
       </Card>
