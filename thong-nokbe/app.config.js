@@ -15,7 +15,12 @@ function googleWebClientId() {
   return '';
 }
 
+// Build number from the GitHub build (EXPO_PUBLIC_BUILD_NUMBER): Android needs it to grow with each update.
+const build = Number(process.env.EXPO_PUBLIC_BUILD_NUMBER) || 1;
+
 module.exports = ({ config }) => ({
   ...config,
+  version: `1.0.${build}`,
+  android: { ...(config.android ?? {}), versionCode: build },
   extra: { ...(config.extra ?? {}), googleWebClientId: googleWebClientId() },
 });

@@ -19,6 +19,7 @@ export function setupNotifications(): Promise<boolean> {
     ready = (async () => {
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('messages', { name: 'Messages & fee notices', importance: AndroidImportance.HIGH, sound: 'default' });
+        await Notifications.setNotificationChannelAsync('updates', { name: 'App updates', importance: AndroidImportance.HIGH, sound: 'default' });
         await Notifications.setNotificationChannelAsync('calls', {
           name: 'Incoming calls',
           importance: AndroidImportance.MAX,

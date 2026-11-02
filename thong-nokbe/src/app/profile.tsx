@@ -6,6 +6,7 @@ import { Avatar, Button, Card, Input } from '../components/ui';
 import { formatPhone } from '../lib/phone';
 import { APP_NAME, colors } from '../theme';
 import { useBottomInset } from '../components/useBottomInset';
+import { BUILD_NUMBER, downloadUpdate, fetchLatestUpdate } from '../lib/appUpdate';
 
 export default function Profile() {
   const me = useMe();
@@ -14,6 +15,7 @@ export default function Profile() {
   const { groups } = useChats();
   const [name, setName] = useState(me.name);
   const [about, setAbout] = useState(me.about ?? '');
+  const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
   const dirty = name.trim() !== me.name || about.trim() !== (me.about ?? '');
 
@@ -55,6 +57,26 @@ export default function Profile() {
           <Text style={{ color: colors.muted }}>None yet</Text>
         )}
       </Card>
+      <Card>
+        <Text style={{ fontWeight: '800', fontSize: 16, color: colors.text }}>📲 App version</Text>
+        <Text style={{ color: colors.muted, marginTop: 4 }}>You have build {BUILD_NUMBER || '(test)'}</Text>
+        <Button
+          title={checking ? 'Checking…' : 'Check for updates'}
+          variant="outline"
+          disabled={checking}
+          onPress={async () => {
+            setChecking(true);
+            const u = await fetchLatestUpdate();
+            setChecking(false);
+            if (u && BUILD_NUMBER && u.build > BUILD_NUMBER) {
+              Alert.alert('🎉 New version available', `${u.notes ? u.notes + '\n\n' : ''}Download build ${u.build} now?`, [
+                { text: 'Later', style: 'cancel' },
+                { text: 'Update now', onPress: () => downloadUpdate(u.url) },
+              ]);
+            } else Alert.alert('✅ No new version', u ? `You have the newest version (build ${BUILD_NUMBER || u.build}).` : 'No update has been sent yet. (Or check your internet.)');
+          }}
+        />
+      </Card>
       <Button
         title="Log out"
         variant="danger"
@@ -65,7 +87,7 @@ export default function Profile() {
           ])
         }
       />
-      <Text style={{ textAlign: 'center', color: colors.muted, marginTop: 20, fontSize: 12 }}>{APP_NAME} v1.0.0</Text>
+      <Text style={{ textAlign: 'center', color: colors.muted, marginTop: 20, fontSize: 12 }}>{APP_NAME} v1.0.{BUILD_NUMBER || 0}</Text>
     </ScrollView>
   );
 }

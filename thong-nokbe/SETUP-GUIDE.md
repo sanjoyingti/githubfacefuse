@@ -118,3 +118,14 @@ These rules decide who can see and change what. For example, only admins mark at
 * With step B3 done, incoming calls ring (with the app's ringtone) and messages notify even when the app is closed, through Firebase Cloud Messaging (free) and the Cloudflare Worker.
 * The fee reminder is an alarm on each phone on the **1st of every month at 9 AM**.
 * Calls use Agora's free minutes. A free Cloudflare Worker hands out call passes and keeps the Agora certificate secret.
+
+## Part E — Telling everyone about a new version
+
+Each phone checks for a new version when the app opens, and gets a notification even when the app is closed.
+
+**One-time setup (for the notification):** on GitHub, open the repository → **Settings → Secrets and variables → Actions → New repository secret**.
+Name: `FIREBASE_SERVICE_ACCOUNT`. Secret: the whole text of the Firebase service-account key file (the same file you put in Cloudflare). Tap **Add secret**.
+
+**Sending an update:** build with `[update]` in the commit message (the rest of the first line is the "what's new" text),
+or open **Actions → Thong Nokbe Gym APK → Run workflow**, tick **Send update to everyone**, type what's new, and run it.
+Phones with the app before this feature (build 24 or older) must install the newest APK once by hand.

@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from '../context/AuthProvider';
 import { ChatsProvider } from '../context/ChatsProvider';
 import { IncomingCall } from '../components/IncomingCall';
 import { NotificationRouter } from '../components/NotificationRouter';
+import { UpdateChecker } from '../components/UpdateChecker';
 import { Loading } from '../components/ui';
 import { colors } from '../theme';
 
@@ -76,6 +77,7 @@ export default function RootLayout() {
     <AuthProvider>
       <StatusBar style="light" />
       <RootNavigator />
+      <UpdateChecker />
     </AuthProvider>
   );
 }
