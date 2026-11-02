@@ -15,7 +15,10 @@ export type UpdateInfo = { build: number; notes: string; url: string };
 /** The newest announced version (written by the GitHub build when an update is sent to everyone). */
 export async function fetchLatestUpdate(): Promise<UpdateInfo | null> {
   try {
-    const r = await fetch(`${UPDATE_INFO_URL}?t=${Date.now()}`, { headers: { 'cache-control': 'no-cache' } });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15_000);
+    const r = await fetch(`${UPDATE_INFO_URL}?t=${Date.now()}`, { headers: { 'cache-control': 'no-cache' }, signal: ctrl.signal });
+    clearTimeout(timer);
     if (!r.ok) return null;
     const j = await r.json();
     const build = Number(j?.build);
@@ -46,7 +49,7 @@ const FLAG_GRANT_READ_URI_PERMISSION = 1;
  * Android always asks the person to tap "Update" once (apps outside the Play Store can't update
  * silently), and the very first time it asks to "Allow from this source".
  */
-export async function downloadAndInstall(update: UpdateInfo, onProgress: (fraction: number) => void): Promise<void> {
+export async function downloadAndInstall(update: UpdateInfo, onProgress: (writtenBytes: number, totalBytes: number) => void): Promise<void> {
   if (Platform.OS !== 'android') {
     await downloadUpdate(update.url);
     return;
@@ -58,7 +61,7 @@ export async function downloadAndInstall(update: UpdateInfo, onProgress: (fracti
     const part = `${path}.part`;
     await FileSystem.deleteAsync(part, { idempotent: true }).catch(() => {});
     const task = FileSystem.createDownloadResumable(update.url, part, {}, (p) => {
-      if (p.totalBytesExpectedToWrite > 0) onProgress(p.totalBytesWritten / p.totalBytesExpectedToWrite);
+      onProgress(p.totalBytesWritten, p.totalBytesExpectedToWrite); // total may be -1 if the server didn't say
     });
     const res = await task.downloadAsync().catch(() => null);
     if (!res || res.status !== 200) {
@@ -67,7 +70,6 @@ export async function downloadAndInstall(update: UpdateInfo, onProgress: (fracti
     }
     await FileSystem.moveAsync({ from: part, to: path });
   }
-  onProgress(1);
   const contentUri = await FileSystem.getContentUriAsync(path);
   await startActivityAsync('android.intent.action.VIEW', {
     data: contentUri,

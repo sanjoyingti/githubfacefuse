@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { getInitialNotification, getMessaging, onNotificationOpenedApp, subscribeToTopic } from '@react-native-firebase/messaging';
-import { cleanOldDownloads, downloadAndInstall, findUpdate, onUpdateCheckRequest, versionName, type UpdateInfo } from '../lib/appUpdate';
+import { cleanOldDownloads, downloadAndInstall, downloadUpdate, findUpdate, onUpdateCheckRequest, versionName, type UpdateInfo } from '../lib/appUpdate';
 import { APP_NAME, colors } from '../theme';
 
 const CHECK_EVERY_MS = 15 * 60 * 1000;
+const MB = (bytes: number) => (bytes / 1048576).toFixed(0);
 
 /**
  * 🎉 "New version available" — shown when the app opens (or comes back to the screen) and a newer
@@ -13,8 +14,8 @@ const CHECK_EVERY_MS = 15 * 60 * 1000;
  */
 export function UpdateChecker() {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
-  // null = not started; 0..1 = downloading; 'install' = Android's installer is open
-  const [progress, setProgress] = useState<number | 'install' | null>(null);
+  // null = not started; { written, total } = downloading; 'install' = Android's installer is open
+  const [progress, setProgress] = useState<{ written: number; total: number } | 'install' | null>(null);
   const [error, setError] = useState('');
   const lastCheck = useRef(0);
   const dismissed = useRef(0);
@@ -50,9 +51,9 @@ export function UpdateChecker() {
   }, [check]);
 
   if (!update) return null;
-  const busy = progress !== null;
+  const downloading = typeof progress === 'object' && progress !== null;
   const close = () => {
-    if (busy && progress !== 'install') return; // finish the download first
+    if (downloading) return; // finish the download first
     dismissed.current = update.build;
     setUpdate(null);
     setProgress(null);
@@ -60,16 +61,25 @@ export function UpdateChecker() {
   };
   const start = async () => {
     setError('');
-    setProgress(0);
+    setProgress({ written: 0, total: 0 });
     try {
-      await downloadAndInstall(update, (f) => setProgress(f));
+      await downloadAndInstall(update, (written, total) => setProgress({ written, total }));
       setProgress('install');
     } catch (e: any) {
       setProgress(null);
       setError(e?.message ?? String(e));
     }
   };
-  const pct = typeof progress === 'number' ? Math.round(progress * 100) : 0;
+  const openInBrowser = () => {
+    downloadUpdate(update.url).catch(() => {});
+    // The browser/Download Manager takes over; let them come back and tap the file.
+    dismissed.current = update.build;
+    setUpdate(null);
+    setProgress(null);
+  };
+
+  const pct = downloading && progress.total > 0 ? Math.round((progress.written / progress.total) * 100) : 0;
+
   return (
     <Modal visible transparent animationType="fade" onRequestClose={close}>
       <View style={styles.backdrop}>
@@ -79,14 +89,18 @@ export function UpdateChecker() {
           <Text style={styles.version}>Version {versionName(update.build)}</Text>
           {!!update.notes && <Text style={styles.notes}>{update.notes}</Text>}
 
-          {typeof progress === 'number' ? (
+          {downloading ? (
             <View style={{ alignSelf: 'stretch', marginTop: 18 }}>
-              <Text style={styles.steps}>Downloading the update… {pct}%</Text>
+              <Text style={styles.steps}>
+                {progress.total > 0
+                  ? `Downloading… ${MB(progress.written)} MB of ${MB(progress.total)} MB (${pct}%)`
+                  : `Downloading… ${MB(progress.written)} MB`}
+              </Text>
               <View style={styles.track}>
-                <View style={[styles.fill, { width: `${Math.max(3, pct)}%` }]} />
+                <View style={[styles.fill, { width: progress.total > 0 ? `${Math.max(3, pct)}%` : '12%' }]} />
               </View>
               <ActivityIndicator color={colors.primary} style={{ marginTop: 12 }} />
-              <Text style={styles.small}>Please keep the app open.</Text>
+              <Text style={styles.small}>It is about 190 MB — best on Wi-Fi. Please keep the app open.</Text>
             </View>
           ) : progress === 'install' ? (
             <>
@@ -103,10 +117,13 @@ export function UpdateChecker() {
             </>
           ) : (
             <>
-              <Text style={styles.steps}>Tap &quot;Update now&quot;. It downloads inside the app, then tap &quot;Update&quot;. Your groups, chats and fees stay.</Text>
+              <Text style={styles.steps}>Tap &quot;Update now&quot;. It downloads inside the app (about 190 MB — best on Wi-Fi), then tap &quot;Update&quot;. Your groups, chats and fees stay.</Text>
               {!!error && <Text style={styles.error}>{error}</Text>}
               <Pressable style={styles.primary} onPress={start}>
                 <Text style={styles.primaryText}>{error ? '🔄 Try again' : '⬇️ Update now'}</Text>
+              </Pressable>
+              <Pressable style={styles.browser} onPress={openInBrowser}>
+                <Text style={styles.browserText}>🌐 Download in browser {error ? '(more reliable)' : 'instead'}</Text>
               </Pressable>
               <Pressable style={styles.later} onPress={close}>
                 <Text style={styles.laterText}>Later</Text>
@@ -129,10 +146,12 @@ const styles = StyleSheet.create({
   steps: { color: colors.muted, fontSize: 14, marginTop: 12, textAlign: 'center', lineHeight: 20 },
   primary: { marginTop: 18, alignSelf: 'stretch', height: 56, borderRadius: 28, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
   primaryText: { color: '#fff', fontSize: 18, fontWeight: '900' },
+  browser: { marginTop: 10, alignSelf: 'stretch', height: 50, borderRadius: 25, borderWidth: 2, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  browserText: { color: colors.text, fontSize: 15, fontWeight: '800' },
   later: { marginTop: 8, height: 44, justifyContent: 'center' },
+  laterText: { color: colors.muted, fontSize: 16, fontWeight: '700' },
   track: { height: 10, borderRadius: 5, backgroundColor: colors.border, overflow: 'hidden', marginTop: 10 },
   fill: { height: 10, backgroundColor: colors.primary },
   small: { color: colors.muted, fontSize: 13, textAlign: 'center', marginTop: 8 },
   error: { color: colors.unpaid, fontSize: 14, marginTop: 10, textAlign: 'center' },
-  laterText: { color: colors.muted, fontSize: 16, fontWeight: '700' },
 });
