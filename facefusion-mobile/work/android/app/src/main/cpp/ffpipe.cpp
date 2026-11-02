@@ -12,6 +12,7 @@
 #include <cstring>
 #include <condition_variable>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -245,7 +246,21 @@ struct Pipeline::Impl {
     ffmotion::OneEuro5 filt;
     float fade = 1.f;
     int miss = 0;
+    // Smart speed: this face's last mask (before the pose fade) and what its crop looked
+    // like when it was computed; shared_ptr so the per-frame copy of SeqFace stays cheap.
+    std::shared_ptr<ffcv::MatF> mask;
+    std::vector<uint8_t> maskThumb;
+    int maskCS = 0, maskAge = 0;
+    // Frames the expression restorer stays on after the eyes last closed.
+    int restoreHold = 0;
   };
+  // The sequence state of faces[fi] on THIS frame, or null outside a sequence. temporal()
+  // writes this frame's faces first and in order, so index fi is face fi.
+  SeqFace* seqFaceFor(const Face& f, size_t fi) {
+    if (!seq.on || !cfg.smartSpeed || fi >= seq.faces.size()) return nullptr;
+    SeqFace& sf = seq.faces[fi];
+    return std::memcmp(sf.box, f.box, sizeof(sf.box)) == 0 ? &sf : nullptr;
+  }
   struct Sequence {
     // Written by setSequence from ANY thread (the UI thread stops the live player), read by
     // analyse on the pipeline thread. The face list itself is only touched by analyse: a
@@ -791,6 +806,7 @@ void Pipeline::updateConfig(const Config& c) {
   live.expressionRestore = c.expressionRestore;
   live.expressionRestoreFactor = c.expressionRestoreFactor;
   live.parallelMasks     = c.parallelMasks;
+  live.smartSpeed        = c.smartSpeed;
   live.poseFadeStart     = c.poseFadeStart;
   live.motionSmooth      = c.motionSmooth;
   live.lowScoreRecovery  = c.lowScoreRecovery;
@@ -2495,6 +2511,19 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // stays.
     const bool modelMasks = p_->wantsMaskModels();
     ffcv::MatF faceMask;
+    // SMART SPEED: the same face, looking the same as when its mask was last computed --
+    // reuse that mask instead of running the two mask models again. Anything entering or
+    // moving in front of the face changes the thumbnail and forces a fresh mask; so does
+    // age, every 10 frames.
+    Impl::SeqFace* sface = modelMasks ? p_->seqFaceFor(f, fi) : nullptr;
+    std::vector<uint8_t> thumb;
+    bool reuseMask = false;
+    if (sface) {
+      thumb = ffmotion::thumbGray(crop, 32);
+      reuseMask = sface->mask && sface->maskCS == CS && sface->maskAge < 10 &&
+                  ffmotion::thumbSame(thumb, sface->maskThumb);
+    }
+    const bool runModels = modelMasks && !reuseMask;
     // PARALLEL: the mask models read only the original crop, so with parallelMasks they run
     // on the helper thread while this thread runs the swapper. Joined before the paste; the
     // guard joins on any early return too, before the locals it reads go away.
@@ -2504,7 +2533,7 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       Impl::MaskWorker* w = nullptr;
       ~Join() { if (w) w->wait(); }
     } join;
-    const bool parallel = modelMasks && cfg.parallelMasks;
+    const bool parallel = runModels && cfg.parallelMasks;
     if (parallel) {
       faceMask = mask;
       Impl* impl = p_.get();
@@ -2596,9 +2625,18 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
         p_->maskWorker.wait();
         join.w = nullptr;
         if (!maskOk) { err_ = maskErr; return false; }
+      } else if (reuseMask) {
+        faceMask = *sface->mask;
+        ++sface->maskAge;
       } else {
         faceMask = mask;
-        if (modelMasks && !p_->applyMaskModels(crop, faceMask, err_)) return false;
+        if (runModels && !p_->applyMaskModels(crop, faceMask, err_)) return false;
+      }
+      if (runModels && sface) {
+        sface->mask = std::make_shared<ffcv::MatF>(faceMask);
+        sface->maskThumb = std::move(thumb);
+        sface->maskCS = CS;
+        sface->maskAge = 0;
       }
       if (f.poseFade < 0.999f)
         for (float& v : faceMask.data) v *= f.poseFade;
@@ -2903,6 +2941,16 @@ bool Pipeline::restoreExpression(ffcv::Image& frame, const std::vector<Face>& fa
       continue;
     if (p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance) == kNoSource) continue;
     if (f.poseFade < 0.02f) continue;
+    // SMART SPEED: the restorer's job the swap cannot do is the EYES -- a blink or closed
+    // eyes, where the swapped face keeps the source photo's open ones. With the eyes open
+    // it adds little, and it is the most expensive stage, so in a video it runs from the
+    // moment the eyes start closing until 8 frames after they are open again (the hold
+    // stops it flickering on and off around the threshold).
+    if (Impl::SeqFace* sf = p_->seqFaceFor(f, fi)) {
+      if (ffmotion::eyeOpenness(f.landmark68) < 0.22f) sf->restoreHold = 8;
+      else if (sf->restoreHold > 0) --sf->restoreHold;
+      else continue;
+    }
 
     double t0 = nowMs();
     ffcv::Affine am, amOrig;

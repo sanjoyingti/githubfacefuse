@@ -243,6 +243,51 @@ ffcv::MatF remapMask(const ffcv::MatF& mask, const ffcv::Affine& fromAffine,
   return ffcv::warpAffineF(mask, m, w, h, ffcv::BORDER_CONSTANT);
 }
 
+std::vector<uint8_t> thumbGray(const ffcv::Image& crop, int n) {
+  std::vector<uint8_t> t((size_t)n * n, 0);
+  if (crop.w < n || crop.h < n) return t;
+  for (int ty = 0; ty < n; ++ty)
+    for (int tx = 0; tx < n; ++tx) {
+      const int x0 = tx * crop.w / n, x1 = (tx + 1) * crop.w / n;
+      const int y0 = ty * crop.h / n, y1 = (ty + 1) * crop.h / n;
+      long sum = 0, cnt = 0;
+      for (int y = y0; y < y1; y += 2) {
+        const uint8_t* r = crop.row(y);
+        for (int x = x0; x < x1; x += 2) {
+          sum += (r[x * 3] + 2 * r[x * 3 + 1] + r[x * 3 + 2]) / 4;
+          ++cnt;
+        }
+      }
+      t[(size_t)ty * n + tx] = (uint8_t)(cnt ? sum / cnt : 0);
+    }
+  return t;
+}
+
+bool thumbSame(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+  if (a.empty() || a.size() != b.size()) return false;
+  long total = 0;
+  int worst = 0;
+  for (size_t i = 0; i < a.size(); ++i) {
+    const int d = std::abs((int)a[i] - (int)b[i]);
+    total += d;
+    worst = std::max(worst, d);
+  }
+  // Mean under 2 grey levels and no cell over 10: noise and compression flicker pass,
+  // anything that moves into or across the face does not.
+  return total <= (long)a.size() * 2 && worst <= 10;
+}
+
+float eyeOpenness(const float* l) {
+  auto d = [&](int i, int j) {
+    const float dx = l[2 * i] - l[2 * j], dy = l[2 * i + 1] - l[2 * j + 1];
+    return std::sqrt(dx * dx + dy * dy);
+  };
+  const float wl = d(36, 39), wr = d(42, 45);
+  const float el = wl > 1e-3f ? (d(37, 41) + d(38, 40)) / (2.f * wl) : 1.f;
+  const float er = wr > 1e-3f ? (d(43, 47) + d(44, 46)) / (2.f * wr) : 1.f;
+  return std::min(el, er);
+}
+
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h) {
   if (src.w == w && src.h == h) return src;
   ffcv::MatF dst(w, h, 1);

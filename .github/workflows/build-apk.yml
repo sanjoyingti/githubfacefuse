@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 18 adds Smart speed (Realism card, on by default): in videos the expression restorer runs only around blinks and closed eyes, and the masks are reused while nothing in front of the face changes. Faster and cooler; previews and photos always compute everything.
+
           Build 17 never changes your settings on its own: after a crash it only reloads your video (no settings are switched off), and the output frame rate and size you choose are kept for the next video.
 
           Build 16 is faster with the masks on: they run on the graphics chip while the AI chip swaps ("Faster masks" in Face Masker, on by default), and the expression restorer reuses the swap's masks instead of computing them a second time. Same result.

@@ -338,6 +338,10 @@ fun RealismCard(
              color = MaterialTheme.colorScheme.onSurfaceVariant,
              modifier = Modifier.padding(top = 4.dp))
 
+        OptionSwitch(stringResource(R.string.opt_smart_speed), opts.smartSpeed,
+                     { onChange(opts.copy(smartSpeed = it)) },
+                     hint = stringResource(R.string.opt_smart_speed_hint))
+
         OptionSwitch(stringResource(R.string.opt_color_match), opts.colorMatch,
                      { onChange(opts.copy(colorMatch = it)) },
                      hint = stringResource(R.string.opt_color_match_hint))

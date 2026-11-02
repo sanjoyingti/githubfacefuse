@@ -149,6 +149,7 @@ int main(int argc, char** argv) {
     else if (a == "--region") cfg.regionMask = v() == "1";
     else if (a == "--mouth") cfg.keepMouth = v() == "1";
     else if (a == "--lips") cfg.keepLips = v() == "1";
+    else if (a == "--smart") cfg.smartSpeed = v() == "1";
     else if (a == "--parallel") cfg.parallelMasks = v() == "1";
     else if (a == "--color") cfg.colorMatch = (float)atof(v().c_str());
     else if (a == "--fade") cfg.poseFadeStart = (float)atof(v().c_str());

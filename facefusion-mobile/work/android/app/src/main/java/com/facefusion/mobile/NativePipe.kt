@@ -105,7 +105,7 @@ object NativePipe {
         occlusion: Boolean, region: Boolean, keepMouth: Boolean, keepLips: Boolean,
         poseFadeStart: Float, smooth: Boolean, recover: Boolean, rotated: Boolean,
         colorMatch: Float, expressionRestore: Boolean, expressionFactor: Float,
-        parallelMasks: Boolean,
+        parallelMasks: Boolean, smartSpeed: Boolean,
     )
 
     fun pushQuality(opts: SwapOptions) {
@@ -113,7 +113,8 @@ object NativePipe {
                    if (opts.poseFade) opts.poseFadeStart else 90f,
                    opts.motionSmooth, opts.motionSmooth, opts.detectRotated,
                    if (opts.colorMatch) opts.colorMatchStrength else 0f,
-                   opts.expressionRestore, opts.expressionFactor, opts.parallelMasks)
+                   opts.expressionRestore, opts.expressionFactor, opts.parallelMasks,
+                   opts.smartSpeed)
     }
 
     /**

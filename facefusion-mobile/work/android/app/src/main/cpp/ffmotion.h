@@ -70,6 +70,16 @@ void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF
 ffcv::MatF remapMask(const ffcv::MatF& mask, const ffcv::Affine& fromAffine,
                      const ffcv::Affine& toAffine, int w, int h);
 
+// A tiny grey thumbnail (n x n, box-averaged) of a face crop, for "did anything change".
+std::vector<uint8_t> thumbGray(const ffcv::Image& crop, int n);
+// Two thumbnails of the same face look alike: small mean change AND no local change big
+// enough to be something entering the face (a hand, food).
+bool thumbSame(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b);
+
+// Eye openness from the 68 landmarks (eye aspect ratio, the smaller of the two eyes):
+// about 0.25-0.35 open, under ~0.2 closing or closed.
+float eyeOpenness(const float* landmark68);
+
 // Bilinear resize of a single-channel float mask.
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h);
 

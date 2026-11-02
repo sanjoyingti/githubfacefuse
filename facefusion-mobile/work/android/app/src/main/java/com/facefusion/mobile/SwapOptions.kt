@@ -223,6 +223,9 @@ data class SwapOptions(
     val expressionFactor: Float = 0.8f,
     // Run the mask models alongside the swap (GPU beside the NPU): faster with the masks on.
     val parallelMasks: Boolean = true,
+    // Video only: reuse masks while nothing in front of the face changes, and run the
+    // expression restorer only around blinks and closed eyes. Faster and cooler.
+    val smartSpeed: Boolean = true,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -335,6 +338,7 @@ data class SwapOptions(
             .putBoolean(K_EXPRESSION, expressionRestore)
             .putFloat(K_EXPRESSION_FACTOR, expressionFactor)
             .putBoolean(K_PARALLEL_MASKS, parallelMasks)
+            .putBoolean(K_SMART_SPEED, smartSpeed)
             .apply()
     }
 
@@ -372,6 +376,7 @@ data class SwapOptions(
         private const val K_EXPRESSION = "expression_restore"
         private const val K_EXPRESSION_FACTOR = "expression_restore_factor"
         private const val K_PARALLEL_MASKS = "parallel_masks"
+        private const val K_SMART_SPEED = "smart_speed"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -453,6 +458,7 @@ data class SwapOptions(
                 expressionFactor = p.getFloat(K_EXPRESSION_FACTOR, d.expressionFactor)
                     .coerceIn(0f, 1f),
                 parallelMasks = p.getBoolean(K_PARALLEL_MASKS, d.parallelMasks),
+                smartSpeed = p.getBoolean(K_SMART_SPEED, d.smartSpeed),
             )
         }
     }

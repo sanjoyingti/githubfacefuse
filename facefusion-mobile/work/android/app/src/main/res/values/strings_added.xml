@@ -26,6 +26,8 @@
     <string name="resume_ok">Continue</string>
     <string name="opt_parallel_masks">Faster masks</string>
     <string name="opt_parallel_masks_hint">Works out the masks on the graphics chip while the AI chip swaps the face, at the same time. Faster with the masks on, same result.</string>
+    <string name="opt_smart_speed">Smart speed</string>
+    <string name="opt_smart_speed_hint">Videos only: skips work a frame does not need. The masks are reused while nothing moves in front of the face, and the expression restorer runs around blinks and closed eyes. Faster, cooler, almost always the same result. Previews and photos always do everything.</string>
     <string name="opt_realism">Realism</string>
     <string name="opt_realism_off">off</string>
     <string name="opt_realistic_preset">Most realistic</string>

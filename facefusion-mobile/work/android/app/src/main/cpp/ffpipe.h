@@ -73,6 +73,10 @@ struct Config {
   // Run the mask models on a helper thread WHILE the swapper runs (GPU beside the NPU).
   // Safe mode turns it off after a crash.
   bool parallelMasks = true;
+  // SMART SPEED (video sequences only): reuse a face's masks while nothing in front of it
+  // changed, and run the expression restorer only around blinks / closed eyes. Previews
+  // and photos always compute everything.
+  bool smartSpeed = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;
