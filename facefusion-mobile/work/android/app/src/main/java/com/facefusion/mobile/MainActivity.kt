@@ -2664,6 +2664,7 @@ class MainActivity : ComponentActivity() {
         // The whole chain, not one tier: the downloader picks the best tier the manifest
         // actually publishes. Handing it only `tier` would fail outright on a chip whose
         // best tier is not hosted yet.
+        ModelDownload.selectedSwapper = opts.swapper
         DownloadService.start(this, tierChain.joinToString(","), pendingDownload)
     }
 

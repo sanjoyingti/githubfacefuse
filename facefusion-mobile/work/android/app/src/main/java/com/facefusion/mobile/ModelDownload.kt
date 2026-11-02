@@ -209,8 +209,19 @@ object ModelDownload {
     // these two are named here because they are alternatives to a swapper the app already
     // has, not additions to the set it needs.
     private val OPTIONAL_MODELS =
-        listOf("gpen", "edtalk", "wav2lip", "hyperswap_1b", "hyperswap_1c",
-               ModelPaths.LIVEPORTRAIT)
+        listOf("gpen", "edtalk", "wav2lip", ModelPaths.LIVEPORTRAIT)
+
+    /** Every face swapper. Exactly ONE is required: the one selected (see [selectedSwapper]). */
+    private val SWAPPERS = listOf("hyperswap", "hyperswap_1b", "hyperswap_1c")
+
+    /**
+     * The swapper the user has selected, set by the caller before a bulk download. Only it
+     * is fetched as "required"; the other two are alternatives. Before this, 1a was always
+     * required, so a user on 1b or 1c who deleted 1a was made to download its 205 MB
+     * again although nothing used it -- ModelPaths.missing() already required the SELECTED
+     * swapper, the downloader did not agree.
+     */
+    @Volatile var selectedSwapper: String = "hyperswap"
 
     /** Which of [entries] are not already present and correct in [dir]. */
     fun missing(dir: File, entries: List<Entry>): List<Entry> =
@@ -255,7 +266,8 @@ object ModelDownload {
             //
             // filesFor() returns an empty list for a name a variant does not carry (edtalk
             // and wav2lip have no ncnn stems), so this is a no-op there rather than wrong.
-            val optional = OPTIONAL_MODELS
+            val sel = selectedSwapper.takeIf { it in SWAPPERS } ?: "hyperswap"
+            val optional = (OPTIONAL_MODELS + SWAPPERS.filter { it != sel })
                 .flatMap { ModelPaths.filesFor(tier, it) }
                 .toSet()
             val entries =
