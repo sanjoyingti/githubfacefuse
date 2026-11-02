@@ -114,6 +114,10 @@ export default function GroupInfo() {
         </View>
       </View>
 
+      <View style={styles.section}>
+        <Row icon="map" label="📍 Live location map" onPress={() => router.push({ pathname: '/group/map', params: { id: chat.id } })} />
+      </View>
+
       {iAmAdmin && (
         <View style={styles.section}>
           <Row icon="person-add" label="Add members" onPress={() => router.push({ pathname: '/group/add-members', params: { id: chat.id } })} />

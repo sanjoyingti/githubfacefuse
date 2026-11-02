@@ -35,6 +35,16 @@ export interface Chat {
   upi?: UpiSettings | null;
 }
 
+export interface LiveLocation {
+  uid: string;
+  lat: number;
+  lng: number;
+  accuracy?: number;
+  name: string;
+  sharing: boolean; // false = they turned it off; point is then their last known spot
+  updatedAt: Timestamp | null;
+}
+
 export interface Message {
   id: string;
   senderId: string;

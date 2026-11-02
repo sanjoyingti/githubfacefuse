@@ -115,6 +115,18 @@ service cloud.firestore {
         allow write: if isAdminOf(chatId);
       }
 
+      // Live location: once a member turns on location for this group, their phone keeps their point
+      // here. Every member of THIS group can read it; each member writes only their own, and can
+      // turn it off (delete) any time; admins can clear a stale point.
+      match /locations/{uid} {
+        allow read: if isMemberOf(chatId);
+        allow create, update: if isMemberOf(chatId) && uid == me()
+          && request.resource.data.keys().hasOnly(['lat', 'lng', 'accuracy', 'name', 'sharing', 'updatedAt'])
+          && request.resource.data.lat is number && request.resource.data.lng is number
+          && request.resource.data.sharing is bool;
+        allow delete: if uid == me() || isAdminOf(chatId);
+      }
+
       // Fees: members record their own payment, admins record/undo anyone's, every member views.
       match /fees/{month}/payments/{uid} {
         allow read: if isMemberOf(chatId);

@@ -221,3 +221,16 @@ test('second admin cannot remove another admin', async () => {
   await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { admins: arrayUnion(MEMBER.uid, 'other'), members: arrayUnion('other') }));
   await assertFails(updateDoc(doc(as(MEMBER), 'chats/g1'), { members: arrayRemove('other') }));
 });
+
+test('live location: a member shares only their own point; members see it, outsiders cannot; off = delete', async () => {
+  const point = (name='member') => ({ lat: 26.14, lng: 91.73, accuracy: 10, name, sharing: true, updatedAt: serverTimestamp() });
+  const memberDb = as(MEMBER);
+  await assertSucceeds(setDoc(doc(memberDb, 'chats/g1/locations/member'), point()));
+  await assertFails(setDoc(doc(memberDb, 'chats/g1/locations/admin'), point())); // not someone else's point
+  await assertFails(setDoc(doc(memberDb, 'chats/g1/locations/member'), { ...point(), spy: 1 })); // unknown fields
+  await assertFails(setDoc(doc(memberDb, 'chats/g1/locations/member'), { lat: 'x', lng: 1, name: 'm', sharing: true, updatedAt: serverTimestamp() }));
+  await assertSucceeds(getDoc(doc(as(ADMIN), 'chats/g1/locations/member')));
+  await assertFails(getDoc(doc(as(OUTSIDER), 'chats/g1/locations/member'))); // outsiders can't see the group
+  await assertFails(setDoc(doc(as(OUTSIDER), 'chats/g1/locations/outsider'), point('out'))); // outsider can't write
+  await assertSucceeds(deleteDoc(doc(memberDb, 'chats/g1/locations/member'))); // turn off
+});
