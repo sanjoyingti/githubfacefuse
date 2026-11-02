@@ -6,7 +6,7 @@ import { Avatar, Button, Card, Input } from '../components/ui';
 import { formatPhone } from '../lib/phone';
 import { APP_NAME, colors } from '../theme';
 import { useBottomInset } from '../components/useBottomInset';
-import { BUILD_NUMBER, fetchLatestUpdate, requestUpdateCheck } from '../lib/appUpdate';
+import { APP_VERSION, BUILD_NUMBER, fetchLatestUpdate, requestUpdateCheck } from '../lib/appUpdate';
 
 export default function Profile() {
   const me = useMe();
@@ -59,7 +59,7 @@ export default function Profile() {
       </Card>
       <Card>
         <Text style={{ fontWeight: '800', fontSize: 16, color: colors.text }}>📲 App version</Text>
-        <Text style={{ color: colors.muted, marginTop: 4 }}>You have build {BUILD_NUMBER || '(test)'}</Text>
+        <Text style={{ color: colors.muted, marginTop: 4 }}>You have version {APP_VERSION}</Text>
         <Button
           title={checking ? 'Checking…' : 'Check for updates'}
           variant="outline"
@@ -83,7 +83,7 @@ export default function Profile() {
           ])
         }
       />
-      <Text style={{ textAlign: 'center', color: colors.muted, marginTop: 20, fontSize: 12 }}>{APP_NAME} v1.0.{BUILD_NUMBER || 0}</Text>
+      <Text style={{ textAlign: 'center', color: colors.muted, marginTop: 20, fontSize: 12 }}>{APP_NAME} v{APP_VERSION}</Text>
     </ScrollView>
   );
 }

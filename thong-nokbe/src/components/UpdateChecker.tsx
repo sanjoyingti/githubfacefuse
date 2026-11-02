@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { getInitialNotification, getMessaging, onNotificationOpenedApp, subscribeToTopic } from '@react-native-firebase/messaging';
-import { cleanOldDownloads, downloadAndInstall, findUpdate, onUpdateCheckRequest, type UpdateInfo } from '../lib/appUpdate';
+import { cleanOldDownloads, downloadAndInstall, findUpdate, onUpdateCheckRequest, versionName, type UpdateInfo } from '../lib/appUpdate';
 import { APP_NAME, colors } from '../theme';
 
 const CHECK_EVERY_MS = 15 * 60 * 1000;
@@ -76,6 +76,7 @@ export function UpdateChecker() {
         <View style={styles.box}>
           <Text style={styles.emoji}>🎉</Text>
           <Text style={styles.title}>New version of {APP_NAME}!</Text>
+          <Text style={styles.version}>Version {versionName(update.build)}</Text>
           {!!update.notes && <Text style={styles.notes}>{update.notes}</Text>}
 
           {typeof progress === 'number' ? (
@@ -123,6 +124,7 @@ const styles = StyleSheet.create({
   box: { backgroundColor: colors.card, borderRadius: 24, padding: 22, alignItems: 'center' },
   emoji: { fontSize: 48 },
   title: { color: colors.text, fontSize: 22, fontWeight: '900', textAlign: 'center', marginTop: 6 },
+  version: { color: colors.primary, fontSize: 15, fontWeight: '800', marginTop: 2 },
   notes: { color: colors.text, fontSize: 16, marginTop: 12, textAlign: 'center', lineHeight: 22 },
   steps: { color: colors.muted, fontSize: 14, marginTop: 12, textAlign: 'center', lineHeight: 20 },
   primary: { marginTop: 18, alignSelf: 'stretch', height: 56, borderRadius: 28, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },

@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { friendlyGoogleError, signInWithGoogle } from '../../lib/googleAuth';
 import { isServerNotConnected, NOT_CONNECTED_MESSAGE } from '../../lib/authErrors';
 import { APP_NAME, colors } from '../../theme';
+import { APP_VERSION } from '../../lib/appUpdate';
 
 export default function Login() {
   const [busy, setBusy] = useState(false);
@@ -42,6 +43,7 @@ export default function Login() {
         <Text style={styles.small}>New members: after choosing your Google account you'll type your name and phone number once.</Text>
       </View>
       <Text style={styles.credit}>Developed by Sanjoy Ingti · Ph: 7002397371</Text>
+      <Text style={styles.version}>Version {APP_VERSION}</Text>
     </ScrollView>
   );
 }
@@ -60,5 +62,6 @@ const styles = StyleSheet.create({
   google: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, height: 60, borderRadius: 30, borderWidth: 2, borderColor: colors.border, backgroundColor: colors.card },
   googleText: { fontSize: 19, fontWeight: '800', color: colors.text },
   credit: { color: '#94A3B8', fontSize: 12, textAlign: 'center', marginTop: 24 },
+  version: { color: '#64748B', fontSize: 11, textAlign: 'center', marginTop: 4 },
   small: { color: colors.muted, marginTop: 14, fontSize: 14, textAlign: 'center' },
 });

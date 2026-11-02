@@ -6,6 +6,10 @@ import { APP_INVITE_LINK, UPDATE_INFO_URL } from '../config';
 /** This APK's build number (set by the GitHub build). 0 = a developer build: never asks to update. */
 export const BUILD_NUMBER = Number(process.env.EXPO_PUBLIC_BUILD_NUMBER ?? 0) || 0;
 
+/** The version shown to people, e.g. "1.0.30". Build 0 (a developer build) shows "test". */
+export const versionName = (build: number) => (build ? `1.0.${build}` : 'test');
+export const APP_VERSION = versionName(BUILD_NUMBER);
+
 export type UpdateInfo = { build: number; notes: string; url: string };
 
 /** The newest announced version (written by the GitHub build when an update is sent to everyone). */

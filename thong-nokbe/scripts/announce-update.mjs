@@ -14,7 +14,7 @@ if (!build || !url) throw new Error('BUILD and APK_URL are required');
 const message = {
   topic: 'app-updates',
   notification: {
-    title: '🎉 Thong Nokbe Gym update available',
+    title: `🎉 Thong Nokbe Gym 1.0.${build} available`,
     body: notes ? `${notes}\nTap to update.` : 'A new version is ready. Tap to update.',
   },
   data: { kind: 'update', build: String(build), url },
