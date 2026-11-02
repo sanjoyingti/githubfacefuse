@@ -236,6 +236,26 @@ class MainActivity : ComponentActivity() {
      * pane says so.
      */
     private var outputPartial by mutableStateOf(false)
+
+    /**
+     * The last swapped video, remembered on disk. A run can finish in the background after
+     * the screen was closed; without this the file existed but the reopened app showed
+     * nothing to save. Forgotten when the output is discarded.
+     */
+    private fun rememberFinishedOutput(f: File, partial: Boolean) {
+        getSharedPreferences("ff_output", MODE_PRIVATE).edit()
+            .putString("path", f.absolutePath).putBoolean("partial", partial).apply()
+    }
+
+    private fun restoreFinishedOutput() {
+        if (outputFile != null) return
+        val p = getSharedPreferences("ff_output", MODE_PRIVATE)
+        val f = p.getString("path", null)?.let { File(it) } ?: return
+        if (f.isFile && f.length() > 0) {
+            outputFile = f
+            outputPartial = p.getBoolean("partial", false)
+        } else p.edit().clear().apply()
+    }
     private var savedUri by mutableStateOf<Uri?>(null)
 
     /**
@@ -1700,6 +1720,7 @@ class MainActivity : ComponentActivity() {
         }
         ApiService.restore(this)
         if (crashedLastTime) enterSafeMode()
+        restoreFinishedOutput()
         offerResume()
 
         // adb: ... --es selftest 1 --es enhance 1 --es lipsync 1   (or `0` to force OFF)
@@ -2086,7 +2107,8 @@ class MainActivity : ComponentActivity() {
                                     // one range cannot mean anything across clips of
                                     // different lengths.
                                     if (photoMakesVideo) runPortrait()
-                                    else if (batchQueue.size > 1) runBatch() else runSwap()
+                                    else if (batchQueue.size > 1) runBatch()
+                                    else swapKeepingUnfinished()
                                 },
                                 batch = batchQueue,
                                 batchAutoSave = opts.batchAutoSave,
@@ -3705,6 +3727,7 @@ class MainActivity : ComponentActivity() {
     private fun discardOutput() {
         val gone = outputFile
         gone?.safeDelete()
+        getSharedPreferences("ff_output", MODE_PRIVATE).edit().clear().apply()
         outputFile = null; outputPartial = false; savedUri = null; savedPathLabel = null
         // ⚠ A QUEUE ROW MAY BE POINTING AT WHAT WAS JUST DELETED. The row is the only way
         // back to a batch clip, so leaving it Done with a dead File means a thumbnail that
@@ -4696,6 +4719,32 @@ class MainActivity : ComponentActivity() {
         ) { resumeSwap(job) }
     }
 
+    /**
+     * Swap, without ever silently throwing away an unfinished swap. Starting a new one
+     * replaces the saved pieces, so: the SAME video -> offer to continue it; another video
+     * -> say what would be lost and only go on when asked.
+     */
+    private fun swapKeepingUnfinished() {
+        val job = runCatching { ResumeStore.load(this) }.getOrNull()
+        if (job == null || opts.lipSync) { runSwap(); return }
+        val tgt = targetFile
+        val sameVideo = tgt != null && File(job.targetPath).let {
+            it.isFile && it.length() == tgt.length()
+        }
+        pendingConfirm = if (sameVideo) Confirm(
+            getString(R.string.resume_title),
+            getString(R.string.resume_body, job.targetName,
+                      fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)),
+            getString(R.string.resume_ok), destructive = false,
+        ) { resumeSwap(job) }
+        else Confirm(
+            getString(R.string.resume_replace_title),
+            getString(R.string.resume_replace_body, job.targetName,
+                      fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)),
+            getString(R.string.resume_replace_ok), destructive = true,
+        ) { runSwap() }
+    }
+
     private fun resumeSwap(job: ResumeJob) {
         if (busy) return
         // Re-read: the record on disk is the truth (pieces may have been checked away).
@@ -4909,15 +4958,17 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         if (job.done > 0)
-                            appendLog("continuing: %d of %d pieces already done".format(job.done, job.count))
+                            appendLog("continuing from %s of %s (%d pieces kept)".format(
+                                fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f), job.done))
                         var framesBefore = 0
-                        var partial: File? = null
-                        for (i in job.done until job.count) {
+                        while (!job.complete) {
                             if (cancelRequested || SwapStatus.cancelRequested) break
-                            val (cs, ce) = job.range(i)
+                            val i = job.done
+                            val (cs, ce) = job.nextRange()
+                            val last = job.nextIsLast()
                             val part = ResumeStore.part(this@MainActivity, i)
                             val pieceLen = (if (ce == Long.MAX_VALUE) job.endUs else ce) - cs + 1
-                            swapper(cs, ce, job.outputFps, job.outputMaxShortEdge, job.trackPeriod) { d, t ->
+                            val sw = swapper(cs, ce, job.outputFps, job.outputMaxShortEdge, job.trackPeriod) { d, t ->
                                 // Whole-run progress: time done over time asked for.
                                 val frac = ((cs - job.startUs) +
                                             (if (t > 0) d.toDouble() / t else 0.0) * pieceLen) /
@@ -4926,25 +4977,38 @@ class MainActivity : ComponentActivity() {
                                 showProgress(doneAll,
                                              if (frac > 0.0) (doneAll / frac).toInt().coerceAtLeast(doneAll)
                                              else doneAll + t)
-                            }.swap(job.targetPath, part.absolutePath).getOrThrow()
+                            }
+                            val pr = sw.swap(job.targetPath, part.absolutePath)
                             framesBefore += SwapStatus.done.coerceAtLeast(0) - framesBefore
-                            if (cancelRequested || SwapStatus.cancelRequested) {
-                                partial = part   // shown now, redone on Continue
+                            val stopped = cancelRequested || SwapStatus.cancelRequested
+                            if (stopped) {
+                                // KEPT, not redone: the piece holds every frame swapped up to
+                                // Stop, so it is saved as a piece of its own and Continue
+                                // starts at the very next frame.
+                                val lastPts = sw.lastFramePtsUs
+                                if (pr.isSuccess && lastPts >= cs) {
+                                    job.ends += lastPts + 1
+                                    ResumeStore.save(this@MainActivity, job)
+                                } else part.safeDelete()
                                 break
                             }
-                            job.done = i + 1
+                            pr.getOrThrow()
+                            if (last) {
+                                job.ends += maxOf(job.endUs, cs + 1)
+                                job.complete = true
+                            } else job.ends += ce + 1
                             ResumeStore.save(this@MainActivity, job)
                             appendLog("saved %s of %s (can be continued from here)"
                                 .format(fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)))
                         }
                         val pieces = (0 until job.done).map {
                             ResumeStore.part(this@MainActivity, it) to job.offset(it)
-                        } + listOfNotNull(partial?.let { it to job.offset(job.done) })
+                        }
                         if (pieces.isEmpty()) error("cancelled")
                         Mp4Concat.join(pieces, out)
-                        partial?.safeDelete()
-                        if (job.done >= job.count) ResumeStore.clear(this@MainActivity)
-                        else appendLog("stopped at %s of %s: Continue is offered next time"
+                        rememberFinishedOutput(out, partial = !job.complete)
+                        if (job.complete) ResumeStore.clear(this@MainActivity)
+                        else appendLog("stopped at %s of %s: Continue carries on from here"
                             .format(fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)))
                     }
 

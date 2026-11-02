@@ -106,7 +106,16 @@ class VideoSwapper(
 
     private var encTrack = -1
 
+    /**
+     * Timestamp (on the input's timeline) of the last frame swapped AND handed to the
+     * encoder in the latest [swap], or -1 if none. A run stopped early keeps exactly the
+     * frames up to here, so a resumed swap continues from the next one.
+     */
+    @Volatile var lastFramePtsUs: Long = -1L
+        private set
+
     fun swap(inputPath: String, outputPath: String): Result<String> = runCatching {
+        lastFramePtsUs = -1L
         // Shadows the constructor property for the rest of this function: `voicePath` means
         // NOTHING when `lipSync` is off, but a caller that toggled Lip Sync off without also
         // clearing its own remembered voice file would otherwise still redirect the OUTPUT's
@@ -619,6 +628,7 @@ class VideoSwapper(
                     encodeError.get()?.let { throw it }
                 }
                 swapped++
+                lastFramePtsUs = f.ptsUs
                 onProgress(swapped, expected)
             }
         } finally {

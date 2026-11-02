@@ -36,28 +36,40 @@ data class ResumeJob(
     val outputFps: Int,
     val outputMaxShortEdge: Int,
     val trackPeriod: Int,
-    /** Pieces finished and on disk. */
-    var done: Int = 0,
+    /**
+     * Where each finished piece ENDS on the target's timeline (exclusive), in order; piece
+     * k starts where piece k-1 ended (piece 0 at [startUs]). Pieces are normally
+     * [chunkUs] long, but one stopped with Cancel/Stop is kept at the exact frame it
+     * reached, so Continue picks up from there and no swapped frame is ever redone.
+     */
+    val ends: MutableList<Long> = mutableListOf(),
+    /** Every piece is done, the last one to the end of the range. */
+    var complete: Boolean = false,
 ) {
-    val count: Int get() = maxOf(1, ((endUs - startUs + chunkUs - 1) / chunkUs).toInt())
+    /** Pieces finished and on disk. */
+    val done: Int get() = ends.size
 
-    /** Piece i's range on the target's timeline, end inclusive, as VideoSwapper takes it. */
-    fun range(i: Int): Pair<Long, Long> {
-        val s = startUs + i * chunkUs
-        val last = i >= count - 1
-        val e = when {
-            last && toEnd -> Long.MAX_VALUE
-            last -> endUs
-            else -> s + chunkUs - 1
-        }
-        return s to e
+    /** Where the next piece starts on the target's timeline. */
+    val resumeAtUs: Long get() = ends.lastOrNull() ?: startUs
+
+    /** Piece k's start on the target's timeline. */
+    fun pieceStart(k: Int): Long = if (k == 0) startUs else ends[k - 1]
+
+    /** The next piece's range, end inclusive, as VideoSwapper takes it. */
+    fun nextRange(): Pair<Long, Long> {
+        val s = resumeAtUs
+        val e = s + chunkUs - 1
+        return if (e >= endUs - 1) s to (if (toEnd) Long.MAX_VALUE else endUs) else s to e
     }
 
-    /** Where piece i's samples go in the joined file. */
-    fun offset(i: Int): Long = i * chunkUs
+    /** Whether the next piece is the last one (it runs to the end of the range). */
+    fun nextIsLast(): Boolean = resumeAtUs + chunkUs - 1 >= endUs - 1
+
+    /** Where piece k's samples go in the joined file. */
+    fun offset(k: Int): Long = pieceStart(k) - startUs
 
     /** Length of the part already finished, for the "continue?" question. */
-    val doneUs: Long get() = minOf(endUs - startUs, done * chunkUs)
+    val doneUs: Long get() = if (complete) totalUs else minOf(totalUs, resumeAtUs - startUs)
     val totalUs: Long get() = endUs - startUs
 
     fun toJson(): String = JSONObject().apply {
@@ -66,26 +78,32 @@ data class ResumeJob(
         put("chunkUs", chunkUs); put("outputFps", outputFps)
         put("outputMaxShortEdge", outputMaxShortEdge); put("trackPeriod", trackPeriod)
         put("done", done)
+        put("ends", org.json.JSONArray(ends))
+        put("complete", complete)
     }.toString()
 
     companion object {
         /**
          * 2 seconds of video per piece (5 until build 30: with the most realistic settings
          * the first 5 s could take over a minute, and closing the app before it finished
-         * left nothing to continue). Progress is only saved when a piece finishes, and
-         * with the heavy settings at 60 fps a 20-second piece took minutes -- closing the
-         * app before the first one finished left nothing to continue. Each piece costs
-         * only an encoder start and re-decoding from the nearest keyframe, which is small
-         * next to swapping its frames.
+         * left nothing to continue). A crash loses at most the piece that was running;
+         * Stop loses nothing.
          */
         const val CHUNK_US = 2_000_000L
 
         fun fromJson(s: String): ResumeJob? = runCatching {
             val o = JSONObject(s)
+            val startUs = o.getLong("startUs")
+            val chunk = o.getLong("chunkUs")
+            val ends = mutableListOf<Long>()
+            val arr = o.optJSONArray("ends")
+            if (arr != null) for (i in 0 until arr.length()) ends += arr.getLong(i)
+            else for (i in 1..o.optInt("done", 0)) ends += startUs + i * chunk  // pre-build 31
             ResumeJob(o.getString("targetPath"), o.optString("targetName", ""),
-                      o.getLong("startUs"), o.getLong("endUs"), o.getBoolean("toEnd"),
-                      o.getLong("chunkUs"), o.getInt("outputFps"),
-                      o.getInt("outputMaxShortEdge"), o.getInt("trackPeriod"), o.getInt("done"))
+                      startUs, o.getLong("endUs"), o.getBoolean("toEnd"),
+                      chunk, o.getInt("outputFps"),
+                      o.getInt("outputMaxShortEdge"), o.getInt("trackPeriod"), ends,
+                      o.optBoolean("complete", false))
         }.getOrNull()
     }
 }
@@ -119,7 +137,10 @@ object ResumeStore {
         if (!File(job.targetPath).isFile) return null
         var ok = 0
         while (ok < job.done && part(ctx, ok).isFile && part(ctx, ok).length() > 0) ok++
-        job.done = ok
+        if (ok < job.done) {
+            while (job.ends.size > ok) job.ends.removeAt(job.ends.lastIndex)
+            job.complete = false
+        }
         return job
     }
 
