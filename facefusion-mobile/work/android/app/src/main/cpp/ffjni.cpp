@@ -1436,12 +1436,18 @@ Java_com_facefusion_mobile_NativePipe_yuvToBgr(JNIEnv* env, jclass,
   env->GetByteArrayRegion(jU, 0, (jsize)U.size(), (jbyte*)U.data());
   env->GetByteArrayRegion(jV, 0, (jsize)V.size(), (jbyte*)V.data());
 
+  // 10-bit video (HDR from the phone camera) decodes to P010: 16-bit little-endian
+  // samples with the value in the top 10 bits, so the chroma planes step 4 bytes per
+  // sample instead of 1 or 2. Read the HIGH byte of each sample, which is the 8-bit value.
+  // Without this every 10-bit frame came out as noise and no face was ever found.
+  const bool p010 = uPix >= 4 && vPix >= 4;
+  const size_t yStep = p010 ? 2 : 1, hi = p010 ? 1 : 0;
   std::vector<uint8_t> bgr((size_t)w * h * 3);
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
-      size_t yi = (size_t)y * yRow + x;
-      size_t ci = (size_t)(y / 2) * uRow + (size_t)(x / 2) * uPix;
-      size_t vi = (size_t)(y / 2) * vRow + (size_t)(x / 2) * vPix;
+      size_t yi = (size_t)y * yRow + (size_t)x * yStep + hi;
+      size_t ci = (size_t)(y / 2) * uRow + (size_t)(x / 2) * uPix + hi;
+      size_t vi = (size_t)(y / 2) * vRow + (size_t)(x / 2) * vPix + hi;
       int Yv = (yi < Y.size() ? Y[yi] : 16) - 16;
       int Uv = (ci < U.size() ? U[ci] : 128) - 128;
       int Vv = (vi < V.size() ? V[vi] : 128) - 128;
