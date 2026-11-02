@@ -100,7 +100,7 @@ export function UpdateChecker() {
                 <View style={[styles.fill, { width: progress.total > 0 ? `${Math.max(3, pct)}%` : '12%' }]} />
               </View>
               <ActivityIndicator color={colors.primary} style={{ marginTop: 12 }} />
-              <Text style={styles.small}>It is about 190 MB — best on Wi-Fi. Please keep the app open.</Text>
+              <Text style={styles.small}>About 190 MB. It keeps going on Wi-Fi or mobile data, and resumes if the connection drops. Please keep the app open.</Text>
             </View>
           ) : progress === 'install' ? (
             <>
@@ -117,7 +117,7 @@ export function UpdateChecker() {
             </>
           ) : (
             <>
-              <Text style={styles.steps}>Tap &quot;Update now&quot;. It downloads inside the app (about 190 MB — best on Wi-Fi), then tap &quot;Update&quot;. Your groups, chats and fees stay.</Text>
+              <Text style={styles.steps}>Tap &quot;Update now&quot;. It downloads inside the app (about 190 MB, on Wi-Fi or mobile data), then tap &quot;Update&quot;. Your groups, chats and fees stay.</Text>
               {!!error && <Text style={styles.error}>{error}</Text>}
               <Pressable style={styles.primary} onPress={start}>
                 <Text style={styles.primaryText}>{error ? '🔄 Try again' : '⬇️ Update now'}</Text>

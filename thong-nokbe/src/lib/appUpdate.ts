@@ -58,15 +58,30 @@ export async function downloadAndInstall(update: UpdateInfo, onProgress: (writte
   const existing = await FileSystem.getInfoAsync(path).catch(() => null);
   if (!existing?.exists) {
     // Download to a temporary name first, so a half-finished download is never installed.
+    // The file downloads in pieces and RESUMES from where it stopped if mobile data drops,
+    // so it finishes on both Wi-Fi and mobile data instead of failing on the first hiccup.
     const part = `${path}.part`;
     await FileSystem.deleteAsync(part, { idempotent: true }).catch(() => {});
     const task = FileSystem.createDownloadResumable(update.url, part, {}, (p) => {
       onProgress(p.totalBytesWritten, p.totalBytesExpectedToWrite); // total may be -1 if the server didn't say
     });
-    const res = await task.downloadAsync().catch(() => null);
-    if (!res || res.status !== 200) {
+
+    let ok = false;
+    let lastStatus: number | undefined;
+    for (let attempt = 0; attempt < 10 && !ok; attempt++) {
+      try {
+        // First attempt starts the download; later attempts resume from the bytes already saved.
+        const res = attempt === 0 ? await task.downloadAsync() : await task.resumeAsync();
+        lastStatus = res?.status;
+        if (res && res.status >= 200 && res.status < 300) ok = true;
+      } catch {
+        // network dropped — wait a moment and resume
+      }
+      if (!ok) await new Promise((r) => setTimeout(r, 2000 * Math.min(attempt + 1, 5)));
+    }
+    if (!ok) {
       await FileSystem.deleteAsync(part, { idempotent: true }).catch(() => {});
-      throw new Error(`Download failed${res ? ` (${res.status})` : ''}. Check your internet and try again.`);
+      throw new Error(`Couldn't finish the download${lastStatus ? ` (${lastStatus})` : ''}. Tap "Download in browser" — it's the most reliable on a weak connection.`);
     }
     await FileSystem.moveAsync({ from: part, to: path });
   }
