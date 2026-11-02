@@ -31,7 +31,29 @@ if (!raw) {
   console.log('::warning::FIREBASE_SERVICE_ACCOUNT secret is not set, so no update notification was sent (the in-app update box still works).');
   process.exit(0);
 }
-const sa = JSON.parse(raw);
+// Read the service-account key robustly: a key copied by hand on a phone can pick up stray line
+// breaks or characters that make it invalid JSON. If a straight parse fails, pull out the three
+// fields we need and rebuild the private key cleanly from its base64 body.
+function loadServiceAccount(text) {
+  try {
+    const j = JSON.parse(text);
+    if (j.private_key && j.client_email && j.project_id) {
+      j.private_key = String(j.private_key).replace(/\\n/g, '\n'); // in case newlines were double-escaped
+      return j;
+    }
+  } catch {}
+  const field = (k) => (text.match(new RegExp('"' + k + '"\\s*:\\s*"([^"]+)"')) || [])[1];
+  const body = (text.match(/-----BEGIN PRIVATE KEY-----([\s\S]*?)-----END PRIVATE KEY-----/) || [])[1];
+  if (!body || !field('client_email') || !field('project_id')) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT could not be read. Re-add the secret as the exact text of the key file.');
+  }
+  const b64body = body
+    .replace(/\\[nrt]/g, '\n') // turn \n \r \t escape sequences into a separator
+    .replace(/[^A-Za-z0-9+/=]/g, ''); // keep only base64 characters
+  const pem = `-----BEGIN PRIVATE KEY-----\n${b64body.match(/.{1,64}/g).join('\n')}\n-----END PRIVATE KEY-----\n`;
+  return { project_id: field('project_id'), client_email: field('client_email'), private_key: pem };
+}
+const sa = loadServiceAccount(raw);
 
 const b64 = (x) => Buffer.from(typeof x === 'string' ? x : JSON.stringify(x)).toString('base64url');
 const now = Math.floor(Date.now() / 1000);
