@@ -185,6 +185,49 @@ struct Pipeline::Impl {
   // their re-normalised mean. Kept in step with sourceSlots by setSource / addSource /
   // addSourcePhoto / clearSourceSlots.
   std::vector<std::vector<std::array<float, 512>>> slotPhotos;
+  // Each photo's head pose {yaw, pitch} in degrees (NaN when it could not be estimated),
+  // parallel to slotPhotos. Used to favour the photo whose angle matches the target face.
+  std::vector<std::vector<std::array<float, 2>>> slotPhotoPose;
+  static std::array<float, 2> poseOf(const Face& f) {
+    const ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
+    return p.ok ? std::array<float, 2>{p.yaw, p.pitch}
+                : std::array<float, 2>{NAN, NAN};
+  }
+  // POSE-MATCHED identity for target face `f` from source slot `slot`: each photo's
+  // embedding weighted by how close its head angle is to the target's (Gaussian, sigma
+  // 20 deg, pitch counted 1.3x as in poseFade), with a floor so every photo keeps a share
+  // of the identity, then re-normalised. Smooth in the angle, so a turning head blends
+  // from one photo to the next instead of flicking between them. One photo, or a pose
+  // that cannot be estimated: the slot's plain mean (sourceSlots), exactly as before.
+  const float* identityFor(int slot, const Face& f, std::array<float, 512>& buf) const {
+    const auto& ph = slotPhotos[(size_t)slot];
+    if (ph.size() < 2 || slotPhotoPose.size() <= (size_t)slot ||
+        slotPhotoPose[(size_t)slot].size() != ph.size())
+      return sourceSlots[(size_t)slot].data();
+    const auto tp = poseOf(f);
+    if (!std::isfinite(tp[0]) || !std::isfinite(tp[1])) return sourceSlots[(size_t)slot].data();
+    constexpr float kSigma = 20.f, kFloor = 0.15f;
+    float w[8]; float wsum = 0;
+    const size_t n = std::min<size_t>(ph.size(), 8);
+    for (size_t i = 0; i < n; ++i) {
+      const auto& pp = slotPhotoPose[(size_t)slot][i];
+      float wi = 1.f;
+      if (std::isfinite(pp[0]) && std::isfinite(pp[1])) {
+        const float dy = tp[0] - pp[0], dp = 1.3f * (tp[1] - pp[1]);
+        wi = kFloor + std::exp(-(dy * dy + dp * dp) / (2.f * kSigma * kSigma));
+      }
+      w[i] = wi; wsum += wi;
+    }
+    buf.fill(0.f);
+    for (size_t i = 0; i < n; ++i)
+      for (int k = 0; k < 512; ++k) buf[(size_t)k] += (w[i] / wsum) * ph[i][(size_t)k];
+    double n2 = 0;
+    for (float v : buf) n2 += (double)v * v;
+    if (!(n2 > 1e-12)) return sourceSlots[(size_t)slot].data();
+    const float inv = (float)(1.0 / std::sqrt(n2));
+    for (float& v : buf) v *= inv;
+    return buf.data();
+  }
   int activeSource = 0;
   // ONE remembered decision about ONE person: who they are, and what to do with them.
   //
@@ -1393,6 +1436,7 @@ bool Pipeline::setSource(const ffcv::Image& img) {
   std::memcpy(slot.data(), best->embeddingNorm, sizeof(float) * 512);
   p_->sourceSlots.push_back(slot);
   p_->slotPhotos.assign(1, {slot});
+  p_->slotPhotoPose.assign(1, {Impl::poseOf(*best)});
   p_->activeSource = 0;
   p_->faceAssignments.clear();
   p_->tracked.clear(); p_->frameSources.clear(); p_->frameSourcesValid = false;
@@ -1428,6 +1472,8 @@ int Pipeline::addSource(const ffcv::Image& img) {
   p_->sourceSlots.push_back(slot);
   p_->slotPhotos.resize(p_->sourceSlots.size() - 1);
   p_->slotPhotos.push_back({slot});
+  p_->slotPhotoPose.resize(p_->sourceSlots.size() - 1);
+  p_->slotPhotoPose.push_back({Impl::poseOf(*best)});
   if (!p_->haveSource) {
     std::memcpy(p_->srcEmbeddingNorm, slot.data(), sizeof(float) * 512);
     std::memcpy(p_->srcEmbedding, best->embedding, sizeof(p_->srcEmbedding));
@@ -1442,8 +1488,11 @@ int Pipeline::addSourcePhoto(int slotIndex, const ffcv::Image& img) {
     err_ = "no such source slot"; return -3;
   }
   p_->slotPhotos.resize(p_->sourceSlots.size());
+  p_->slotPhotoPose.resize(p_->sourceSlots.size());
   auto& photos = p_->slotPhotos[(size_t)slotIndex];
+  auto& poses = p_->slotPhotoPose[(size_t)slotIndex];
   if (photos.empty()) photos.push_back(p_->sourceSlots[(size_t)slotIndex]);
+  poses.resize(photos.size(), std::array<float, 2>{NAN, NAN});
   if ((int)photos.size() >= kMaxSourcePhotos) {
     err_ = "this face already has the most photos"; return -4;
   }
@@ -1471,6 +1520,7 @@ int Pipeline::addSourcePhoto(int slotIndex, const ffcv::Image& img) {
   std::array<float, 512> e{};
   std::memcpy(e.data(), best->embeddingNorm, sizeof(float) * 512);
   photos.push_back(e);
+  poses.push_back(Impl::poseOf(*best));
   // The slot's identity: the mean of its photos, re-normalised to unit length.
   std::array<float, 512> mean{};
   for (const auto& ph : photos)
@@ -1486,6 +1536,7 @@ int Pipeline::addSourcePhoto(int slotIndex, const ffcv::Image& img) {
 
 void Pipeline::clearSourceSlots() {
   p_->slotPhotos.clear();
+  p_->slotPhotoPose.clear();
   p_->sourceSlots.clear(); p_->faceAssignments.clear();
   p_->tracked.clear(); p_->frameSources.clear(); p_->frameSourcesValid = false;
   p_->selectedId = -1;
@@ -2643,8 +2694,11 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       });
     }
     const float* srcEmbNorm = p_->srcEmbeddingNorm;
+    std::array<float, 512> poseMatched;
     if (!p_->sourceSlots.empty() && six >= 0 && six < (int)p_->sourceSlots.size())
-      srcEmbNorm = p_->sourceSlots[(size_t)six].data();
+      srcEmbNorm = (six < (int)p_->slotPhotos.size())
+                       ? p_->identityFor(six, f, poseMatched)
+                       : p_->sourceSlots[(size_t)six].data();
 
     // balance_source_embedding (face_swapper/core.py:715). Identity-space, so it is
     // computed once per face and shared by every pixel-boost sub-image.

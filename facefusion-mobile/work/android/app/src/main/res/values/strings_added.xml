@@ -53,7 +53,7 @@
     <!-- Several photos of one person per source face -->
     <string name="photos_open">Photos of this person</string>
     <string name="photos_count">%1$d of %2$d photos</string>
-    <string name="photos_explain">Photos of the same person are combined into one likeness. More photos give a steadier face on head turns and in different light. It is worked out once before the swap, so swapping is not slower.</string>
+    <string name="photos_explain">Photos of the same person are combined into one likeness. For every frame the photo whose head angle matches the face in the video counts most (turned left: your left-turned photo), blending smoothly as the head turns. Add one straight on, one turned left, one turned right.</string>
     <string name="photos_add">Add photo (up to %1$d)</string>
     <string name="photos_remove">Remove this photo</string>
     <string name="photos_main">Main photo</string>
@@ -61,7 +61,7 @@
     <string name="photos_other_person">Different person, not used</string>
     <string name="photos_no_face">No face found, not used</string>
     <string name="photos_pending">Checked at the next preview</string>
-    <string name="photos_tips">Best: sharp, well lit, nothing over the face; one straight on, one turned, one in other light.</string>
+    <string name="photos_tips">Best: sharp, well lit, nothing over the face; one straight on, one turned left, one turned right.</string>
     <string name="photos_done">Done</string>
 
     <!-- Missing from the base resource set -->

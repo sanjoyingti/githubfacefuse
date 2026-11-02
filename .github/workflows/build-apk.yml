@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 28 makes the extra photos angle-aware: for every frame and every face, the photo whose head angle is closest to that face's counts most (a face turned left uses mostly your left-turned photo), blending smoothly as the head turns so there is no flicker, while every photo keeps a share of the identity. No extra memory or time.
+
           Build 27 adds up to 3 photos of the same person per source face, combined into one likeness for a steadier face on head turns and in different light. On the Swap screen: the + button in the source pane, or tap the selected face again. Each photo is content-checked like the main one, a photo of a different person is refused, and the combining happens once before the swap, so swapping is not slower. A face with one photo works exactly as before.
 
           Build 26: only the face swapper you have selected is required. Before, hyperswap 1a was always downloaded as required, even when you used 1b or 1c and had deleted 1a to save space.
