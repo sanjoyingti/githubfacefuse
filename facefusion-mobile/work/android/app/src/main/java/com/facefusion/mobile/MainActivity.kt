@@ -4176,6 +4176,8 @@ class MainActivity : ComponentActivity() {
                 val libDir = applicationInfo.nativeLibraryDir
                 if (!NativePipe.init(libDir, libDir, models.absolutePath, opts))
                     return@withContext "init: ${NativePipe.lastError()}"
+                // Live is swap-only: no lip syncer or face editor, so free their memory.
+                NativePipe.trimModels(false, false, opts.faceEnhance)
                 NativePipe.setTrackPeriod(opts.trackPeriod)
                 NativePipe.setSequence(true)
                 // EVERY source is registered, in list order, so the native slots stay

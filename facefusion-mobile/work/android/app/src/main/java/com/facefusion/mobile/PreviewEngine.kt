@@ -220,6 +220,21 @@ class PreviewEngine {
     private var loadedOpts: SwapOptions? = null
 
     /**
+     * Which optional models the loaded pipeline still holds: lip syncer, face editor
+     * (LivePortrait) and enhancer. The others are unloaded right after init so Android
+     * does not close the app for memory; switching one of them on reloads the pipeline.
+     */
+    private var loadedKeep = BooleanArray(3)
+
+    private fun wants(o: SwapOptions) =
+        booleanArrayOf(o.lipSync, o.faceEdit || o.expressionRestore || o.faceAnimate, o.faceEnhance)
+
+    private fun keeps(have: BooleanArray, o: SwapOptions): Boolean {
+        val w = wants(o)
+        return w.indices.all { !w[it] || have[it] }
+    }
+
+    /**
      * Whose face is currently set on the loaded pipeline.
      *
      * ⚠ SEPARATE from [loadedOpts], and that separation is the point. These were one
@@ -288,6 +303,8 @@ class PreviewEngine {
     fun applyOptions(opts: SwapOptions) {
         if (loadedSwapper == null || loadedSwapper != opts.swapper) return
         if (loadedOpts == opts) return
+        // A model these options need was unloaded to save memory: ensureReady reloads.
+        if (!keeps(loadedKeep, opts)) return
         if (NativePipe.setOptions(opts)) {
             loadedOpts = opts
             // Not part of setOptions: Live sets the same switch for its own session.
@@ -355,13 +372,15 @@ class PreviewEngine {
         //   options  -> push them to the loaded pipeline, no I/O at all
         //   source   -> one gate check and one setSource
         //   swapper  -> a genuine reload, because it is a different model file
-        val reload = loadedSwapper != opts.swapper
+        val reload = loadedSwapper != opts.swapper || !keeps(loadedKeep, opts)
         if (reload) {
             invalidate()
             if (!NativePipe.init(libDir, libDir, modelDir, opts))
                 return@withContext "Could not load the models: " + NativePipe.lastError()
             loadedSwapper = opts.swapper
             loadedOpts = opts
+            loadedKeep = wants(opts)
+            NativePipe.trimModels(loadedKeep[0], loadedKeep[1], loadedKeep[2])
             NativePipe.setSwapEnabled(opts.swapsFace)
         } else {
             applyOptions(opts)
