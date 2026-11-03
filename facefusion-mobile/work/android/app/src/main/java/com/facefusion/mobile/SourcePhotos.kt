@@ -1,6 +1,8 @@
 package com.facefusion.mobile
 
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.setValue
 
 /**
  * Extra photos of the SAME person for one source face.
@@ -32,6 +34,17 @@ object SourcePhotos {
      * [NO_FACE] or [OTHER_PERSON]. Read by the photos panel; absent means not tried yet.
      */
     val verdicts = mutableStateMapOf<Any, Int>()
+
+    /**
+     * Opens the photos panel for a source face; set by MainActivity. Read by the Swap
+     * screen DIRECTLY, not passed down as a parameter: on a phone the parameter route left
+     * the button hidden although the compiled code passed a value, so the screen now asks
+     * here as well and shows the controls whenever either says yes.
+     */
+    var opener by androidx.compose.runtime.mutableStateOf<((Int) -> Unit)?>(null)
+
+    /** Photos per source face (main photo included), in source order; set by MainActivity. */
+    var counts by androidx.compose.runtime.mutableStateOf<List<Int>>(emptyList())
 
     /**
      * Add [extras] to native slot [slotIndex], which must have just been registered with

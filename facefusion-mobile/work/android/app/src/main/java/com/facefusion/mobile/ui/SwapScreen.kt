@@ -340,6 +340,10 @@ fun SwapScreen(
     modifier: Modifier = Modifier,
 ) {
     val idle = !run.busy && !run.preparing
+    // The photos panel: from the parameter or, failing that, straight from SourcePhotos.
+    val openPhotos: ((Int) -> Unit)? = onOpenSourcePhotos ?: com.facefusion.mobile.SourcePhotos.opener
+    val photoCounts: List<Int> =
+        sourcePhotoCounts.ifEmpty { com.facefusion.mobile.SourcePhotos.counts }
 
     // Both panes share one height, chosen so the pair fits on screen together with the
     // controls around them. The reserve is the wordmark, source button, captions, trim,
@@ -790,9 +794,9 @@ fun SwapScreen(
                          stringResource(R.string.faces_open), Modifier.size(16.dp))
                 }
                 // More photos of the same person for the face shown.
-                if (hasSource && idle && onOpenSourcePhotos != null) {
-                    IconButton({ onOpenSourcePhotos(activeSource) }, Modifier.size(28.dp)) {
-                        val n = sourcePhotoCounts.getOrNull(activeSource) ?: 1
+                if (hasSource && idle && openPhotos != null) {
+                    IconButton({ openPhotos(activeSource) }, Modifier.size(28.dp)) {
+                        val n = photoCounts.getOrNull(activeSource) ?: 1
                         BadgedBox(badge = { if (n > 1) Badge { Text(n.toString()) } }) {
                             Icon(Icons.Default.Add, stringResource(R.string.photos_open),
                                  Modifier.size(16.dp))
@@ -842,20 +846,20 @@ fun SwapScreen(
             onSelect = onSelectSource,
             onKeepOriginal = if (assignMode) onKeepOriginal else null,
             enabled = idle,
-            photoCounts = sourcePhotoCounts,
-            onOpenPhotos = onOpenSourcePhotos,
+            photoCounts = photoCounts,
+            onOpenPhotos = openPhotos,
         )
         // The same panel as the + in the source pane, spelled out where people look: right
         // under the faces, naming the face it is for.
-        if (opts.swapsFace && hasSource && onOpenSourcePhotos != null) OutlinedButton(
-            onClick = { onOpenSourcePhotos(activeSource) },
+        if (opts.swapsFace && sourceThumbs.isNotEmpty() && openPhotos != null) OutlinedButton(
+            onClick = { openPhotos(activeSource) },
             enabled = idle,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
         ) {
             Icon(Icons.Default.Add, contentDescription = null, Modifier.size(18.dp))
             Text(stringResource(R.string.photos_row_button, activeSource + 1,
-                                sourcePhotoCounts.getOrNull(activeSource) ?: 1, 3),
+                                photoCounts.getOrNull(activeSource) ?: 1, 3),
                  Modifier.padding(start = 6.dp))
         }
 

@@ -1722,6 +1722,8 @@ class MainActivity : ComponentActivity() {
         if (crashedLastTime) enterSafeMode()
         restoreFinishedOutput()
         offerResume()
+        // The photos panel's opener, read by the Swap screen directly (see SourcePhotos.opener).
+        SourcePhotos.opener = { i -> photosSheetFor = i }
 
         // adb: ... --es selftest 1 --es enhance 1 --es lipsync 1   (or `0` to force OFF)
         //
@@ -1813,6 +1815,9 @@ class MainActivity : ComponentActivity() {
         if (intent?.getStringExtra("download") != null) onDownloadTapped()
 
         setContent {
+            androidx.compose.runtime.SideEffect {
+                SourcePhotos.counts = sources.map { 1 + it.extras.size }
+            }
             FaceFusionTheme(darkTheme) {
                 // The download runs in a service, on its own thread. Rather than trust a
                 // cross-thread state write to invalidate exactly the right scope, re-read

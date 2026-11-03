@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 37: the "More photos of Source …" button and the + on the source picture are wired directly, so they show as soon as a source face is loaded (on a phone they stayed hidden in build 36).
+
           Build 36 shows the build number next to the FACEFUSION name at the top of every screen ("FACEFUSION build 36"), so you can see at a glance that you are in the new app ("FaceFusion Debug") and not an older FaceFusion app.
 
           Build 35 adds **sanjoyingti.zip** below: the Android Studio project on its own, in a short folder named sanjoyingti, so Windows extracts every file (the long paths in the repository zip made Windows drop files, including the photos panel). Extract it to C:\\, open C:\\sanjoyingti in Android Studio, Build > Build APK(s). Settings > About then shows build35.
