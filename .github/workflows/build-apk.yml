@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 35 adds **sanjoyingti.zip** below: the Android Studio project on its own, in a short folder named sanjoyingti, so Windows extracts every file (the long paths in the repository zip made Windows drop files, including the photos panel). Extract it to C:\\, open C:\\sanjoyingti in Android Studio, Build > Build APK(s). Settings > About then shows build35.
+
           Build 34 shows its build number: Settings -> About now reads "0.9.41-mic-debug-build34", and every bug report names the build, so you can always see which version is installed. A copy compiled from this source zip shows the same number.
 
           Build 33: a clear "More photos of Source N (1 of 3)" button right under the face row opens the photos panel (it was only a small + in the source pane and a second tap on the selected face).
@@ -136,7 +138,18 @@ jobs:
 
           Not yet tested on a phone; built automatically from this commit.
           NOTES
-          gh release create "$tag" "$apk" \
+          # The Android Studio project alone, under a SHORT top folder ("sanjoyingti"), so
+          # Windows' Extract All stays far below its 260-character path limit (the
+          # repository zip nests it four folders deeper and long paths were dropped).
+          # Self-contained: the project reads nothing outside work/android. BUILD_NUMBER
+          # is this run's, so Settings > About names the same build as the release.
+          rm -rf /tmp/sz && mkdir -p /tmp/sz
+          git -C "$GITHUB_WORKSPACE" archive --format=tar --prefix=sanjoyingti/ \
+            HEAD:facefusion-mobile/work/android | tar -x -C /tmp/sz
+          echo "$GITHUB_RUN_NUMBER" > /tmp/sz/sanjoyingti/BUILD_NUMBER
+          (cd /tmp/sz && zip -qr sanjoyingti.zip sanjoyingti)
+          cp /tmp/sz/sanjoyingti.zip sanjoyingti.zip
+          gh release create "$tag" "$apk" sanjoyingti.zip \
             --target "$GITHUB_SHA" \
             --title "FaceFusion Mobile 0.9.41 + occlusion & motion (build ${GITHUB_RUN_NUMBER})" \
             --notes-file notes.md
