@@ -56,6 +56,7 @@
 
     <!-- Several photos of one person per source face -->
     <string name="photos_open">Photos of this person</string>
+    <string name="photos_row_button">More photos of Source %1$d (%2$d of %3$d)</string>
     <string name="photos_count">%1$d of %2$d photos</string>
     <string name="photos_explain">Photos of the same person are combined into one likeness. For every frame the photo whose head angle matches the face in the video counts most (turned left: your left-turned photo), blending smoothly as the head turns. Add one straight on, one turned left, one turned right.</string>
     <string name="photos_add">Add photo (up to %1$d)</string>

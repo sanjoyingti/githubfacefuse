@@ -845,6 +845,19 @@ fun SwapScreen(
             photoCounts = sourcePhotoCounts,
             onOpenPhotos = onOpenSourcePhotos,
         )
+        // The same panel as the + in the source pane, spelled out where people look: right
+        // under the faces, naming the face it is for.
+        if (opts.swapsFace && hasSource && onOpenSourcePhotos != null) OutlinedButton(
+            onClick = { onOpenSourcePhotos(activeSource) },
+            enabled = idle,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null, Modifier.size(18.dp))
+            Text(stringResource(R.string.photos_row_button, activeSource + 1,
+                                sourcePhotoCounts.getOrNull(activeSource) ?: 1, 3),
+                 Modifier.padding(start = 6.dp))
+        }
 
         // ---- ASSIGN PER PERSON. Video and stills alike: the preview pane swaps
         // through the warm pipeline either way, and native assignments live on
