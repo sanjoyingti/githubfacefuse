@@ -532,4 +532,75 @@ void sharpen(ffcv::MatF& img, float amount, int r) {
   }
 }
 
+void directionalBlur(ffcv::MatF& img, float vx, float vy, float len) {
+  const float n = std::sqrt(vx * vx + vy * vy);
+  if (!(len >= 1.f) || !(n > 0.f) || img.c != 3) return;
+  const float ux = vx / n, uy = vy / n;
+  const int taps = std::min(25, (int)std::ceil(len)) | 1;
+  const int W = img.w, H = img.h;
+  std::vector<float> out(img.data.size());
+  std::vector<float> ox(taps), oy(taps);
+  for (int k = 0; k < taps; ++k) {
+    const float t = taps == 1 ? 0.f : (-0.5f + (float)k / (taps - 1)) * len;
+    ox[k] = t * ux; oy[k] = t * uy;
+  }
+  const float inv = 1.f / taps;
+  for (int y = 0; y < H; ++y)
+    for (int x = 0; x < W; ++x) {
+      float acc[3] = {0.f, 0.f, 0.f};
+      for (int k = 0; k < taps; ++k) {
+        float sx = x + ox[k], sy = y + oy[k];
+        sx = sx < 0.f ? 0.f : (sx > W - 1.f ? W - 1.f : sx);
+        sy = sy < 0.f ? 0.f : (sy > H - 1.f ? H - 1.f : sy);
+        const int x0 = (int)sx, y0 = (int)sy;
+        const int x1 = std::min(x0 + 1, W - 1), y1 = std::min(y0 + 1, H - 1);
+        const float fx = sx - x0, fy = sy - y0;
+        const float* a = img.row(y0) + x0 * 3; const float* b = img.row(y0) + x1 * 3;
+        const float* c = img.row(y1) + x0 * 3; const float* d = img.row(y1) + x1 * 3;
+        for (int ch = 0; ch < 3; ++ch)
+          acc[ch] += (a[ch] * (1 - fx) + b[ch] * fx) * (1 - fy) + (c[ch] * (1 - fx) + d[ch] * fx) * fy;
+      }
+      float* o = &out[((size_t)y * W + x) * 3];
+      o[0] = acc[0] * inv; o[1] = acc[1] * inv; o[2] = acc[2] * inv;
+    }
+  img.data.swap(out);
+}
+
+void excludeOtherFaces(ffcv::MatF& mask, const ffcv::Affine& am, const float* box,
+                       const std::vector<std::array<float, 4>>& others) {
+  if (others.empty() || mask.c != 1) return;
+  const ffcv::Affine inv = ffcv::invertAffine(am);
+  struct E { float cx, cy, irx, iry; };
+  auto ell = [](float x0, float y0, float x1, float y1) {
+    const float rx = std::max(1.f, 0.5f * (x1 - x0)), ry = std::max(1.f, 0.5f * (y1 - y0));
+    return E{0.5f * (x0 + x1), 0.5f * (y0 + y1), 1.f / rx, 1.f / ry};
+  };
+  const E self = ell(box[0], box[1], box[2], box[3]);
+  std::vector<E> oth;
+  for (const auto& b : others) oth.push_back(ell(b[0], b[1], b[2], b[3]));
+  auto d2 = [](const E& e, float qx, float qy) {
+    const float a = (qx - e.cx) * e.irx, b = (qy - e.cy) * e.iry;
+    return a * a + b * b;
+  };
+  for (int y = 0; y < mask.h; ++y) {
+    float* row = mask.row(y);
+    for (int x = 0; x < mask.w; ++x) {
+      if (row[x] <= 0.f) continue;
+      const float qx = (float)(inv(0, 0) * x + inv(0, 1) * y + inv(0, 2));
+      const float qy = (float)(inv(1, 0) * x + inv(1, 1) * y + inv(1, 2));
+      const float ds = d2(self, qx, qy);
+      float keep = 1.f;
+      for (const E& e : oth) {
+        const float dg = d2(e, qx, qy);
+        if (dg >= 1.3f) continue;          // outside the other face: not its pixel
+        // Nearer to the other face (in face units) -> theirs; a soft seam where equal.
+        float w = 0.5f + (dg - ds) / 0.5f;
+        w = w < 0.f ? 0.f : (w > 1.f ? 1.f : w);
+        keep = std::min(keep, w);
+      }
+      row[x] *= keep;
+    }
+  }
+}
+
 }  // namespace ffmotion

@@ -307,6 +307,15 @@ struct Pipeline::Impl {
     // inside" alone), and whether the stored mask had the parser in it.
     int mouthHold = 0;
     bool maskParsed = false;
+    // The face's raw centre on the previous frame, for Face::vel.
+    float prevC[2] = {0.f, 0.f};
+    bool havePrev = false;
+    // LOST-FACE RECOVERY: last alignment points, eye span and per-frame motion, so a face
+    // the detector misses during a fast flip can be looked for where it is heading.
+    float lm5[10] = {};
+    float span = 0.f;
+    float vel[2] = {0.f, 0.f};
+    bool haveLm = false;
   };
   // The sequence state of faces[fi] on THIS frame, or null outside a sequence. temporal()
   // writes this frame's faces first and in order, so index fi is face fi.
@@ -1123,6 +1132,43 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   }  // angles
   }  // end of the real-detection path
 
+  // LOST-FACE RECOVERY (video): a face seen a moment ago that the detector missed on this
+  // frame -- a head flip blurs and tilts it past the detector -- is looked for again where
+  // it was heading: its last box and points moved by its last motion. The landmarker
+  // below must then find a confident face there of about the same size, or it is dropped.
+  std::vector<char> recovered(boxes.size(), 0);
+  std::vector<float> recoverSpan(boxes.size(), 0.f);
+  if (!useTrack && cfg.lowScoreRecovery && p_->seq.on && !noTrack && !boxesOnly) {
+    // Each detection accounts for ONE face of the previous frame (the one it overlaps most),
+    // so two faces cheek to cheek, one of them missed, do not hide each other.
+    std::vector<char> claimed(p_->seq.faces.size(), 0);
+    for (int idx : keep) {
+      int best = -1; float bv = 0.2f;
+      for (size_t i = 0; i < p_->seq.faces.size(); ++i) {
+        if (claimed[i]) continue;
+        const float v = ffmotion::iou(boxes[(size_t)idx].data(), p_->seq.faces[i].box);
+        if (v >= bv) { bv = v; best = (int)i; }
+      }
+      if (best >= 0) claimed[(size_t)best] = 1;
+    }
+    for (size_t si = 0; si < p_->seq.faces.size(); ++si) {
+      const auto& sf = p_->seq.faces[si];
+      if (claimed[si] || !sf.haveLm || sf.miss > 1) continue;
+      const float steps = (float)(sf.miss + 1);
+      const float dx = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[0] * steps));
+      const float dy = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[1] * steps));
+      std::array<float, 4> bb = {sf.box[0] + dx, sf.box[1] + dy, sf.box[2] + dx, sf.box[3] + dy};
+      std::array<float, 10> l{};
+      for (int k = 0; k < 5; ++k) { l[2 * k] = sf.lm5[2 * k] + dx; l[2 * k + 1] = sf.lm5[2 * k + 1] + dy; }
+      boxes.push_back(bb);
+      scores.push_back(0.f);
+      lms.push_back(l);
+      recovered.push_back(1);
+      recoverSpan.push_back(sf.span);
+      keep.push_back((int)boxes.size() - 1);
+    }
+  }
+
   for (int idx : keep) {
     Face f{};
     std::memcpy(f.landmark5, lms[idx].data(), sizeof(f.landmark5));
@@ -1211,6 +1257,25 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
     meanPeak /= 68.0;
     float score68 = (float)std::min(1.0, std::max(0.0, meanPeak / 0.9));  // numpy.interp
     f.lmScore = score68;
+    if ((size_t)idx < recovered.size() && recovered[(size_t)idx]) {
+      // A recovered face must be a confident face of about the size it had.
+      float l5[10];
+      ffcv::toLandmark5(f.landmark68, l5);
+      const float span = std::hypot(l5[2] - l5[0], l5[3] - l5[1]);
+      const float want = recoverSpan[(size_t)idx];
+      if (score68 < 0.7f || !(span > 0.7f * want && span < 1.4f * want)) continue;
+      // ...and not a face already found (the landmarker can lock on the neighbour).
+      const float cx = (l5[0] + l5[2] + l5[4] + l5[6] + l5[8]) / 5.f;
+      const float cy = (l5[1] + l5[3] + l5[5] + l5[7] + l5[9]) / 5.f;
+      bool dup = false;
+      for (const Face& g : faces) {
+        const float gx = (g.landmark5_68[0] + g.landmark5_68[2] + g.landmark5_68[4] + g.landmark5_68[6] + g.landmark5_68[8]) / 5.f;
+        const float gy = (g.landmark5_68[1] + g.landmark5_68[3] + g.landmark5_68[5] + g.landmark5_68[7] + g.landmark5_68[9]) / 5.f;
+        if (std::hypot(cx - gx, cy - gy) < 0.6f * span) { dup = true; break; }
+      }
+      if (dup) continue;
+      f.detScore = score68;
+    }
     if (score68 > cfg.landmarkerScore)
       ffcv::toLandmark5(f.landmark68, f.landmark5_68);
     else
@@ -1387,11 +1452,25 @@ void Pipeline::Impl::temporal(std::vector<Face>& faces) {
     SeqFace sf;
     if (best >= 0) { used[(size_t)best] = true; sf = seq.faces[(size_t)best]; }
     else sf.fade = f.poseFade;   // a new face starts at its own fade, not at 1
+    {
+      float cx = 0, cy = 0;
+      for (int k = 0; k < 5; ++k) { cx += f.landmark5_68[2 * k]; cy += f.landmark5_68[2 * k + 1]; }
+      cx /= 5.f; cy /= 5.f;
+      if (best >= 0 && sf.havePrev && sf.miss == 0) { f.vel[0] = cx - sf.prevC[0]; f.vel[1] = cy - sf.prevC[1]; }
+      else { f.vel[0] = f.vel[1] = 0.f; }
+      sf.prevC[0] = cx; sf.prevC[1] = cy; sf.havePrev = true;
+    }
     if (cfg.motionSmooth) sf.filt.apply(f.landmark5_68);
     else sf.filt.reset();
     // The fade follows a turning head over ~3 frames rather than flickering with landmark
     // noise near the threshold.
-    sf.fade += 0.35f * (f.poseFade - sf.fade);
+    // Slower going towards the original (0.2) than back to the swap (0.35): near the limit
+    // of a big turn or tilt the swap eases out instead of flicking on and off.
+    sf.fade += (f.poseFade < sf.fade ? 0.2f : 0.35f) * (f.poseFade - sf.fade);
+    std::memcpy(sf.lm5, f.landmark5_68, sizeof(sf.lm5));
+    sf.span = std::hypot(f.landmark5_68[2] - f.landmark5_68[0], f.landmark5_68[3] - f.landmark5_68[1]);
+    sf.vel[0] = f.vel[0]; sf.vel[1] = f.vel[1];
+    sf.haveLm = sf.span > 2.f;
     f.poseFade = sf.fade;
     std::memcpy(sf.box, f.box, sizeof(sf.box));
     sf.miss = 0;
@@ -2810,7 +2889,17 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // crop (taken before the swap overwrote nothing -- `crop` is the original pixels), then
     // scaled by the pose fade.
     const ffcv::MatF* useMask = &mask;
-    if (modelMasks || f.poseFade < 0.999f) {
+    // TOUCHING FACES: the other faces whose box overlaps this one (grown by a quarter).
+    std::vector<const Face*> touching;
+    if (cfg.overlapGuard) {
+      const float w = f.box[2] - f.box[0], h = f.box[3] - f.box[1];
+      const float gx0 = f.box[0] - 0.25f * w, gy0 = f.box[1] - 0.25f * h;
+      const float gx1 = f.box[2] + 0.25f * w, gy1 = f.box[3] + 0.25f * h;
+      for (const Face& g : faces)
+        if (&g != &f && g.box[0] < gx1 && g.box[2] > gx0 && g.box[1] < gy1 && g.box[3] > gy0)
+          touching.push_back(&g);
+    }
+    if (modelMasks || f.poseFade < 0.999f || !touching.empty()) {
       t0 = nowMs();
       if (parallel) {
         p_->maskWorker.wait();
@@ -2839,6 +2928,11 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
             faceMask.data[i] = 0.7f * faceMask.data[i] + 0.3f * sface->lastMask->data[i];
         sface->lastMask = std::make_shared<ffcv::MatF>(faceMask);
       }
+      if (!touching.empty()) {
+        std::vector<std::array<float, 4>> ob;
+        for (const Face* g : touching) ob.push_back({g->box[0], g->box[1], g->box[2], g->box[3]});
+        ffmotion::excludeOtherFaces(faceMask, am, f.box, ob);
+      }
       if (f.poseFade < 0.999f)
         for (float& v : faceMask.data) v *= f.poseFade;
       Impl::CachedMask cm;
@@ -2848,6 +2942,19 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       p_->maskCache.push_back(std::move(cm));
       useMask = &faceMask;
       msGeomMask += nowMs() - t0;
+    }
+
+    // MOTION BLUR MATCH: the real head is streaked by its own motion; give the swapped
+    // face the same streak (half the frame's travel, the usual shutter), in crop space.
+    if (cfg.motionBlurMatch) {
+      const float vx = (float)(am(0, 0) * f.vel[0] + am(0, 1) * f.vel[1]);
+      const float vy = (float)(am(1, 0) * f.vel[0] + am(1, 1) * f.vel[1]);
+      const float len = 0.5f * std::sqrt(vx * vx + vy * vy);
+      if (len >= 2.f) {
+        t0 = nowMs();
+        ffmotion::directionalBlur(outCrop, vx, vy, len);
+        msGeom += nowMs() - t0;
+      }
     }
 
     // SKIN TONE: the swapped face takes the target face's colour statistics, measured

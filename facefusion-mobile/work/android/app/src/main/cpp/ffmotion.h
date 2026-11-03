@@ -12,6 +12,9 @@
 //     detector look at the frame turned by 90/180/270 degrees.
 #pragma once
 
+#include <array>
+#include <vector>
+
 #include "ffcv.h"
 
 namespace ffmotion {
@@ -115,5 +118,15 @@ ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h);
 
 // Unsharp mask in place on a 0..255 float image: x + amount*0.8*(x - blur_r(x)), clamped.
 void sharpen(ffcv::MatF& img, float amount, int r);
+
+// Blur a 3-channel 0..255 float image along (vx, vy) over `len` pixels (centred), like a
+// camera's motion streak. len < 1 leaves it alone.
+void directionalBlur(ffcv::MatF& img, float vx, float vy, float len);
+
+// TOUCHING FACES: in a crop-space mask of the face with frame box `box` (crop = am * frame),
+// fade out the pixels that are nearer (in each face's own ellipse units) to one of
+// `others`' boxes than to this face's, with a soft seam where both are equally near.
+void excludeOtherFaces(ffcv::MatF& mask, const ffcv::Affine& am, const float* box,
+                       const std::vector<std::array<float, 4>>& others);
 
 }  // namespace ffmotion

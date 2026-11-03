@@ -92,6 +92,29 @@ int main() {
   for (float v : e2.data) if (v < 0.f || v > 255.f) { printf("FAIL range\n"); ++fails; break; }
   ffcv::MatF e0 = edge; ffmotion::sharpen(e0, 0.f, 2);
   if (e0.data != edge.data) { printf("FAIL amount 0 changes\n"); ++fails; }
+  // directional blur: a vertical edge blurred horizontally spreads, vertically does not
+  {
+    ffcv::MatF v = edge; ffmotion::directionalBlur(v, 1.f, 0.f, 9.f);
+    if (!(v.row(10)[31 * 3] > 60.f && v.row(10)[31 * 3] < 200.f)) { printf("FAIL hblur\n"); ++fails; }
+    ffcv::MatF u = edge; ffmotion::directionalBlur(u, 0.f, 1.f, 9.f);
+    if (std::abs(u.row(10)[31 * 3] - 60.f) > 1e-3f) { printf("FAIL vblur %f\n", u.row(10)[31 * 3]); ++fails; }
+    ffcv::MatF z = edge; ffmotion::directionalBlur(z, 1.f, 0.f, 0.5f);
+    if (z.data != edge.data) { printf("FAIL short blur changes\n"); ++fails; }
+  }
+  // exclusion: two side-by-side faces; this face's mask keeps its own centre, drops the
+  // other's centre, and is untouched with no other face
+  {
+    ffcv::MatF m(100, 100, 1); for (auto& x : m.data) x = 1.f;
+    ffcv::Affine id;  // identity: crop == frame
+    const float self[4] = {0, 20, 60, 80};
+    std::vector<std::array<float, 4>> oth = {{{45, 20, 105, 80}}};
+    ffcv::MatF a = m; ffmotion::excludeOtherFaces(a, id, self, oth);
+    const float mine = a.row(50)[30], theirs = a.row(50)[85], seam = a.row(50)[52];
+    printf("EXCL mine=%.2f seam=%.2f theirs=%.2f\n", mine, seam, theirs);
+    if (!(mine == 1.f && theirs == 0.f && seam > 0.f && seam < 1.f)) { printf("FAIL exclude\n"); ++fails; }
+    ffcv::MatF b = m; ffmotion::excludeOtherFaces(b, id, self, {});
+    if (b.data != m.data) { printf("FAIL exclude empty\n"); ++fails; }
+  }
   printf(fails ? "test_new41: %d FAILED\n" : "test_new41: all passed\n", fails);
   return fails ? 1 : 0;
 }

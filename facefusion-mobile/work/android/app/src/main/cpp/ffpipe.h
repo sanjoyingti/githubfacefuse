@@ -35,6 +35,9 @@ struct Face {
   // Config::poseFadeStart, so an extreme profile keeps its own face instead of a stretched
   // one.
   float poseFade = 1.f;
+  // How far this face moved since the previous frame of a sequence (pixels, frame space;
+  // 0 outside a sequence). Used to blur the swapped face like the real, motion-blurred one.
+  float vel[2] = {0.f, 0.f};
   float embedding[512];
   float embeddingNorm[512];
 };
@@ -95,6 +98,12 @@ struct Config {
   // (0 = off, 1 = strong). Inside the same mask as the enhancer, so only the face changes.
   // Off by default; only read when faceEnhance is on.
   float enhanceSharpen = 0.f;
+  // MOTION BLUR MATCH: on a fast head move the swapped face gets the same streak as the
+  // real one (it was pasted sharp onto a blurred head). Only on frames that move.
+  bool motionBlurMatch = true;
+  // TOUCHING FACES: where two faces overlap, each face's swap stops at the other face
+  // instead of spilling onto it. Only when faces overlap.
+  bool overlapGuard = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;

@@ -75,6 +75,12 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.42 (from your clip at 0:03):
+          - Fast head moves: the swapped face now gets the same motion blur as the real head, so it no longer looks like a sharp face pasted on a blurred head. Only on frames where the head moves fast.
+          - Touching faces: when two faces overlap (cheek to cheek), each face's swap stops at the other face instead of spilling onto it.
+          - Big tilts and turns: the swap now eases out more slowly at the turn limit, so it does not flick between swapped and original.
+          Frames with one still face are unchanged.
+
           Version 1.0.41:
           - Masks on the NPU: the occlusion mask and the face parser now run on the NPU (the S25 Ultra's Snapdragon 8 Elite), converted from the same models. Tested against the originals: 99.99% of occlusion-mask pixels and 99.7-99.97% of face-parser pixels agree. On the phone the app checks they match before using them, otherwise it uses the GPU or CPU as before. Frees the GPU and less battery and heat.
           - Up to 5 photos per person (front, left, right, up, down). Empty slots say which angle to add.
