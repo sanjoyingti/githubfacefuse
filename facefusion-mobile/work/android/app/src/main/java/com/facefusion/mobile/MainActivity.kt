@@ -2236,6 +2236,39 @@ class MainActivity : ComponentActivity() {
                                 onToggleRecord = ::toggleLiveRecording,
                             )
 
+                            Screen.Faces -> {
+                                // Each face's extra photos, decoded once per change of the list.
+                                val extraThumbs = androidx.compose.runtime.remember(sources) {
+                                    sources.map { it.extras.map { u -> u to decodeOriented(u) } }
+                                }
+                                com.facefusion.mobile.ui.FacesScreen(
+                                    faces = sources.mapIndexed { i, item ->
+                                        com.facefusion.mobile.ui.FaceCard(
+                                            photos = listOf(com.facefusion.mobile.ui.SourcePhotoTile(
+                                                item.thumb, main = true, verdict = null)) +
+                                                extraThumbs.getOrElse(i) { emptyList() }.mapNotNull { (u, b) ->
+                                                    b?.let { com.facefusion.mobile.ui.SourcePhotoTile(
+                                                        it, main = false,
+                                                        verdict = SourcePhotos.verdicts[u]) }
+                                                },
+                                            active = i == swapSourceIndex,
+                                        )
+                                    },
+                                    max = SourcePhotos.MAX,
+                                    enabled = !busy,
+                                    onAddPerson = { pickSource.launch("image/*") },
+                                    onAddPhoto = { i ->
+                                        pendingExtraFor = i
+                                        pickExtraPhoto.launch("image/*")
+                                    },
+                                    onRemovePhoto = { i, k ->
+                                        sources.getOrNull(i)?.extras?.getOrNull(k)?.let { removeExtraPhoto(i, it) }
+                                    },
+                                    onUseFace = ::selectSwapSource,
+                                    onRemoveFace = ::removeSource,
+                                )
+                            }
+
                             Screen.Settings -> SettingsScreen(
                                 sections = modelSections(),
                                 modelDirPath = modelDir().absolutePath,

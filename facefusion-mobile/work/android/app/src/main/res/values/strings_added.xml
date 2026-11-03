@@ -54,6 +54,17 @@
     <string name="opt_detect_rotated">Find rotated faces</string>
     <string name="opt_detect_rotated_hint">Also looks for heads turned sideways or upside down (90°, 180°, 270°). Slower on frames without a face.</string>
 
+    <!-- The Faces tab -->
+    <string name="nav_faces">Faces</string>
+    <string name="faces_tab_title">Faces and their photos</string>
+    <string name="faces_tab_explain">Each face can have up to 3 photos of the same person. They are combined into one likeness, and for every frame the photo whose head angle matches the video counts most. Assign faces to the people in a video on the Swap tab (Assign per person).</string>
+    <string name="faces_tab_add_photo">Add photo</string>
+    <string name="faces_tab_use">Use</string>
+    <string name="faces_tab_in_use">In use</string>
+    <string name="faces_tab_remove">Remove</string>
+    <string name="faces_tab_add_person">Add a new person</string>
+    <string name="faces_tab_tips">Best photos: sharp, well lit, nothing over the face. One straight on, one turned left, one turned right.</string>
+
     <!-- Several photos of one person per source face -->
     <string name="photos_open">Photos of this person</string>
     <string name="photos_row_button">More photos of Source %1$d (%2$d of %3$d)</string>
