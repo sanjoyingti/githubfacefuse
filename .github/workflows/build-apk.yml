@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 34 shows its build number: Settings -> About now reads "0.9.41-mic-debug-build34", and every bug report names the build, so you can always see which version is installed. A copy compiled from this source zip shows the same number.
+
           Build 33: a clear "More photos of Source N (1 of 3)" button right under the face row opens the photos panel (it was only a small + in the source pane and a second tap on the selected face).
 
           Build 32 runs cooler and saves battery, same results and settings: the AI chip is no longer held at full power while the app is just open (after a preview or a swap it used to stay pinned at maximum voltage, unable to sleep deeply); it goes to full power only for the frame being swapped, and stays there only while Live or the player is running. During a long swap it switches to its balanced mode at the first sign of warmth instead of waiting until the phone is already warm. The thread pool that replaced the crashing one sleeps between frames instead of spinning.

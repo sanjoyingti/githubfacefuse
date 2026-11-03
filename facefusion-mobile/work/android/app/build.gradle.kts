@@ -659,7 +659,14 @@ android {
         debug {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-mic-debug"
+            // The BUILD NUMBER in the version, so two APKs can be told apart in Settings,
+            // About and in every bug report: GitHub's run number on the release builds,
+            // else BUILD_NUMBER beside settings.gradle.kts (bumped with each release), so
+            // a copy compiled from a source zip names the same build as its release.
+            val buildNo = System.getenv("GITHUB_RUN_NUMBER")
+                ?: rootProject.file("BUILD_NUMBER").takeIf { it.isFile }?.readText()?.trim()
+                ?: "local"
+            versionNameSuffix = "-mic-debug-build$buildNo"
             manifestPlaceholders["appLabel"] = "$appLabel Debug"
         }
         release {
