@@ -686,7 +686,9 @@ class MainActivity : ComponentActivity() {
             .map { Uri.fromFile(it) }
 
     /** Which source face the photos panel is open for, or -1. */
-    private var photosSheetFor by mutableStateOf(-1)
+    private var photosSheetFor: Int
+        get() = SourcePhotos.openFor
+        set(v) { SourcePhotos.openFor = v }
     private var pendingExtraFor = -1
 
     private val pickExtraPhoto =

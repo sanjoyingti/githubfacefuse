@@ -47,6 +47,13 @@ object SourcePhotos {
     var counts by androidx.compose.runtime.mutableStateOf<List<Int>>(emptyList())
 
     /**
+     * Which source face's photos panel is open, or -1. The Swap screen SETS it when the
+     * button is tapped and MainActivity draws the panel from it -- plain shared state, no
+     * callback that could be missing, so the button never depends on one.
+     */
+    var openFor by androidx.compose.runtime.mutableStateOf(-1)
+
+    /**
      * Add [extras] to native slot [slotIndex], which must have just been registered with
      * setSource/addSource. A photo that is refused is skipped, never fatal: the slot then
      * swaps exactly as it would with fewer photos, and the panel says why.

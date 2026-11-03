@@ -75,6 +75,8 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Build 38: the "More photos of Source …" button and the + on the source picture no longer depend on anything but a face being loaded: tapping them opens the panel through shared state, with no callback that could be missing. Checked by rendering the Swap screen in a test: both show, and a tap opens the panel.
+
           Build 37: the "More photos of Source …" button and the + on the source picture are wired directly, so they show as soon as a source face is loaded (on a phone they stayed hidden in build 36).
 
           Build 36 shows the build number next to the FACEFUSION name at the top of every screen ("FACEFUSION build 36"), so you can see at a glance that you are in the new app ("FaceFusion Debug") and not an older FaceFusion app.

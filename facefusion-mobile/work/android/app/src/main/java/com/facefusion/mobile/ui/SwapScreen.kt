@@ -341,7 +341,11 @@ fun SwapScreen(
 ) {
     val idle = !run.busy && !run.preparing
     // The photos panel: from the parameter or, failing that, straight from SourcePhotos.
-    val openPhotos: ((Int) -> Unit)? = onOpenSourcePhotos ?: com.facefusion.mobile.SourcePhotos.opener
+    // Never null: with no callback it opens the panel through SourcePhotos.openFor, which
+    // MainActivity draws from. The controls therefore show whenever there is a face.
+    val openPhotos: (Int) -> Unit = onOpenSourcePhotos
+        ?: com.facefusion.mobile.SourcePhotos.opener
+        ?: { i -> com.facefusion.mobile.SourcePhotos.openFor = i }
     val photoCounts: List<Int> =
         sourcePhotoCounts.ifEmpty { com.facefusion.mobile.SourcePhotos.counts }
 
@@ -794,7 +798,7 @@ fun SwapScreen(
                          stringResource(R.string.faces_open), Modifier.size(16.dp))
                 }
                 // More photos of the same person for the face shown.
-                if (hasSource && idle && openPhotos != null) {
+                if (hasSource && idle) {
                     IconButton({ openPhotos(activeSource) }, Modifier.size(28.dp)) {
                         val n = photoCounts.getOrNull(activeSource) ?: 1
                         BadgedBox(badge = { if (n > 1) Badge { Text(n.toString()) } }) {
@@ -851,7 +855,7 @@ fun SwapScreen(
         )
         // The same panel as the + in the source pane, spelled out where people look: right
         // under the faces, naming the face it is for.
-        if (opts.swapsFace && sourceThumbs.isNotEmpty() && openPhotos != null) OutlinedButton(
+        if (opts.swapsFace && (sourceThumbs.isNotEmpty() || hasSource)) OutlinedButton(
             onClick = { openPhotos(activeSource) },
             enabled = idle,
             modifier = Modifier.fillMaxWidth(),
