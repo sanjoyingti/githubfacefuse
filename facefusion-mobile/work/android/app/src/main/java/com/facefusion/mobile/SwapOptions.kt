@@ -235,6 +235,12 @@ data class SwapOptions(
     val hairAware: Boolean = true,
     // Video: skin tone and mask edge smoothed between frames (ffpipe temporalSmooth).
     val temporalSmooth: Boolean = true,
+    // Sharper enhancer: a gentle unsharp mask after the face enhancer. Off by default.
+    val enhanceSharpen: Boolean = false,
+    val enhanceSharpenStrength: Float = 0.5f,
+    // Lowest memory: one frame in flight between decode, swap and encode instead of two.
+    // Same output, a little slower. Off by default.
+    val lowestMemory: Boolean = false,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -360,6 +366,9 @@ data class SwapOptions(
             .putBoolean(K_SEAMLESS, seamless)
             .putBoolean(K_HAIR_AWARE, hairAware)
             .putBoolean(K_TEMPORAL, temporalSmooth)
+            .putBoolean(K_SHARPEN, enhanceSharpen)
+            .putFloat(K_SHARPEN_STRENGTH, enhanceSharpenStrength)
+            .putBoolean(K_LOWEST_MEMORY, lowestMemory)
             .apply()
     }
 
@@ -402,6 +411,9 @@ data class SwapOptions(
         private const val K_SEAMLESS = "seamless"
         private const val K_HAIR_AWARE = "hair_aware"
         private const val K_TEMPORAL = "temporal_smooth"
+        private const val K_SHARPEN = "enhance_sharpen"
+        private const val K_SHARPEN_STRENGTH = "enhance_sharpen_strength"
+        private const val K_LOWEST_MEMORY = "lowest_memory"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -488,6 +500,10 @@ data class SwapOptions(
                 seamless = p.getBoolean(K_SEAMLESS, d.seamless),
                 hairAware = p.getBoolean(K_HAIR_AWARE, d.hairAware),
                 temporalSmooth = p.getBoolean(K_TEMPORAL, d.temporalSmooth),
+                enhanceSharpen = p.getBoolean(K_SHARPEN, d.enhanceSharpen),
+                enhanceSharpenStrength = p.getFloat(K_SHARPEN_STRENGTH, d.enhanceSharpenStrength)
+                    .coerceIn(0f, 1f),
+                lowestMemory = p.getBoolean(K_LOWEST_MEMORY, d.lowestMemory),
             )
         }
     }

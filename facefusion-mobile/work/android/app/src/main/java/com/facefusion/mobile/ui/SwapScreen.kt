@@ -330,6 +330,10 @@ fun SwapScreen(
     /** An unfinished swap can be continued: the button's text, or null for no button. */
     resumeLabel: String? = null,
     onResume: () -> Unit = {},
+    /** Swap 3 seconds from the preview position into a short test clip; null hides it. */
+    onTest3s: (() -> Unit)? = null,
+    /** "About 4 min · phone gets warm", or null when there is nothing to estimate. */
+    estimate: String? = null,
     modelsMissing: Boolean,
     /** Why the models are missing when it is not simply "never downloaded". */
     modelsMissingNote: String? = null,
@@ -1311,6 +1315,19 @@ fun SwapScreen(
                     else R.string.swap_action_run,
                     batch.size),
                  fontSize = 16.sp) }
+        if (estimate != null && idle && !imageTarget) Text(
+            estimate,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (onTest3s != null && idle && !imageTarget) OutlinedButton(
+            onClick = onTest3s,
+            enabled = sourceReady && hasTarget && !modelsMissing && (!opts.lipSync || hasVoice),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            shape = RoundedCornerShape(14.dp),
+        ) { Text(stringResource(R.string.swap_test_3s), fontSize = 14.sp) }
         if (photoMakesVideo && idle) Text(
             stringResource(R.string.swap_photo_video_hint),
             style = MaterialTheme.typography.bodySmall,
@@ -1725,6 +1742,15 @@ fun SwapScreen(
                             // second alignment is involved.
                             Text(stringResource(R.string.opt_enhancer_note, opts.pixelBoostLabel),
                                  style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
+                            com.facefusion.mobile.OptionSwitch(
+                                stringResource(R.string.opt_sharpen), opts.enhanceSharpen,
+                                { onOptsChange(opts.copy(enhanceSharpen = it)) },
+                                hint = stringResource(R.string.opt_sharpen_hint))
+                            if (opts.enhanceSharpen) OptionSlider(
+                                stringResource(R.string.opt_sharpen_strength),
+                                opts.enhanceSharpenStrength,
+                                { onOptsChange(opts.copy(enhanceSharpenStrength = it)) },
+                            )
                         }
                         "editor" -> FaceEditorSliders(opts, onOptsChange)
                         "lipsync" -> {

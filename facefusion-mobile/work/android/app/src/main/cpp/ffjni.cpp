@@ -12,6 +12,7 @@
 #include <android/asset_manager_jni.h>
 #include <android/bitmap.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>    // snprintf, for stageMillis
 #include <cstdlib>   // setenv/unsetenv, for setForcedBackend
@@ -22,6 +23,8 @@
 #include <vector>
 
 #include "ffcv.h"
+#include "ffmotion.h"
+#include "ffyuv.h"
 #include "ffpipe.h"
 #include "ffnn.h"
 #include "ffqnn.h"
@@ -148,6 +151,7 @@ struct Quality {
   float poseFadeStart = 60.f;
   bool smooth = true, recover = true, rotated = false;
   bool autoBoost = true, seamless = true, hairAware = true, temporalSmooth = true;
+  float enhanceSharpen = 0.f;
 };
 Quality g_quality;
 // Whether the caller is feeding consecutive frames (setSequence). Re-applied at initEx so a
@@ -170,6 +174,7 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.seamless = g_quality.seamless;
   cfg.hairAware = g_quality.hairAware;
   cfg.temporalSmooth = g_quality.temporalSmooth;
+  cfg.enhanceSharpen = g_quality.enhanceSharpen;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -441,6 +446,13 @@ Java_com_facefusion_mobile_NativePipe_setAuxAssets(JNIEnv* env, jclass, jobject 
   ffnn::setAuxAssets(AAssetManager_fromJava(env, g_assets));
 }
 
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setAuxQnnDir(JNIEnv* env, jclass, jstring jDir) {
+  const char* d = env->GetStringUTFChars(jDir, nullptr);
+  ffnn::setAuxQnnDir(d ? d : "");
+  if (d) env->ReleaseStringUTFChars(jDir, d);
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_facefusion_mobile_NativePipe_maskModelStatus(JNIEnv* env, jclass) {
   return env->NewStringUTF(ffpipe::Pipeline::maskStatus().c_str());
@@ -678,6 +690,81 @@ Java_com_facefusion_mobile_NativePipe_detectFaces(JNIEnv* env, jclass, jbyteArra
   if (out && !flat.empty())
     env->SetFloatArrayRegion(out, 0, (jsize)flat.size(), flat.data());
   return out;
+}
+
+// Every face in a picture, for the photo-quality check and for picking photos out of a
+// video: per face {x1, y1, x2, y2, detScore, yaw, pitch, sharpness, brightness, then the
+// 512 normalised embedding values} = kScanStride floats. Detected cold (no tracker), with
+// embeddings. Sharpness is the variance of the Laplacian of the face box resized to
+// 128x128 grey; brightness is that box's mean grey, 0..255. Yaw/pitch are NaN when the
+// pose cannot be estimated.
+constexpr int kScanStride = 9 + 512;
+JNIEXPORT jfloatArray JNICALL
+Java_com_facefusion_mobile_NativePipe_scanFaces(JNIEnv* env, jclass, jbyteArray jBgr,
+                                                jint w, jint h) {
+  FF_PIPE_LOCK;
+  if (!g_pipe) { g_err = "pipeline not initialised"; return env->NewFloatArray(0); }
+  ffcv::Image img(w, h, 3);
+  if (w <= 0 || h <= 0 || (size_t)env->GetArrayLength(jBgr) != img.data.size()) {
+    g_err = "scanFaces: frame is not w*h*3 bytes";
+    return env->NewFloatArray(0);
+  }
+  env->GetByteArrayRegion(jBgr, 0, (jsize)img.data.size(), (jbyte*)img.data.data());
+  std::vector<ffpipe::Face> faces = g_pipe->analyse(img, /*boxesOnly=*/false, /*noTrack=*/true);
+  std::vector<float> flat;
+  flat.reserve(faces.size() * kScanStride);
+  for (const auto& f : faces) {
+    const int x0 = std::max(0, (int)f.box[0]), y0 = std::max(0, (int)f.box[1]);
+    const int x1 = std::min(w, (int)std::ceil(f.box[2])), y1 = std::min(h, (int)std::ceil(f.box[3]));
+    float sharp = 0.f, bright = 0.f;
+    if (x1 - x0 >= 4 && y1 - y0 >= 4) {
+      ffcv::Image box(x1 - x0, y1 - y0, 3);
+      for (int y = y0; y < y1; ++y)
+        std::memcpy(box.row(y - y0), img.row(y) + (size_t)x0 * 3, (size_t)(x1 - x0) * 3);
+      constexpr int G = 128;
+      ffcv::Image s = ffcv::resizeLinear(box, G, G);
+      std::vector<float> g((size_t)G * G);
+      double sum = 0;
+      for (int i = 0; i < G * G; ++i) {
+        const uint8_t* p = &s.data[(size_t)i * 3];
+        g[(size_t)i] = 0.114f * p[0] + 0.587f * p[1] + 0.299f * p[2];
+        sum += g[(size_t)i];
+      }
+      bright = (float)(sum / (G * G));
+      double m = 0, m2 = 0; int n = 0;
+      for (int y = 1; y < G - 1; ++y)
+        for (int x = 1; x < G - 1; ++x) {
+          const size_t i = (size_t)y * G + x;
+          const double l = 4.0 * g[i] - g[i - 1] - g[i + 1] - g[i - G] - g[i + G];
+          m += l; m2 += l * l; ++n;
+        }
+      m /= n;
+      sharp = (float)(m2 / n - m * m);
+    }
+    const ffmotion::Pose pose = ffmotion::estimatePose(f.landmark5_68);
+    flat.push_back(f.box[0]); flat.push_back(f.box[1]);
+    flat.push_back(f.box[2]); flat.push_back(f.box[3]);
+    flat.push_back(f.detScore);
+    flat.push_back(pose.ok ? pose.yaw : NAN);
+    flat.push_back(pose.ok ? pose.pitch : NAN);
+    flat.push_back(sharp);
+    flat.push_back(bright);
+    flat.insert(flat.end(), f.embeddingNorm, f.embeddingNorm + 512);
+  }
+  jfloatArray out = env->NewFloatArray((jsize)flat.size());
+  if (out && !flat.empty()) env->SetFloatArrayRegion(out, 0, (jsize)flat.size(), flat.data());
+  return out;
+}
+
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setEnhanceSharpen(JNIEnv*, jclass, jfloat amount) {
+  FF_PIPE_LOCK;
+  g_quality.enhanceSharpen = std::fmin(1.f, std::fmax(0.f, amount));
+  if (g_pipe) {
+    ffpipe::Config c = g_pipe->config();
+    applyQuality(c);
+    g_pipe->updateConfig(c);
+  }
 }
 
 // Point at a face and swap only that one -- upstream's face_selector_mode = reference.
@@ -1434,44 +1521,14 @@ Java_com_facefusion_mobile_NativePipe_rotateBgr(JNIEnv* env, jclass, jbyteArray 
   }
   std::vector<uint8_t> src((size_t)n);
   env->GetByteArrayRegion(jBgr, 0, n, (jbyte*)src.data());
-
-  int deg = ((degrees % 360) + 360) % 360;
-  if (deg == 0) {
-    jbyteArray out = env->NewByteArray(n);
-    env->SetByteArrayRegion(out, 0, n, (const jbyte*)src.data());
-    return out;
-  }
-
-  const int dw = (deg == 180) ? w : h;      // destination width
-  const int dh = (deg == 180) ? h : w;      // destination height
-  std::vector<uint8_t> dst((size_t)n);
-
-  for (int y = 0; y < h; ++y) {
-    for (int x = 0; x < w; ++x) {
-      int dx, dy;
-      switch (deg) {
-        case 90:  dx = dw - 1 - y; dy = x;             break;   // clockwise
-        case 180: dx = w - 1 - x;  dy = h - 1 - y;     break;
-        default:  dx = y;          dy = dh - 1 - x;    break;   // 270
-      }
-      const uint8_t* sp = &src[((size_t)y * w + x) * 3];
-      uint8_t* dp = &dst[((size_t)dy * dw + dx) * 3];
-      dp[0] = sp[0];
-      dp[1] = sp[1];
-      dp[2] = sp[2];
-    }
-  }
-
+  std::vector<uint8_t> dst;
+  int dw = 0, dh = 0;
+  ffyuv::rotate(src.data(), w, h, degrees, dst, dw, dh);
   jbyteArray out = env->NewByteArray(n);
   env->SetByteArrayRegion(out, 0, n, (const jbyte*)dst.data());
   return out;
 }
 
-/**
- * YUV_420_888 planes -> packed BGR.  MediaCodec hands back arbitrary row/pixel strides
- * and semi-planar (NV12/NV21) chroma is expressed as pixelStride 2, so both strides have
- * to be honoured -- assuming tightly packed I420 gives a green-and-magenta image.
- */
 JNIEXPORT jbyteArray JNICALL
 Java_com_facefusion_mobile_NativePipe_yuvToBgr(JNIEnv* env, jclass,
                                                jbyteArray jY, jint yRow,
@@ -1484,31 +1541,53 @@ Java_com_facefusion_mobile_NativePipe_yuvToBgr(JNIEnv* env, jclass,
   env->GetByteArrayRegion(jY, 0, (jsize)Y.size(), (jbyte*)Y.data());
   env->GetByteArrayRegion(jU, 0, (jsize)U.size(), (jbyte*)U.data());
   env->GetByteArrayRegion(jV, 0, (jsize)V.size(), (jbyte*)V.data());
-
-  // 10-bit video (HDR from the phone camera) decodes to P010: 16-bit little-endian
-  // samples with the value in the top 10 bits, so the chroma planes step 4 bytes per
-  // sample instead of 1 or 2. Read the HIGH byte of each sample, which is the 8-bit value.
-  // Without this every 10-bit frame came out as noise and no face was ever found.
-  const bool p010 = uPix >= 4 && vPix >= 4;
-  const size_t yStep = p010 ? 2 : 1, hi = p010 ? 1 : 0;
   std::vector<uint8_t> bgr((size_t)w * h * 3);
-  for (int y = 0; y < h; ++y) {
-    for (int x = 0; x < w; ++x) {
-      size_t yi = (size_t)y * yRow + (size_t)x * yStep + hi;
-      size_t ci = (size_t)(y / 2) * uRow + (size_t)(x / 2) * uPix + hi;
-      size_t vi = (size_t)(y / 2) * vRow + (size_t)(x / 2) * vPix + hi;
-      int Yv = (yi < Y.size() ? Y[yi] : 16) - 16;
-      int Uv = (ci < U.size() ? U[ci] : 128) - 128;
-      int Vv = (vi < V.size() ? V[vi] : 128) - 128;
-      int c = 298 * Yv;
-      uint8_t* p = &bgr[((size_t)y * w + x) * 3];
-      p[0] = clamp8((c + 516 * Uv + 128) >> 8);              // B
-      p[1] = clamp8((c - 100 * Uv - 208 * Vv + 128) >> 8);   // G
-      p[2] = clamp8((c + 409 * Vv + 128) >> 8);              // R
-    }
-  }
+  ffyuv::toBgr({Y.data(), Y.size(), yRow, 1}, {U.data(), U.size(), uRow, uPix},
+               {V.data(), V.size(), vRow, vPix}, w, h, bgr.data());
   jbyteArray out = env->NewByteArray((jsize)bgr.size());
   env->SetByteArrayRegion(out, 0, (jsize)bgr.size(), (const jbyte*)bgr.data());
+  return out;
+}
+
+/**
+ * One decoded video frame -> the upright, size-capped BGR frame the run works on, in ONE
+ * call: reads the codec's planes in place (direct ByteBuffers, no copies), converts,
+ * rotates and resizes in reused per-thread buffers, and hands Java only the final picture.
+ * The same arithmetic, in the same order, as yuvToBgr + rotateBgr + resizeBgr -- so the
+ * same pixels -- without ~100 MB of short-lived arrays per 4K frame.
+ */
+JNIEXPORT jbyteArray JNICALL
+Java_com_facefusion_mobile_NativePipe_yuvFrameToBgr(
+    JNIEnv* env, jclass, jobject jY, jint yOff, jint yLen, jint yRow,
+    jobject jU, jint uOff, jint uLen, jint uRow, jint uPix,
+    jobject jV, jint vOff, jint vLen, jint vRow, jint vPix,
+    jint w, jint h, jint rotation, jint outW, jint outH) {
+  auto* y = (const uint8_t*)env->GetDirectBufferAddress(jY);
+  auto* u = (const uint8_t*)env->GetDirectBufferAddress(jU);
+  auto* v = (const uint8_t*)env->GetDirectBufferAddress(jV);
+  if (!y || !u || !v || w <= 0 || h <= 0) { g_err = "yuvFrameToBgr: not a direct buffer"; return nullptr; }
+  thread_local std::vector<uint8_t> conv, rot;
+  conv.resize((size_t)w * h * 3);
+  ffyuv::toBgr({y + yOff, (size_t)yLen, yRow, 1}, {u + uOff, (size_t)uLen, uRow, uPix},
+               {v + vOff, (size_t)vLen, vRow, vPix}, w, h, conv.data());
+  const uint8_t* up = conv.data();
+  int uw = w, uh = h;
+  if (((rotation % 360) + 360) % 360 != 0) {
+    ffyuv::rotate(conv.data(), w, h, rotation, rot, uw, uh);
+    up = rot.data();
+  }
+  jbyteArray out;
+  if (outW <= 0 || outH <= 0 || (outW == uw && outH == uh)) {
+    out = env->NewByteArray((jsize)((size_t)uw * uh * 3));
+    if (out) env->SetByteArrayRegion(out, 0, (jsize)((size_t)uw * uh * 3), (const jbyte*)up);
+  } else {
+    thread_local ffcv::Image src;
+    src.w = uw; src.h = uh; src.c = 3;
+    src.data.assign(up, up + (size_t)uw * uh * 3);
+    ffcv::Image dst = ffcv::resizeLinear(src, outW, outH);
+    out = env->NewByteArray((jsize)dst.data.size());
+    if (out) env->SetByteArrayRegion(out, 0, (jsize)dst.data.size(), (const jbyte*)dst.data.data());
+  }
   return out;
 }
 

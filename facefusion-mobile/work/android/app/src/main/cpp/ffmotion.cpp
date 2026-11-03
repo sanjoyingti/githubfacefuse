@@ -502,4 +502,34 @@ void seamlessBlend(const ffcv::Image& bg, ffcv::MatF& fg, const ffcv::MatF& mask
   }
 }
 
+// Unsharp mask in place: out = x + amount * 0.8 * (x - blur(x)), blur = two box passes of
+// radius r (separable, integral rows), clamped to 0..255.
+void sharpen(ffcv::MatF& img, float amount, int r) {
+  const int W = img.w, H = img.h, C = img.c;
+  std::vector<float> a(img.data), b(img.data.size());
+  auto pass = [&](const std::vector<float>& src, std::vector<float>& dst, bool horiz) {
+    const int n = horiz ? W : H, m = horiz ? H : W;
+    std::vector<double> acc((size_t)n + 1);
+    for (int j = 0; j < m; ++j)
+      for (int c = 0; c < C; ++c) {
+        acc[0] = 0;
+        for (int i = 0; i < n; ++i) {
+          const size_t idx = horiz ? ((size_t)j * W + i) * C + c : ((size_t)i * W + j) * C + c;
+          acc[(size_t)i + 1] = acc[(size_t)i] + src[idx];
+        }
+        for (int i = 0; i < n; ++i) {
+          const int lo = std::max(0, i - r), hi = std::min(n - 1, i + r);
+          const size_t idx = horiz ? ((size_t)j * W + i) * C + c : ((size_t)i * W + j) * C + c;
+          dst[idx] = (float)((acc[(size_t)hi + 1] - acc[(size_t)lo]) / (hi - lo + 1));
+        }
+      }
+  };
+  pass(a, b, true); pass(b, a, false); pass(a, b, true); pass(b, a, false);
+  const float k = amount * 0.8f;
+  for (size_t i = 0; i < img.data.size(); ++i) {
+    const float v = img.data[i] + k * (img.data[i] - a[i]);
+    img.data[i] = v < 0.f ? 0.f : (v > 255.f ? 255.f : v);
+  }
+}
+
 }  // namespace ffmotion

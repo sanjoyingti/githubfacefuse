@@ -461,9 +461,11 @@ class VideoSwapper(
         // JOINED, then the encode thread, before anything below releases a codec -- also
         // when this thread throws, through the finally.
         class Frame(val bgr: ByteArray, val ptsUs: Long)
+        // "Lowest memory": one frame in flight between the stages instead of two.
+        val pipeDepth = if (lowMemory) 1 else PIPE_DEPTH
         val end = Frame(ByteArray(0), Long.MIN_VALUE)
-        val decodedQ = java.util.concurrent.ArrayBlockingQueue<Frame>(PIPE_DEPTH)
-        val encodeQ = java.util.concurrent.ArrayBlockingQueue<Frame>(PIPE_DEPTH)
+        val decodedQ = java.util.concurrent.ArrayBlockingQueue<Frame>(pipeDepth)
+        val encodeQ = java.util.concurrent.ArrayBlockingQueue<Frame>(pipeDepth)
         val stop = java.util.concurrent.atomic.AtomicBoolean(false)
         val decodeError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
         val encodeError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
@@ -515,15 +517,16 @@ class VideoSwapper(
                             if (image != null) {
                                 // Upright FIRST, then the size cap -- detection, the swap, the
                                 // preview and the encoder all work on the frame the viewer sees.
-                                val decoded = try { imageToBgr(image, width, height) }
-                                              finally { image.close() }
-                                val upright = if (rotation == 0) decoded
-                                              else NativePipe.rotateBgr(decoded, width, height, rotation)
-                                                  ?: error("rotate ${rotation} failed")
-                                val bgr = if (!capped) upright
-                                          else NativePipe.resizeBgr(upright, uprightW, uprightH,
-                                                                    outW, outH)
-                                              ?: error("resize to ${outW}x$outH failed")
+                                // One native call reads the codec's planes in place and
+                                // returns only the final frame: the same pixels as
+                                // convert -> rotate -> resize, without ~100 MB of
+                                // short-lived arrays per 4K frame.
+                                val bgr = try {
+                                    NativePipe.imageToUprightBgr(image, width, height, rotation,
+                                        if (capped) outW else 0, if (capped) outH else 0)
+                                } finally { image.close() }
+                                    ?: error("convert to ${outW}x$outH failed: " +
+                                             NativePipe.lastError())
                                 frame = Frame(bgr, pts)
                             }
                         }
@@ -913,15 +916,9 @@ class VideoSwapper(
         if (ix >= 0) encoder.queueInputBuffer(ix, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
     }
 
-    private fun imageToBgr(image: android.media.Image, w: Int, h: Int): ByteArray {
-        val p = image.planes
-        fun bytes(b: ByteBuffer): ByteArray { val a = ByteArray(b.remaining()); b.get(a); return a }
-        return NativePipe.yuvToBgr(
-            bytes(p[0].buffer), p[0].rowStride,
-            bytes(p[1].buffer), p[1].rowStride, p[1].pixelStride,
-            bytes(p[2].buffer), p[2].rowStride, p[2].pixelStride,
-            w, h,
-        )
+    companion object {
+        /** Set from SwapOptions.lowestMemory before a run. */
+        @Volatile @JvmStatic var lowMemory: Boolean = false
     }
 
     private fun durationUs(f: MediaFormat) =

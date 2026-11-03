@@ -113,4 +113,7 @@ float mouthOpenness(const float* landmark68);
 // Bilinear resize of a single-channel float mask.
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h);
 
+// Unsharp mask in place on a 0..255 float image: x + amount*0.8*(x - blur_r(x)), clamped.
+void sharpen(ffcv::MatF& img, float amount, int r);
+
 }  // namespace ffmotion

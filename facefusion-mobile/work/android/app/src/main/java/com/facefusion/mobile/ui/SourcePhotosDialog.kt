@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
@@ -42,6 +44,8 @@ class SourcePhotoTile(
     val main: Boolean,
     /** 1 used, -1 no face, -2 a different person, null not tried yet. */
     val verdict: Int?,
+    /** The photo check's answer (angle, warnings), null until checked. */
+    val check: com.facefusion.mobile.SourcePhotos.Check? = null,
 )
 
 /**
@@ -69,16 +73,18 @@ fun SourcePhotosDialog(
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()),
+                   verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(R.string.photos_explain),
                      style = MaterialTheme.typography.bodySmall,
                      color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    for (slot in 0 until max) {
-                        val p = photos.getOrNull(slot)
+                for (row in 0 until (max + 2) / 3) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    for (col in 0 until 3) {
+                        val slot = row * 3 + col
+                        val p = if (slot < max) photos.getOrNull(slot) else null
                         Column(Modifier.weight(1f),
                                horizontalAlignment = Alignment.CenterHorizontally) {
-                            Box(
+                            if (slot < max) Box(
                                 Modifier.fillMaxWidth().aspectRatio(1f)
                                     .clip(RoundedCornerShape(12.dp))
                                     .background(MaterialTheme.colorScheme.surfaceVariant),
@@ -100,22 +106,13 @@ fun SourcePhotosDialog(
                                     }
                                 }
                             }
-                            if (p != null) Text(
-                                stringResource(when {
-                                    p.main -> R.string.photos_main
-                                    p.verdict == 1 -> R.string.photos_used
-                                    p.verdict == -2 -> R.string.photos_other_person
-                                    p.verdict == -1 -> R.string.photos_no_face
-                                    else -> R.string.photos_pending
-                                }),
-                                fontSize = 11.sp,
-                                maxLines = 2,
-                                color = when (p.verdict) {
-                                    -1, -2 -> MaterialTheme.colorScheme.error
-                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
+                            if (p != null) {
+                                val (text, warn) = photoNote(p)
+                                Text(text, fontSize = 11.sp, maxLines = 2,
+                                     color = if (warn) MaterialTheme.colorScheme.error
+                                             else MaterialTheme.colorScheme.onSurfaceVariant,
+                                     modifier = Modifier.padding(top = 4.dp))
+                            }
                         }
                     }
                 }

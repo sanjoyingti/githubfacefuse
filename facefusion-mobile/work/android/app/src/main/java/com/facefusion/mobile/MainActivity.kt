@@ -566,6 +566,7 @@ class MainActivity : ComponentActivity() {
      * screen or a message will ever show and still fits in memory four times over.
      */
     private val MAX_SOURCE_EDGE = 2048
+    private val THUMB_EDGE = 768
     private val MAX_TARGET_EDGE = 4096
 
     private var targetW by mutableStateOf(0)
@@ -662,7 +663,9 @@ class MainActivity : ComponentActivity() {
         val kept = keepSourceFile(uri) ?: uri
         val existing = sources.indexOfFirst { it.uri == kept }
         if (existing >= 0) return existing
-        val thumb = decodeOriented(kept) ?: run {
+        // A DISPLAY copy at 768 px: the swap always decodes the photo itself again at full
+        // size (prepareSources), so this saves ~10 MB per face with no change to results.
+        val thumb = decodeOriented(kept, THUMB_EDGE) ?: run {
             status = getString(R.string.status_cannot_read_source)
             return null
         }
@@ -714,7 +717,7 @@ class MainActivity : ComponentActivity() {
             status = getString(R.string.status_cannot_read_source); return
         }
         if (kept == item.uri || kept in item.extras) return
-        if (decodeOriented(kept) == null) {
+        if (decodeOriented(kept, 64) == null) {
             runCatching { File(kept.path!!).safeDelete() }
             status = getString(R.string.status_cannot_read_source); return
         }
@@ -741,6 +744,177 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ------------------------------------------------- photos picked out of a video
+
+    /** The "from a video" dialog's state; null when closed. [forFace] -1 = a new person. */
+    private class VPick(
+        val forFace: Int,
+        val progress: Float? = null,
+        val people: List<VideoFacePicker.Person>? = null,
+        val picks: List<VideoFacePicker.Seen>? = null,
+        val checked: Set<Int> = emptySet(),
+        val message: String? = null,
+        val found: List<VideoFacePicker.Person> = emptyList(),
+    )
+
+    private var vpick by mutableStateOf<VPick?>(null)
+    @Volatile private var vpickCancel = false
+    private var pendingVideoFor = -1
+
+    private val pickVideoForFaces =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            if (uri != null) scanVideoForFaces(uri, pendingVideoFor)
+        }
+
+    private fun openVideoForFaces(forFace: Int) {
+        pendingVideoFor = forFace
+        pickVideoForFaces.launch("video/*")
+    }
+
+    /** The photo tiles of one face, main first, with the photo check's answers. */
+    private fun tilesFor(item: SourceItem, thumbs: List<Pair<Uri, Bitmap?>>):
+            List<com.facefusion.mobile.ui.SourcePhotoTile> {
+        val checks = SourcePhotos.warningsFor(listOf<Any>(item.uri) + item.extras)
+        return listOf(com.facefusion.mobile.ui.SourcePhotoTile(item.thumb, true, null, checks[0])) +
+            thumbs.mapNotNull { (u, b) ->
+                b?.let {
+                    com.facefusion.mobile.ui.SourcePhotoTile(
+                        it, false, SourcePhotos.verdicts[u],
+                        checks.getOrNull(1 + item.extras.indexOf(u)))
+                }
+            }
+    }
+
+    /**
+     * Go through [uri] and offer the best photos: of face [forFace] (which must be in the
+     * list), or of anyone in it for a new person (-1). Uses the preview's pipeline when it
+     * is loaded, else loads one just for this and releases it after.
+     */
+    private fun scanVideoForFaces(uri: Uri, forFace: Int) {
+        vpickCancel = false
+        vpick = VPick(forFace, progress = 0f)
+        lifecycleScope.launch {
+            if (!PipeGuard.acquire("faces", 4000)) {
+                vpick = VPick(forFace, message = pipeBusyMessage()); return@launch
+            }
+            var ownPipe = false
+            try {
+                if (!PipeGuard.uninterrupted(lastPipeSeq)) { previews.invalidate(); previewWarm = false }
+                val mainBgr: Triple<ByteArray, Int, Int>? = if (forFace >= 0) withContext(Dispatchers.IO) {
+                    val b = sources.getOrNull(forFace)?.let { decodeOriented(it.uri) }?.asArgb8888()
+                        ?: return@withContext null
+                    val px = IntArray(b.width * b.height)
+                    b.getPixels(px, 0, b.width, 0, 0, b.width, b.height)
+                    Triple(NativePipe.argbToBgr(px, b.width, b.height), b.width, b.height)
+                } else null
+                if (forFace >= 0 && mainBgr == null) {
+                    vpick = VPick(forFace, message = getString(R.string.status_cannot_read_source))
+                    return@launch
+                }
+                val result: Any = withContext(Dispatchers.Default) {
+                    if (!previews.isWarm) {
+                        previews.invalidate()
+                        previewWarm = false
+                        val models = modelDir()
+                        val missing = listOf("yoloface", "fan2d", "arcface", opts.swapper)
+                            .filterNot { ModelPaths.present(models, tier, it) }
+                        if (missing.isNotEmpty()) return@withContext "Missing ${missing.joinToString()}"
+                        val lib = applicationInfo.nativeLibraryDir
+                        if (!NativePipe.init(lib, lib, models.absolutePath, opts))
+                            return@withContext "Could not load the models: " + NativePipe.lastError()
+                        ownPipe = true
+                        NativePipe.trimModels(false, false, false)
+                    }
+                    val target = mainBgr?.let { VideoFacePicker.identityOf(it.first, it.second, it.third) }
+                    if (forFace >= 0 && target == null) return@withContext getString(R.string.status_no_face)
+                    var last = 0L
+                    VideoFacePicker.scan(this@MainActivity, uri, target, { p ->
+                        val now = System.currentTimeMillis()
+                        if (now - last > 200 || p >= 1f) {
+                            last = now
+                            runOnUiThread { vpick?.let { if (it.progress != null) vpick = VPick(forFace, progress = p) } }
+                        }
+                    }, { vpickCancel })
+                }
+                if (vpickCancel) { vpick = null; return@launch }
+                when (result) {
+                    is String -> vpick = VPick(forFace, message = result)
+                    is List<*> -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val found = result as List<VideoFacePicker.Person>
+                        val people = if (forFace >= 0) found.filter { it.best.isNotEmpty() }
+                                     else VideoFacePicker.people(found)
+                        vpick = when {
+                            people.isEmpty() -> VPick(forFace, message = getString(
+                                if (forFace >= 0) R.string.vpick_not_found else R.string.vpick_nobody),
+                                found = found)
+                            forFace >= 0 || people.size == 1 -> reviewFor(forFace, people[0], found)
+                            else -> VPick(forFace, people = people, found = found)
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                appendLog("photos from video: $t")
+                vpick = VPick(forFace, message = t.message ?: t.toString())
+            } finally {
+                if (ownPipe) { NativePipe.release(); previewWarm = false }
+                lastPipeSeq = PipeGuard.sequence
+                PipeGuard.release()
+            }
+        }
+    }
+
+    /** The review step for [person]: angles the face lacks, best three ticked. */
+    private fun reviewFor(forFace: Int, person: VideoFacePicker.Person,
+                          found: List<VideoFacePicker.Person>): VPick {
+        val item = sources.getOrNull(forFace)
+        val have = if (item == null) emptySet() else
+            (listOf<Any>(item.uri) + item.extras).mapNotNull { SourcePhotos.checks[it]?.angle }.toSet()
+        val free = SourcePhotos.MAX - (if (item == null) 0 else 1 + item.extras.size)
+        val picks = VideoFacePicker.pick(person, have, free)
+        if (picks.isEmpty()) return VPick(forFace, message = getString(R.string.vpick_nothing_new), found = found)
+        return VPick(forFace, picks = picks, checked = (0 until minOf(3, picks.size)).toSet(), found = found)
+    }
+
+    /** Add the ticked pictures: as photos of the face, or as a new person (front first). */
+    private fun addVideoPicks(v: VPick) {
+        val picks = v.picks ?: return
+        val chosen = picks.filterIndexed { i, _ -> i in v.checked }
+        vpick = null
+        lifecycleScope.launch {
+            val files = withContext(Dispatchers.IO) {
+                val dir = File(cacheDir, "vpick").apply { mkdirs() }
+                chosen.mapIndexedNotNull { k, s ->
+                    val b = s.crop ?: return@mapIndexedNotNull null
+                    runCatching {
+                        val f = File(dir, "pick_${System.currentTimeMillis()}_$k.jpg")
+                        f.outputStream().use { b.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+                        f
+                    }.getOrNull()
+                }
+            }
+            if (files.isEmpty()) { recycleVPick(v); return@launch }
+            val face = if (v.forFace >= 0) v.forFace else addToSources(Uri.fromFile(files[0])) ?: -1
+            val extras = if (v.forFace >= 0) files else files.drop(1)
+            if (face >= 0) for (f in extras) addExtraPhoto(face, Uri.fromFile(f))
+            if (face >= 0 && v.forFace < 0) previewOptionsChanged()
+            withContext(Dispatchers.IO) { files.forEach { it.safeDelete() } }
+            status = getString(R.string.vpick_added, files.size)
+            recycleVPick(v)
+        }
+    }
+
+    private fun recycleVPick(v: VPick?) {
+        v?.found?.forEach { p -> p.best.values.forEach { it.crop?.recycle(); it.crop = null } }
+    }
+
+    private fun closeVPick() {
+        vpickCancel = true
+        val v = vpick
+        vpick = null
+        if (v?.progress == null) recycleVPick(v)
+    }
+
     /** The row's own copies. App-private; nothing else on the phone can read it. */
     private fun sourcesDir(): File = File(filesDir, "sources").apply { mkdirs() }
 
@@ -754,6 +928,35 @@ class MainActivity : ComponentActivity() {
      */
     private fun savedDir(): File = File(filesDir, "saved").apply { mkdirs() }
 
+    /** A saved person's other photos: filesDir/saved_extras/<main photo's name>. */
+    private fun savedExtrasDir(name: String): File = File(File(filesDir, "saved_extras"), name)
+
+    /**
+     * SAVE A PERSON: the main photo and every extra photo, so the whole person comes back
+     * on another day and with another video. Saving again updates the photos.
+     */
+    private fun savePerson(index: Int) {
+        val item = sources.getOrNull(index) ?: return
+        val src = item.uri.path?.let { File(it) } ?: return
+        runCatching {
+            val dst = File(savedDir(), src.name)
+            if (!dst.exists()) src.copyTo(dst)
+            val dir = savedExtrasDir(src.name)
+            dir.listFiles()?.forEach { it.safeDelete() }
+            dir.mkdirs()
+            for (u in item.extras) u.path?.let { File(it) }?.takeIf { it.isFile }
+                ?.let { it.copyTo(File(dir, it.name), overwrite = true) }
+        }
+        refreshSavedFaces()
+        status = getString(R.string.faces_person_saved, 1 + item.extras.size)
+    }
+
+    /** Whether source [index]'s person is in the library. */
+    private fun isSaved(index: Int): Boolean {
+        val name = sources.getOrNull(index)?.uri?.path?.let { File(it).name } ?: return false
+        return savedFaces.any { s -> s.uri.path?.let { File(it).name } == name }
+    }
+
     /** The library, newest last, rebuilt from disk whenever it changes. */
     private var savedFaces by mutableStateOf<List<com.facefusion.mobile.ui.SavedFace>>(emptyList())
     private var facesDialogOpen by mutableStateOf(false)
@@ -763,8 +966,9 @@ class MainActivity : ComponentActivity() {
             .sortedBy { it.lastModified() }
             .mapNotNull { f ->
                 val u = Uri.fromFile(f)
-                val thumb = decodeOriented(u) ?: return@mapNotNull null
-                com.facefusion.mobile.ui.SavedFace(u, thumb, f.lastModified())
+                val thumb = decodeOriented(u, 384) ?: return@mapNotNull null
+                val extras = savedExtrasDir(f.name).listFiles()?.count { it.isFile } ?: 0
+                com.facefusion.mobile.ui.SavedFace(u, thumb, f.lastModified(), 1 + extras)
             }
     }
 
@@ -790,14 +994,17 @@ class MainActivity : ComponentActivity() {
             confirm(R.string.faces_unsave_title, R.string.faces_unsave_body,
                     R.string.faces_unsave_ok, destructive = true) {
                 runCatching { dst.safeDelete() }
+                runCatching {
+                    val d = savedExtrasDir(src.name)
+                    d.listFiles()?.forEach { it.safeDelete() }; d.safeDelete()
+                }
                 refreshSavedFaces()
                 status = getString(R.string.faces_unsaved_toast)
             }
         } else {
             confirm(R.string.faces_save_title, R.string.faces_save_body,
                     R.string.faces_save_ok) {
-                runCatching { src.copyTo(dst) }
-                refreshSavedFaces()
+                savePerson(swapSourceIndex)
                 status = getString(R.string.faces_saved_toast)
             }
         }
@@ -836,6 +1043,25 @@ class MainActivity : ComponentActivity() {
         // No confirmation: nothing is lost and it is what the library is FOR. The prompts
         // are for the actions that delete something.
         facesDialogOpen = false
+        // Bring the person's other photos back too, where the row keeps them.
+        runCatching {
+            val name = uri.path?.let { File(it).name }
+            val from = name?.let { savedExtrasDir(it) }
+            val to = name?.let { File(File(filesDir, "source_extras"), it) }
+            if (from != null && to != null && from.isDirectory) {
+                to.mkdirs()
+                from.listFiles()?.filter { it.isFile }?.forEach {
+                    val t = File(to, it.name)
+                    if (!t.exists()) it.copyTo(t)
+                }
+            }
+        }
+        val existing = sources.indexOfFirst { it.uri.path?.let { p -> File(p).name } == uri.path?.let { p -> File(p).name } }
+        if (existing >= 0) {
+            // Already in the row: refresh its photos from disk.
+            val item = sources[existing]
+            sources = sources.mapIndexed { i, s -> if (i == existing) s.copy(extras = loadExtraPhotos(item.uri)) else s }
+        }
         setSourceFrom(uri)
     }
 
@@ -844,6 +1070,11 @@ class MainActivity : ComponentActivity() {
         confirm(R.string.faces_delete_title, R.string.faces_delete_body,
                 R.string.common_delete, destructive = true) {
             runCatching { uri.path?.let { File(it).safeDelete() } }
+            runCatching {
+                uri.path?.let { savedExtrasDir(File(it).name) }?.let { d ->
+                    d.listFiles()?.forEach { it.safeDelete() }; d.safeDelete()
+                }
+            }
             refreshSavedFaces()
         }
     }
@@ -1008,11 +1239,13 @@ class MainActivity : ComponentActivity() {
         val first = prepared.slots.first()
         if (!NativePipe.setSource(first.bgr, first.width, first.height))
             return "source: ${NativePipe.lastError()}"
+        SourcePhotos.checkMain(first.tag, first.bgr, first.width, first.height)
         SourcePhotos.register(0, first.extras)
         for ((i, slot) in prepared.slots.withIndex()) {
             if (i == 0) continue
             if (NativePipe.addSource(slot.bgr, slot.width, slot.height) < 0)
                 return "source ${i + 1}: ${NativePipe.lastError()}"
+            SourcePhotos.checkMain(slot.tag, slot.bgr, slot.width, slot.height)
             SourcePhotos.register(i, slot.extras)
         }
         NativePipe.setActiveSource(swapSourceIndex.coerceIn(0, prepared.slots.lastIndex))
@@ -1720,6 +1953,7 @@ class MainActivity : ComponentActivity() {
             // offers, and Settings keeps a delete-only row for the file itself.
             if (it.swapper == "inswapper") it.copy(swapper = "hyperswap") else it
         }
+        VideoSwapper.lowMemory = opts.lowestMemory
         ApiService.restore(this)
         // RECOMMENDED SETTINGS, applied ONCE on the first start of build 40 and later, as
         // asked: everything discussed is on without tuning. Said in the status line; after
@@ -2119,6 +2353,9 @@ class MainActivity : ComponentActivity() {
                                               fmt(j.doneUs / 1000f), fmt(j.totalUs / 1000f))
                                 },
                                 onResume = { resumeAvailable?.let { resumeSwap(it) } },
+                                onTest3s = if (photoMakesVideo || batchQueue.size > 1) null
+                                           else ({ runTest3s() }),
+                                estimate = swapEstimate(),
                                 onSwap = {
                                     // ⚠ size > 1, not isEmpty. A queue of exactly one is
                                     // the ordinary single-clip run and must keep its TRIM:
@@ -2251,19 +2488,14 @@ class MainActivity : ComponentActivity() {
                             Screen.Faces -> {
                                 // Each face's extra photos, decoded once per change of the list.
                                 val extraThumbs = androidx.compose.runtime.remember(sources) {
-                                    sources.map { it.extras.map { u -> u to decodeOriented(u) } }
+                                    sources.map { it.extras.map { u -> u to decodeOriented(u, 384) } }
                                 }
                                 com.facefusion.mobile.ui.FacesScreen(
                                     faces = sources.mapIndexed { i, item ->
                                         com.facefusion.mobile.ui.FaceCard(
-                                            photos = listOf(com.facefusion.mobile.ui.SourcePhotoTile(
-                                                item.thumb, main = true, verdict = null)) +
-                                                extraThumbs.getOrElse(i) { emptyList() }.mapNotNull { (u, b) ->
-                                                    b?.let { com.facefusion.mobile.ui.SourcePhotoTile(
-                                                        it, main = false,
-                                                        verdict = SourcePhotos.verdicts[u]) }
-                                                },
+                                            photos = tilesFor(item, extraThumbs.getOrElse(i) { emptyList() }),
                                             active = i == swapSourceIndex,
+                                            saved = isSaved(i),
                                         )
                                     },
                                     max = SourcePhotos.MAX,
@@ -2278,6 +2510,10 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onUseFace = ::selectSwapSource,
                                     onRemoveFace = ::removeSource,
+                                    onFromVideo = { i -> openVideoForFaces(i) },
+                                    onAddPersonFromVideo = { openVideoForFaces(-1) },
+                                    onSavePerson = ::savePerson,
+                                    onOpenSaved = { refreshSavedFaces(); facesDialogOpen = true },
                                 )
                             }
 
@@ -2397,16 +2633,11 @@ class MainActivity : ComponentActivity() {
                     sources.getOrNull(photosSheetFor)?.let { item ->
                         val index = photosSheetFor
                         val extraThumbs = androidx.compose.runtime.remember(item.extras) {
-                            item.extras.map { u -> u to decodeOriented(u) }
+                            item.extras.map { u -> u to decodeOriented(u, 384) }
                         }
                         com.facefusion.mobile.ui.SourcePhotosDialog(
                             faceLabel = getString(R.string.live_source_label, index + 1),
-                            photos = listOf(com.facefusion.mobile.ui.SourcePhotoTile(
-                                item.thumb, main = true, verdict = null)) +
-                                extraThumbs.mapNotNull { (u, b) ->
-                                    b?.let { com.facefusion.mobile.ui.SourcePhotoTile(
-                                        it, main = false, verdict = SourcePhotos.verdicts[u]) }
-                                },
+                            photos = tilesFor(item, extraThumbs),
                             max = SourcePhotos.MAX,
                             onAdd = {
                                 pendingExtraFor = index
@@ -2414,6 +2645,40 @@ class MainActivity : ComponentActivity() {
                             },
                             onRemove = { k -> item.extras.getOrNull(k)?.let { removeExtraPhoto(index, it) } },
                             onDismiss = { photosSheetFor = -1 },
+                        )
+                    }
+
+                    vpick?.let { v ->
+                        com.facefusion.mobile.ui.VideoPickDialog(
+                            title = if (v.forFace >= 0) getString(R.string.vpick_title_face, v.forFace + 1)
+                                    else getString(R.string.vpick_title_new),
+                            progress = v.progress,
+                            people = v.people?.map { p ->
+                                com.facefusion.mobile.ui.FoundPerson(p.thumb, p.count,
+                                    getString(R.string.vpick_person_seen, p.count, p.best.size))
+                            },
+                            onPickPerson = { k -> v.people?.getOrNull(k)?.let { vpick = reviewFor(-1, it, v.found) } },
+                            photos = v.picks?.mapNotNull { sn ->
+                                sn.crop?.let { c ->
+                                    com.facefusion.mobile.ui.FoundPhoto(c, sn.angle?.let { a ->
+                                        getString(when (a) {
+                                            SourcePhotos.Angle.FRONT -> R.string.angle_front
+                                            SourcePhotos.Angle.LEFT -> R.string.angle_left
+                                            SourcePhotos.Angle.RIGHT -> R.string.angle_right
+                                            SourcePhotos.Angle.UP -> R.string.angle_up
+                                            SourcePhotos.Angle.DOWN -> R.string.angle_down
+                                        })
+                                    } ?: "")
+                                }
+                            },
+                            checked = v.checked,
+                            onToggle = { k ->
+                                vpick = VPick(v.forFace, picks = v.picks, found = v.found,
+                                    checked = if (k in v.checked) v.checked - k else v.checked + k)
+                            },
+                            onAdd = { addVideoPicks(v) },
+                            message = v.message,
+                            onCancel = ::closeVPick,
                         )
                     }
 
@@ -2812,6 +3077,7 @@ class MainActivity : ComponentActivity() {
         val reloads = fixed.swapper != opts.swapper
         opts = fixed
         fixed.save(this)
+        VideoSwapper.lowMemory = fixed.lowestMemory
         // init() consumed the old options; the warm pipeline is now showing something the
         // user did not ask for. This REDRAWS -- clearing the pane and leaving it cleared
         // is how "Preparing preview..." became permanent, since nothing was left to ask
@@ -3938,6 +4204,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Android says memory is getting short. When nothing is running, give the preview's
+     * models back now instead of waiting to be killed; they reload on the next preview.
+     * A running swap, batch, Live or API request keeps everything it uses.
+     */
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // On screen only when it is critical (the picture on screen is cleared too);
+        // off screen as soon as it runs low.
+        val threshold = if (appVisible) android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+                        else android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+        if (level < threshold) return
+        if (busy || BatchStatus.running || liveRunning || PipeGuard.holder != null) return
+        if (previewWarm) {
+            invalidatePreview()
+            if (!appVisible) releasedInBackground = true
+        }
+        appendLog("memory low (level $level): models released while idle")
+    }
+
     private fun toggleLive() {
         if (liveRunning) { stopLive(); return }
         liveNote = null
@@ -4820,7 +5107,65 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun runSwap(resume: ResumeJob? = null) {
+    /**
+     * TEST 3 SECONDS: swap the 3 s from the preview position with the current settings,
+     * into a short clip, to judge the result before a long run. Does not touch an
+     * unfinished swap, and keeps the last real result on disk.
+     */
+    private fun runTest3s() {
+        if (busy) return
+        val total = durationMs.toFloat()
+        if (total <= 0f) return
+        val at = if (previewEdge == TrimEdge.End) previewAtMs - 3000f else previewAtMs
+        val from = at.coerceIn(0f, maxOf(0f, total - 3000f))
+        runSwap(testFromMs = from)
+    }
+
+    /** Seconds per output frame measured on this phone, by the settings that cost most. */
+    private fun estimateKey(): String =
+        "spf_${opts.pixelBoost}_${opts.faceEnhance}_${opts.expressionRestore}_" +
+        "${opts.regionMask || opts.keepMouth || opts.keepLips}_${opts.occlusionMask}_${opts.lipSync}"
+
+    private fun recordSpeed(frames: Int, seconds: Double) {
+        if (frames < 30 || seconds <= 0.0) return
+        val spf = (seconds / frames).toFloat()
+        val p = getSharedPreferences("ff_estimate", MODE_PRIVATE)
+        val old = p.getFloat(estimateKey(), 0f)
+        // Smoothed, so one hot or cold run does not swing the next estimate.
+        p.edit().putFloat(estimateKey(), if (old > 0f) old * 0.5f + spf * 0.5f else spf).apply()
+        estimateVersion++
+    }
+
+    private var estimateVersion by mutableIntStateOf(0)
+
+    /**
+     * TIME AND HEAT, before pressing Swap: frames to make x seconds per frame measured on
+     * this phone with these settings (a cautious guess until the first run), and how warm
+     * a run that long makes the phone.
+     */
+    private fun swapEstimate(): String? {
+        @Suppress("UNUSED_VARIABLE") val v = estimateVersion
+        if (targetFile == null || durationMs <= 0L) return null
+        val clipS = (trimEndMs.coerceAtMost(durationMs.toFloat()) - trimStartMs).coerceAtLeast(0f) / 1000f
+        if (clipS <= 0f) return null
+        val fps = if (opts.outputFps in 1..inputFps) opts.outputFps else inputFps
+        val frames = clipS * fps
+        val measured = getSharedPreferences("ff_estimate", MODE_PRIVATE).getFloat(estimateKey(), 0f)
+        val spf = if (measured > 0f) measured else 0.15f * opts.pixelBoost.coerceAtLeast(1) *
+            (if (opts.faceEnhance) 1.3f else 1f) * (if (opts.expressionRestore) 1.4f else 1f)
+        val secs = frames * spf
+        val time = if (secs < 90f) getString(R.string.estimate_seconds, secs.toInt().coerceAtLeast(1))
+                   else getString(R.string.estimate_minutes, Math.round(secs / 60f).coerceAtLeast(2))
+        val heat = getString(when {
+            secs < 120f -> R.string.estimate_cool
+            secs < 600f -> R.string.estimate_warm
+            else -> R.string.estimate_hot
+        })
+        return getString(if (measured > 0f) R.string.estimate_line else R.string.estimate_line_guess,
+                         time, heat)
+    }
+
+    private fun runSwap(resume: ResumeJob? = null, testFromMs: Float? = null) {
         if (opts.swapsFace && sourceUri == null) return
         val tgt = targetFile ?: return
         // Defence in depth: the Swap button in SwapScreen is already disabled without one
@@ -4832,8 +5177,14 @@ class MainActivity : ComponentActivity() {
         invalidatePreview()
         cancelRequested = false
         busy = true; progress = 0f; log = ""
-        // Deletes the PREVIOUS run's file, not merely the reference to it.
-        discardOutput()
+        val testRun = testFromMs != null
+        // Deletes the PREVIOUS run's file, not merely the reference to it. A TEST keeps a
+        // real result on disk (it comes back on the next start) and replaces only a test.
+        if (!testRun) discardOutput()
+        else {
+            if (outputFile?.name?.startsWith("test_") == true) outputFile?.safeDelete()
+            outputFile = null; outputPartial = false; savedUri = null; savedPathLabel = null
+        }
         preview = null; framesDone = 0; framesTotal = 0; elapsedS = 0.0
         // Background keep-alive: a foreground notification and a wake lock for the length
         // of the run, so leaving the app or turning the screen off does not stop it.
@@ -4900,8 +5251,10 @@ class MainActivity : ComponentActivity() {
                     screenSourceList(prepared.bitmaps, "run")?.let { throw ContentGate.Refused(it) }
                     // The target, sampled across the part of the clip this run processes.
                     ContentGate.inspectClip(
-                        tgt, (trimStartMs * 1000).toLong(),
-                        if (trimEndMs >= durationMs) Long.MAX_VALUE
+                        tgt,
+                        if (testFromMs != null) (testFromMs * 1000).toLong() else (trimStartMs * 1000).toLong(),
+                        if (testFromMs != null) (testFromMs * 1000).toLong() + 3_000_000L
+                        else if (trimEndMs >= durationMs) Long.MAX_VALUE
                         else (trimEndMs * 1000).toLong(),
                     ).let {
                         // `detail` is an ARGUMENT, never interpolated into the format
@@ -4935,7 +5288,7 @@ class MainActivity : ComponentActivity() {
                     val t0 = System.currentTimeMillis()
 
                     val out = File(outputDir(),
-                        "swapped_${System.currentTimeMillis()}.mp4")
+                        (if (testRun) "test_" else "swapped_") + "${System.currentTimeMillis()}.mp4")
                     status = getString(R.string.status_swapping)
                     var lastPreview = 0L
                     // Once per RUN: previewIntervalMs reads SharedPreferences and can probe
@@ -4978,8 +5331,10 @@ class MainActivity : ComponentActivity() {
                         // The in-app Cancel, or Cancel on the background notification.
                         isCancelled = { cancelRequested || SwapStatus.cancelRequested },
                     )
-                    val runStartUs = (trimStartMs * 1000).toLong()
-                    val runEndUs = if (trimEndMs >= durationMs) Long.MAX_VALUE
+                    val runStartUs = if (testFromMs != null) (testFromMs * 1000).toLong()
+                                     else (trimStartMs * 1000).toLong()
+                    val runEndUs = if (testFromMs != null) runStartUs + 3_000_000L
+                                   else if (trimEndMs >= durationMs) Long.MAX_VALUE
                                    else (trimEndMs * 1000).toLong()
                     fun showProgress(done: Int, total: Int) {
                             val now = System.currentTimeMillis()
@@ -4992,9 +5347,10 @@ class MainActivity : ComponentActivity() {
                             }
                     }
 
-                    if (opts.lipSync) {
+                    if (opts.lipSync || testRun) {
                         // Lip sync keeps the ONE continuous run: its mouth timing counts frames
-                        // from the start of the run, which pieces would restart.
+                        // from the start of the run, which pieces would restart. A 3 s test
+                        // is one piece anyway and must not replace an unfinished job.
                         swapper(runStartUs, runEndUs, opts.outputFps, opts.outputMaxShortEdge,
                                 opts.trackPeriod, ::showProgress)
                             .swap(tgt!!.absolutePath, out.absolutePath).getOrThrow()
@@ -5078,7 +5434,9 @@ class MainActivity : ComponentActivity() {
                 outputFile = it; progress = 1f
                 // The run kept whatever it had when Cancel was pressed, so say which it is.
                 outputPartial = cancelRequested
-                status = getString(R.string.status_done, it.length() / 1024)
+                status = if (testRun) getString(R.string.status_test_done)
+                         else getString(R.string.status_done, it.length() / 1024)
+                if (!cancelRequested) recordSpeed(framesDone, elapsedS)
                 // ⚠ RE-WARM THE PREVIEW. `runSwap` opens with invalidatePreview(), which
                 // clears previewWarm -- and `onTrimChanged` only redraws the swapped pane
                 // `if (previewWarm)`, on the reasoning that the first model load costs

@@ -353,6 +353,9 @@ fun RealismCard(
         OptionSwitch(stringResource(R.string.opt_temporal), opts.temporalSmooth,
                      { onChange(opts.copy(temporalSmooth = it)) },
                      hint = stringResource(R.string.opt_temporal_hint))
+        OptionSwitch(stringResource(R.string.opt_lowest_memory), opts.lowestMemory,
+                     { onChange(opts.copy(lowestMemory = it)) },
+                     hint = stringResource(R.string.opt_lowest_memory_hint))
 
         OptionSwitch(stringResource(R.string.opt_color_match), opts.colorMatch,
                      { onChange(opts.copy(colorMatch = it)) },

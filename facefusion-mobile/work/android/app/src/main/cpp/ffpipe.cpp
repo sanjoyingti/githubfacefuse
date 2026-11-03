@@ -2465,6 +2465,23 @@ ffnn::Handle Pipeline::Impl::maskNet(const char* name, int size, ffnn::Handle& h
     setMaskState(slot, "loaded but does not run on the CPU");
     return nullptr;
   }
+  // The NPU first: lowest power and memory, and it frees the GPU. Used only when it
+  // computes the same mask as the CPU on this device, like the GPU below.
+  std::string npuWhy;
+  if (ffnn::Handle npu = ffnn::openAuxNpu(name)) {
+    std::vector<float> got;
+    npuWhy = "NPU returned no usable output";
+    if (run(npu, got) && masksAgree(got, ref, size, parser, &npuWhy)) {
+      ffnn::release(cpu);
+      h = npu;
+      std::string note = npuWhy;
+      const size_t at = note.find("GPU");
+      if (at != std::string::npos) note.replace(at, 3, "NPU");
+      setMaskState(slot, "running on the NPU (" + note + ")");
+      return h;
+    }
+    ffnn::release(npu);
+  }
   ffnn::Handle gpu = ffnn::openAux(name, ffnn::Placement::Default);
   if (gpu && ffnn::onGpu(gpu)) {
     std::vector<float> got;
@@ -2960,6 +2977,8 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
       for (int i = 0, n = CS * 3; i < n; ++i)
         orow[i] = (float)srow[i] * (1.f - b) + erow[i] * b;
     }
+    if (cfg.enhanceSharpen > 0.f) ffmotion::sharpen(outF, std::fmin(1.f, cfg.enhanceSharpen),
+                                              std::max(1, CS / 256));
     msGeom += nowMs() - t0;
 
     // The swap's own mask when it made one for this face (same template, same size), so

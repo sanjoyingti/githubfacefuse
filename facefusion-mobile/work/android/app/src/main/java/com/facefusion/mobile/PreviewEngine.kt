@@ -424,6 +424,7 @@ class PreviewEngine {
             invalidate()
             return@withContext "No face found in the source image"
         }
+        SourcePhotos.checkMain(slots[0].tag, slots[0].bgr, slots[0].width, slots[0].height)
         SourcePhotos.register(0, slots[0].extras)
         for ((i, slot) in slots.withIndex()) {
             if (i == 0) continue
@@ -434,6 +435,7 @@ class PreviewEngine {
                 invalidate()
                 return@withContext "No face found in source image ${i + 1}"
             }
+            SourcePhotos.checkMain(slot.tag, slot.bgr, slot.width, slot.height)
             SourcePhotos.register(i, slot.extras)
         }
         appliedSlots = tags

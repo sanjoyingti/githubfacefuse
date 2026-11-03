@@ -226,6 +226,22 @@ void setAuxDir(const std::string& dir) {
 #endif
 }
 
+namespace { std::string g_auxQnnDir; }
+void setAuxQnnDir(const std::string& dir) { g_auxQnnDir = dir; }
+
+Handle openAuxNpu(const std::string& logicalName) {
+  if (!g_ready || g_active != Backend::Qnn || g_auxQnnDir.empty() || qnnTier().empty())
+    return nullptr;
+  const std::string path = g_auxQnnDir + "/" + logicalName + "_" + qnnTier() + ".bin";
+  Handle inner = ffqnn::load(path);
+  if (!inner) return nullptr;
+  return new HandleRec{Backend::Qnn, inner};
+}
+
+bool onNpu(Handle h) {
+  return h && static_cast<HandleRec*>(h)->backend == Backend::Qnn;
+}
+
 bool onGpu(Handle h) {
   if (!h) return false;
 #ifdef FFNN_HAVE_NCNN

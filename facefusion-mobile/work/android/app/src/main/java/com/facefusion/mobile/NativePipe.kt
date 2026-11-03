@@ -116,6 +116,45 @@ object NativePipe {
                    opts.expressionRestore, opts.expressionFactor, opts.parallelMasks,
                    opts.smartSpeed)
         setQuality2(opts.autoBoost, opts.seamless, opts.hairAware, opts.temporalSmooth)
+        setEnhanceSharpen(if (opts.enhanceSharpen) opts.enhanceSharpenStrength else 0f)
+    }
+
+    /** Sharper enhancer: unsharp mask after the face enhancer, 0 = off (build 41). */
+    @JvmStatic external fun setEnhanceSharpen(amount: Float)
+
+    /**
+     * Every face in a picture with its quality numbers and identity, for the photo check
+     * and for picking photos out of a video. [SCAN_STRIDE] floats per face:
+     * x1, y1, x2, y2, detScore, yaw, pitch (deg, NaN unknown), sharpness, brightness,
+     * then the 512 normalised embedding values. Empty with no pipeline or no face.
+     */
+    @JvmStatic external fun scanFaces(bgr: ByteArray, w: Int, h: Int): FloatArray
+    const val SCAN_STRIDE = 9 + 512
+
+    /** Folder with the mask models' NPU builds (copied out of the APK). */
+    @JvmStatic external fun setAuxQnnDir(dir: String)
+
+    /**
+     * A decoded video frame straight from the codec's planes to the upright, size-capped
+     * BGR frame, in one call and without intermediate arrays. Same pixels as yuvToBgr +
+     * rotateBgr + resizeBgr. outW/outH <= 0 keeps the upright size.
+     */
+    @JvmStatic external fun yuvFrameToBgr(
+        y: java.nio.ByteBuffer, yOff: Int, yLen: Int, yRow: Int,
+        u: java.nio.ByteBuffer, uOff: Int, uLen: Int, uRow: Int, uPix: Int,
+        v: java.nio.ByteBuffer, vOff: Int, vLen: Int, vRow: Int, vPix: Int,
+        w: Int, h: Int, rotation: Int, outW: Int, outH: Int,
+    ): ByteArray?
+
+    /** [yuvFrameToBgr] for a codec Image. */
+    fun imageToUprightBgr(image: android.media.Image, w: Int, h: Int, rotation: Int,
+                          outW: Int, outH: Int): ByteArray? {
+        val p = image.planes
+        val y = p[0].buffer; val u = p[1].buffer; val v = p[2].buffer
+        return yuvFrameToBgr(y, y.position(), y.remaining(), p[0].rowStride,
+                             u, u.position(), u.remaining(), p[1].rowStride, p[1].pixelStride,
+                             v, v.position(), v.remaining(), p[2].rowStride, p[2].pixelStride,
+                             w, h, rotation, outW, outH)
     }
 
     /** Close-up boost, seamless edges, hair-aware masks, smoothing over time (build 40). */

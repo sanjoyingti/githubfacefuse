@@ -210,6 +210,9 @@ object ModelPaths {
         NativePipe.ensureLoaded()
         // The bundled mask models (assets/masks): native reads them straight out of the APK.
         NativePipe.setAuxAssets(ctx.applicationContext.assets)
+        // The mask models' NPU builds: copied out of the APK once (in the background), then
+        // native prefers them -- after checking on this phone that they give the same masks.
+        installNpuMasks(ctx.applicationContext)
         NativePipe.setForcedBackend(forcedBackend(ctx))
         // Before any model is opened, so the first open already knows whether it is allowed
         // to look at the GPU at all. Setting it afterwards would leave the models that the
@@ -221,6 +224,38 @@ object ModelPaths {
         // load the rejected tier first, fail its probe, and fall back, paying a full
         // context load on every launch to re-learn something already written down.
         NativePipe.setSkipTiers(rejectedTiers(ctx).joinToString(","))
+    }
+
+    @Volatile private var npuMasksStarted = false
+
+    /**
+     * Copy assets/masks_npu/<name>_<tier>.bin to filesDir/npu_masks once per app version,
+     * then tell native where they are. Off the main thread; until it finishes the masks
+     * simply run where they did before (GPU or CPU).
+     */
+    private fun installNpuMasks(app: Context) {
+        if (npuMasksStarted) return
+        npuMasksStarted = true
+        Thread({
+            runCatching {
+                val dir = java.io.File(app.filesDir, "npu_masks").apply { mkdirs() }
+                val stamp = java.io.File(dir, "version")
+                val code = buildCode(app).toString()
+                val names = app.assets.list("masks_npu")?.toList().orEmpty()
+                if (stamp.takeIf { it.isFile }?.readText() != code ||
+                    names.any { !java.io.File(dir, it).isFile }) {
+                    for (n in names) {
+                        val tmp = java.io.File(dir, "$n.part")
+                        app.assets.open("masks_npu/$n").use { input ->
+                            tmp.outputStream().use { input.copyTo(it, 1 shl 20) }
+                        }
+                        tmp.renameTo(java.io.File(dir, n))
+                    }
+                    stamp.writeText(code)
+                }
+                NativePipe.setAuxQnnDir(dir.absolutePath)
+            }.onFailure { android.util.Log.w("ffmodels", "npu masks not installed", it) }
+        }, "ff-npu-masks").start()
     }
 
     /**

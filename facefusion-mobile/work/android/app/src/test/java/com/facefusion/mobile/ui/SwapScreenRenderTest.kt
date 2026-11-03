@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.facefusion.mobile.SourcePhotos
 import com.facefusion.mobile.SwapOptions
 import org.junit.Rule
@@ -107,5 +108,94 @@ class SwapScreenRenderTest {
         rule.onNode(androidx.compose.ui.test.hasContentDescription("Photos of this person"), useUnmergedTree = true).performClick()
         println("OPENFOR after tap = " + SourcePhotos.openFor)
         println("BOUNDS target = " + rule.onNode(androidx.compose.ui.test.hasContentDescription("Take a photo"), useUnmergedTree = true).fetchSemanticsNode().boundsInRoot)
+    }
+
+    @Test fun testButtonAndEstimateShow() {
+        val bmp = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        var tested = 0
+        rule.setContent {
+            SwapScreen(
+                sourceThumb = bmp,
+                sourceThumbs = listOf(bmp),
+                hasSource = true,
+                hasTarget = true,
+                imageTarget = false,
+                durationMs = 20_000L,
+                trimStartMs = 0f,
+                trimEndMs = 20_000f,
+                onTrimChange = { _, _, _ -> },
+                targetAspect = 0f,
+                inputFps = 0,
+                targetW = 0,
+                targetH = 0,
+                fmt = { it.toString() },
+                preview = PreviewUi(),
+                run = RunUi(),
+                status = "",
+                statusIsError = false,
+                log = "",
+                opts = SwapOptions(),
+                onOptsChange = { _ -> },
+                hasEnhancer = false,
+                hasLipSyncer = false,
+                onRequestModel = { _, _ -> },
+                showFaceBoxes = false,
+                batch = emptyList(),
+                onRemoveFromBatch = { _ -> },
+                onAddToBatch = { },
+                onLivePlay = { },
+                onOpenBatchOutput = { _ -> },
+                outputAutoSaved = false,
+                batchAutoSave = false,
+                onBatchAutoSave = { _ -> },
+                openCard = "",
+                onToggleCard = { _ -> },
+                hasOutput = false,
+                outputFile = null,
+                outputPartial = false,
+                onSaveFrame = { _ -> },
+                saved = false,
+                savedPath = null,
+                onPickSource = { },
+                onPickTarget = { },
+                hasVoice = false,
+                voiceName = null,
+                voiceDurationMs = 0L,
+                voiceTrimStartMs = 0f,
+                voiceTrimEndMs = 0f,
+                onVoiceTrimChange = { _, _ -> },
+                voicePosMs = 0f,
+                voicePlaying = false,
+                onVoicePlayPause = { },
+                onVoiceSeek = { _ -> },
+                onPickVoice = { },
+                onClearVoice = { },
+                recordingVoice = false,
+                onToggleRecordVoice = { },
+                onSavePreviewFrame = { },
+                onClearSource = { },
+                onCaptureSource = { },
+                onCapturePhoto = { },
+                onCaptureVideo = { },
+                onClearTarget = { },
+                onDeleteOutput = { },
+                onSwap = { },
+                onTest3s = { tested++ },
+                estimate = "About 2 min · phone gets warm",
+                onCancel = { },
+                modelsMissing = false,
+                onDownload = { },
+                onShareLog = { },
+                onSave = { },
+                onShare = { },
+                modifier = Modifier,
+
+
+            )
+        }
+        rule.onNode(androidx.compose.ui.test.hasText("About 2 min", substring = true)).performScrollTo().assertExists()
+        rule.onNode(androidx.compose.ui.test.hasText("Test 3 seconds")).performScrollTo().performClick()
+        println("TEST3S tapped=$tested")
+        org.junit.Assert.assertEquals(1, tested)
     }
 }

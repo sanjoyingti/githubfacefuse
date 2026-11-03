@@ -75,6 +75,17 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.41:
+          - Masks on the NPU: the occlusion mask and the face parser now run on the NPU (the S25 Ultra's Snapdragon 8 Elite), converted from the same models. Tested against the originals: 99.99% of occlusion-mask pixels and 99.7-99.97% of face-parser pixels agree. On the phone the app checks they match before using them, otherwise it uses the GPU or CPU as before. Frees the GPU and less battery and heat.
+          - Up to 5 photos per person (front, left, right, up, down). Empty slots say which angle to add.
+          - From a video: pick a video and the app finds the person, then offers the sharpest front/left/right (and up/down) pictures. Tick the ones you want and Add. "Add a person from a video" does the same for someone new.
+          - Photo check: each photo says if there is no face, more than one face, the face is small, blurry, too dark or bright, turned too far, or the same angle as another photo.
+          - Saved people: Save person keeps the main photo and all its photos; using it later brings them all back, for any video.
+          - Test 3 seconds: swaps 3 s from where the preview is, so you can check before a long swap. It does not touch an unfinished swap.
+          - Time and heat estimate under Swap, learned from your own swaps.
+          - Sharper enhancer (enhancer settings, off by default).
+          - Less memory with the same result: 4K video is converted to the working size in one step (about 100 MB less churn per frame), photo previews are small copies, models are released when Android says memory is low while idle. Optional "Lowest memory" switch (same result, a little slower).
+
           Version 1.0.40: every build now has its own version (Settings > About, the top bar, and the APK's name), and installs as an update of the last.
           - Recommended settings are applied once on the first start: face parser with hair-aware and seamless edges, more detail on close-ups, occlusion mask, real mouth inside, skin tone, expression restorer 80, enhancer 50, head-turn fade, motion smoothing, Smart speed, Faster masks, Fast video 2, 30 fps, 4K at 1080p. Your own changes afterwards are kept.
           - Hair-aware edges: hair and hats always stay as filmed, and the swap edge follows the picture's own edges, so hair across the face no longer turns into dark streaks.

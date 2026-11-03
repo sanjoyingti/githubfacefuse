@@ -91,6 +91,10 @@ struct Config {
   // Video: smooth the skin-tone transfer and the mask edge from frame to frame (less
   // flicker). Needs Smart speed's per-face tracking; previews and photos are unaffected.
   bool temporalSmooth = true;
+  // SHARPER ENHANCER: after the enhancer's blend, an unsharp mask on the enhanced face crop
+  // (0 = off, 1 = strong). Inside the same mask as the enhancer, so only the face changes.
+  // Off by default; only read when faceEnhance is on.
+  float enhanceSharpen = 0.f;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;
@@ -334,7 +338,7 @@ class Pipeline {
   // why), -2 the face looks like a different person (cosine to the slot's first photo
   // under kSamePersonCos), -3 no such slot, -4 the slot already has kMaxSourcePhotos.
   int addSourcePhoto(int slot, const ffcv::Image& photo);
-  static constexpr int kMaxSourcePhotos = 3;
+  static constexpr int kMaxSourcePhotos = 5;
   void clearSourceSlots();
   void setActiveSource(int index);
   /**

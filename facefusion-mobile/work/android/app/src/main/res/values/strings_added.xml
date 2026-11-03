@@ -68,19 +68,19 @@
     <!-- The Faces tab -->
     <string name="nav_faces">Faces</string>
     <string name="faces_tab_title">Faces and their photos</string>
-    <string name="faces_tab_explain">Each face can have up to 3 photos of the same person. They are combined into one likeness, and for every frame the photo whose head angle matches the video counts most. Assign faces to the people in a video on the Swap tab (Assign per person).</string>
+    <string name="faces_tab_explain">Each face can have up to 5 photos of the same person (front, left, right, up, down). They are combined into one likeness, and for every frame the photo whose head angle matches the video counts most. Assign faces to the people in a video on the Swap tab (Assign per person).</string>
     <string name="faces_tab_add_photo">Add photo</string>
     <string name="faces_tab_use">Use</string>
     <string name="faces_tab_in_use">In use</string>
     <string name="faces_tab_remove">Remove</string>
     <string name="faces_tab_add_person">Add a new person</string>
-    <string name="faces_tab_tips">Best photos: sharp, well lit, nothing over the face. One straight on, one turned left, one turned right.</string>
+    <string name="faces_tab_tips">Best photos: sharp, well lit, nothing over the face. One straight on, one turned left, one turned right, then up and down. Or tap From a video and the app picks the best ones for you. Each photo says if something is wrong with it.</string>
 
     <!-- Several photos of one person per source face -->
     <string name="photos_open">Photos of this person</string>
     <string name="photos_row_button">More photos of Source %1$d (%2$d of %3$d)</string>
     <string name="photos_count">%1$d of %2$d photos</string>
-    <string name="photos_explain">Photos of the same person are combined into one likeness. For every frame the photo whose head angle matches the face in the video counts most (turned left: your left-turned photo), blending smoothly as the head turns. Add one straight on, one turned left, one turned right.</string>
+    <string name="photos_explain">Photos of the same person are combined into one likeness. For every frame the photo whose head angle matches the face in the video counts most (turned left: your left-turned photo), blending smoothly as the head turns. Add one straight on, one turned left, one turned right, then up and down.</string>
     <string name="photos_add">Add photo (up to %1$d)</string>
     <string name="photos_remove">Remove this photo</string>
     <string name="photos_main">Main photo</string>
@@ -88,7 +88,7 @@
     <string name="photos_other_person">Different person, not used</string>
     <string name="photos_no_face">No face found, not used</string>
     <string name="photos_pending">Checked at the next preview</string>
-    <string name="photos_tips">Best: sharp, well lit, nothing over the face; one straight on, one turned left, one turned right.</string>
+    <string name="photos_tips">Best: sharp, well lit, nothing over the face; one straight on, one turned left, one turned right, then up and down.</string>
     <string name="photos_done">Done</string>
 
     <!-- Missing from the base resource set -->
@@ -160,4 +160,53 @@
     <string name="swap_lips_pick_off">Lip selection done</string>
     <string name="swap_proc_animator">face_animator</string>
     <string name="swap_proc_face_editor">face_editor</string>
+    <!-- 1.0.41 -->
+    <string name="angle_front">Front</string>
+    <string name="angle_left">Turned left</string>
+    <string name="angle_right">Turned right</string>
+    <string name="angle_up">Looking up</string>
+    <string name="angle_down">Looking down</string>
+    <string name="warn_no_face">No face found</string>
+    <string name="warn_many_faces">More than one face: crop to one person</string>
+    <string name="warn_small">Face is small: use a closer photo</string>
+    <string name="warn_blurry">Blurry: use a sharper photo</string>
+    <string name="warn_dark">Too dark</string>
+    <string name="warn_bright">Too bright</string>
+    <string name="warn_turned">Head turned too far</string>
+    <string name="warn_same_angle">Same angle as another photo</string>
+    <string name="faces_from_video">From a video</string>
+    <string name="faces_person_from_video">Add a person from a video</string>
+    <string name="faces_save_person">Save person</string>
+    <string name="faces_update_saved">Saved ✓ Update</string>
+    <string name="faces_saved_people">Saved people</string>
+    <string name="faces_person_saved">Person saved with %1$d photo(s)</string>
+    <string name="faces_saved_photos">%1$d photos</string>
+    <string name="vpick_title_face">Photos of Source %1$d from a video</string>
+    <string name="vpick_title_new">New person from a video</string>
+    <string name="vpick_scanning">Looking through the video… %1$d%%</string>
+    <string name="vpick_scanning_hint">The app checks about two frames a second and keeps the sharpest, best lit picture of each angle. Nothing is swapped.</string>
+    <string name="vpick_choose_person">Who should be added? Tap a person.</string>
+    <string name="vpick_person">Person %1$d</string>
+    <string name="vpick_person_seen">Seen %1$d times · %2$d angle(s)</string>
+    <string name="vpick_review">The best pictures it found. Tap to tick or untick, then Add.</string>
+    <string name="vpick_add">Add %1$d</string>
+    <string name="vpick_cancel">Cancel</string>
+    <string name="vpick_not_found">This person was not found in the video (or only too small).</string>
+    <string name="vpick_nobody">No clear face was found in the video.</string>
+    <string name="vpick_nothing_new">The video has no angle this face does not already have.</string>
+    <string name="vpick_added">Added %1$d photo(s) from the video</string>
+    <string name="opt_sharpen">Sharper enhancer</string>
+    <string name="opt_sharpen_hint">Adds crispness to the enhanced face (skin texture, eyes). Off by default; too much looks artificial.</string>
+    <string name="opt_sharpen_strength">Sharpness</string>
+    <string name="opt_lowest_memory">Lowest memory</string>
+    <string name="opt_lowest_memory_hint">Keeps fewer frames in memory while swapping. Same result, a little slower. Turn on only if the phone closes the app.</string>
+    <string name="swap_test_3s">Test 3 seconds</string>
+    <string name="status_test_done">Test of 3 seconds ready. Happy with it? Press Swap for the whole video.</string>
+    <string name="estimate_seconds">%1$d s</string>
+    <string name="estimate_minutes">%1$d min</string>
+    <string name="estimate_cool">phone stays cool</string>
+    <string name="estimate_warm">phone gets warm</string>
+    <string name="estimate_hot">phone gets hot, the app slows down to protect it</string>
+    <string name="estimate_line">About %1$s · %2$s</string>
+    <string name="estimate_line_guess">About %1$s (rough guess until your first swap) · %2$s</string>
 </resources>

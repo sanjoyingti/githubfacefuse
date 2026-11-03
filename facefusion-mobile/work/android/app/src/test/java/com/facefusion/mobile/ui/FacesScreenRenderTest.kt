@@ -32,7 +32,7 @@ class FacesScreenRenderTest {
             )
         }
         rule.onAllNodes(hasText("Add photo"))[1].performScrollTo().performClick()
-        rule.onAllNodes(androidx.compose.ui.test.hasContentDescription("Remove this photo"))[0].performClick()
+        rule.onAllNodes(androidx.compose.ui.test.hasContentDescription("Remove this photo"))[0].performScrollTo().performClick()
         rule.onNode(hasText("Use")).performScrollTo().performClick()
         println("FACES added=$added removed=$removed used=$used")
         assertEquals(1, added); assertEquals(0 to 0, removed); assertEquals(1, used)
