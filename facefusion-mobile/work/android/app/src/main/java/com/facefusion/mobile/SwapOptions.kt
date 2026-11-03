@@ -29,7 +29,7 @@ data class SwapOptions(
     val weight: Float = 0.5f,
 
     /** `--face-mask-blur`, 0.0-1.0 step 0.05. How soft the swapped region's edge is. */
-    val maskBlur: Float = 0.4f,
+    val maskBlur: Float = 0.3f,
 
     /** `--face-mask-padding`, top/right/bottom/left, 0-100 percent. Shrinks the region. */
     val maskPadding: List<Int> = listOf(0, 0, 0, 0),
@@ -203,7 +203,7 @@ data class SwapOptions(
     // Occlusion mask (XSeg): keep the swap off food, hands, cups and hair in front of the face.
     val occlusionMask: Boolean = true,
     // Face-parser mask (BiSeNet): swap only skin/eyes/brows/nose/lips.
-    val regionMask: Boolean = false,
+    val regionMask: Boolean = true,
     // Leave the mouth interior (teeth, tongue, food) original.
     val keepMouth: Boolean = true,
     // Leave the lips original too, so the whole mouth is as filmed.
@@ -227,6 +227,14 @@ data class SwapOptions(
     // Video only: reuse masks while nothing in front of the face changes, and run the
     // expression restorer only around blinks and closed eyes. Faster and cooler.
     val smartSpeed: Boolean = true,
+    // Close-ups swapped at 1024 px instead of stretched from 512 (ffpipe autoBoost).
+    val autoBoost: Boolean = true,
+    // Multi-band blend at the face edge: no outline (ffpipe seamless).
+    val seamless: Boolean = true,
+    // Hair stays original, mask edges follow the picture's own edges (ffpipe hairAware).
+    val hairAware: Boolean = true,
+    // Video: skin tone and mask edge smoothed between frames (ffpipe temporalSmooth).
+    val temporalSmooth: Boolean = true,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -264,10 +272,18 @@ data class SwapOptions(
     fun realisticPreset(): SwapOptions = copy(
         weight = 0.5f,
         pixelBoost = 2,
-        maskBlur = 0.4f,
+        maskBlur = 0.3f,
         maskPadding = listOf(0, 0, 0, 0),
         occlusionMask = true,
-        regionMask = false,
+        regionMask = true,
+        autoBoost = true,
+        seamless = true,
+        hairAware = true,
+        temporalSmooth = true,
+        smartSpeed = true,
+        parallelMasks = true,
+        detectRotated = false,
+        largestOnly = false,
         keepMouth = true,
         keepLips = false,
         poseFade = true,
@@ -340,6 +356,10 @@ data class SwapOptions(
             .putFloat(K_EXPRESSION_FACTOR, expressionFactor)
             .putBoolean(K_PARALLEL_MASKS, parallelMasks)
             .putBoolean(K_SMART_SPEED, smartSpeed)
+            .putBoolean(K_AUTO_BOOST, autoBoost)
+            .putBoolean(K_SEAMLESS, seamless)
+            .putBoolean(K_HAIR_AWARE, hairAware)
+            .putBoolean(K_TEMPORAL, temporalSmooth)
             .apply()
     }
 
@@ -378,6 +398,10 @@ data class SwapOptions(
         private const val K_EXPRESSION_FACTOR = "expression_restore_factor"
         private const val K_PARALLEL_MASKS = "parallel_masks"
         private const val K_SMART_SPEED = "smart_speed"
+        private const val K_AUTO_BOOST = "auto_boost"
+        private const val K_SEAMLESS = "seamless"
+        private const val K_HAIR_AWARE = "hair_aware"
+        private const val K_TEMPORAL = "temporal_smooth"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -460,6 +484,10 @@ data class SwapOptions(
                     .coerceIn(0f, 1f),
                 parallelMasks = p.getBoolean(K_PARALLEL_MASKS, d.parallelMasks),
                 smartSpeed = p.getBoolean(K_SMART_SPEED, d.smartSpeed),
+                autoBoost = p.getBoolean(K_AUTO_BOOST, d.autoBoost),
+                seamless = p.getBoolean(K_SEAMLESS, d.seamless),
+                hairAware = p.getBoolean(K_HAIR_AWARE, d.hairAware),
+                temporalSmooth = p.getBoolean(K_TEMPORAL, d.temporalSmooth),
             )
         }
     }

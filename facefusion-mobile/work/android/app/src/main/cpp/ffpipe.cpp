@@ -300,6 +300,9 @@ struct Pipeline::Impl {
     int maskCS = 0, maskAge = 0;
     // Frames the expression restorer stays on after the eyes last closed.
     int restoreHold = 0;
+    // temporalSmooth: this face's colour statistics and last final mask (crop space).
+    ffmotion::ColorState color;
+    std::shared_ptr<ffcv::MatF> lastMask;
     // Frames the face parser stays on after the mouth was last open ("Keep original mouth
     // inside" alone), and whether the stored mask had the parser in it.
     int mouthHold = 0;
@@ -495,6 +498,7 @@ struct Pipeline::Impl {
   };
   BoxMaskCache lipBoxMask;    // at LS, for syncLip
   BoxMaskCache swapBoxMask;   // at swapSize*pixelBoost, for swapAll
+  BoxMaskCache swapBoxMaskBig;   // at swapSize*4, for close-ups under autoBoost
 
   // Detector tracking state. SINGLE FACE ONLY, deliberately: tracking two faces needs
   // identity matching across frames, and a crossover that mis-assigns them swaps the wrong
@@ -2528,6 +2532,9 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
     // Labels left ORIGINAL by the mouth switches.
     bool original[L] = {};
     if (cfg.keepMouth) original[kMouthLabel] = true;
+    // Hair (17) and hat (18) are never swapped: a strand across the face stays the
+    // original strand, not a half-swapped smear.
+    if (cfg.hairAware) { original[17] = true; original[18] = true; }
     if (cfg.keepLips) { original[kUpperLip] = true; original[kLowerLip] = true; }
     // With the region mask on only the face regions are swapped; without it everything the
     // box mask covers is, except what the mouth switches keep original.
@@ -2551,6 +2558,9 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
     }
     finishModelMask(rm, CS, m);
   }
+  // Snap the soft edge to the picture's own edges (hair, jaw, fingers), only shrinking.
+  if (cfg.hairAware && (cfg.occlusionMask || cfg.regionMask || cfg.keepMouth || cfg.keepLips))
+    ffmotion::refineMaskEdges(crop, m, std::max(2, CS / 128), 1e-3f);
   return true;
 }
 
@@ -2569,20 +2579,20 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
   }
   const Config& cfg = p_->cfg;
   const int SS = cfg.swapSize;                       // what the GRAPH takes: always 256
-  const int PB = cfg.pixelBoost < 1 ? 1 : cfg.pixelBoost;
-  const int CS = SS * PB;                            // what the FACE is warped at
+  const int PB0 = cfg.pixelBoost < 1 ? 1 : cfg.pixelBoost;
+  const int CS0 = SS * PB0;                          // what the FACE is warped at
   p_->havePreSwap = cfg.expressionRestore && hasFaceEditor() && !faces.empty();
   if (p_->havePreSwap) p_->preSwap = frame;
 
-  float tmpl[10];
+  float tmpl0[10];
   const float* T = ffcv::warpTemplate(1);            // arcface_128, both swappers
-  for (int i = 0; i < 10; ++i) tmpl[i] = T[i] * CS;
+  for (int i = 0; i < 10; ++i) tmpl0[i] = T[i] * CS0;
 
   // The mask is built at the crop size, not the model size: with pixel boost the crop is
   // larger than the graph and paste_back works on the crop. Cached, because CS, maskBlur
   // and maskPadding are identical on every frame of a run and this is a 79-tap blur.
   double tm = nowMs();
-  const ffcv::MatF& mask = p_->swapBoxMask.get(CS, cfg.maskBlur, cfg.maskPadding);
+  const ffcv::MatF& mask0 = p_->swapBoxMask.get(CS0, cfg.maskBlur, cfg.maskPadding);
   msGeom += nowMs() - tm;
   msGeomMask += nowMs() - tm;
 
@@ -2616,6 +2626,24 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // POSE FADE: a head turned far enough that the swapper would stretch it keeps its own
     // face. Checked before any pixel work, so a profile costs nothing.
     if (f.poseFade < 0.02f) continue;
+
+    // AUTO PIXEL BOOST, per face: the frame->crop scale of the alignment at the normal
+    // size says how much the swapped face would be STRETCHED when pasted back. A face
+    // shown more than 1.25x larger than its crop is a close-up: swap it at 4 x 4 tiles
+    // (1024 px) instead. Other faces keep the chosen pixel boost.
+    int PB = PB0, CS = CS0;
+    float tmpl[10];
+    std::memcpy(tmpl, tmpl0, sizeof(tmpl));
+    if (cfg.autoBoost && PB0 < 4) {
+      const ffcv::Affine a0 = ffcv::umeyama(f.landmark5_68, tmpl0, 5);
+      const double sc = std::sqrt(std::fabs(a0(0, 0) * a0(1, 1) - a0(0, 1) * a0(1, 0)));
+      if (sc > 0 && sc < 0.8) {
+        PB = 4; CS = SS * PB;
+        for (int i = 0; i < 10; ++i) tmpl[i] = T[i] * CS;
+      }
+    }
+    const ffcv::MatF& mask = (CS == CS0)
+        ? mask0 : p_->swapBoxMaskBig.get(CS, cfg.maskBlur, cfg.maskPadding);
 
     double t0 = nowMs();
     ffcv::Affine am = ffcv::umeyama(f.landmark5_68, tmpl, 5);
@@ -2785,6 +2813,15 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
         sface->maskCS = CS;
         sface->maskAge = 0;
       }
+      // TEMPORAL: the mask edge moves 70% of the way to this frame's, so it does not
+      // shimmer between frames; crop-aligned, so it follows the face.
+      if (cfg.temporalSmooth && sface) {
+        if (sface->lastMask && sface->lastMask->w == faceMask.w &&
+            sface->lastMask->h == faceMask.h)
+          for (size_t i = 0; i < faceMask.data.size(); ++i)
+            faceMask.data[i] = 0.7f * faceMask.data[i] + 0.3f * sface->lastMask->data[i];
+        sface->lastMask = std::make_shared<ffcv::MatF>(faceMask);
+      }
       if (f.poseFade < 0.999f)
         for (float& v : faceMask.data) v *= f.poseFade;
       Impl::CachedMask cm;
@@ -2800,7 +2837,18 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // over the pixels this face will actually be pasted on.
     if (cfg.colorMatch > 0.f) {
       t0 = nowMs();
-      ffmotion::matchColor(crop, outCrop, *useMask, cfg.colorMatch);
+      ffmotion::matchColor(crop, outCrop, *useMask, cfg.colorMatch,
+                           (cfg.temporalSmooth && sface) ? &sface->color : nullptr);
+      msGeom += nowMs() - t0;
+    }
+
+    // SEAMLESS: blend the swapped face into the original crop band by band. Pasted with
+    // the SAME mask, so holes for hands and food stay exactly as they were; what changes is
+    // that near the edge the face already carries the original's shading, so the edge
+    // leaves no outline.
+    if (cfg.seamless && modelMasks) {
+      t0 = nowMs();
+      ffmotion::seamlessBlend(crop, outCrop, *useMask, 5);
       msGeom += nowMs() - t0;
     }
 

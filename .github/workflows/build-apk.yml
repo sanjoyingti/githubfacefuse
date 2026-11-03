@@ -63,8 +63,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="v0.9.41-motion-${GITHUB_RUN_NUMBER}"
-          apk="FaceFusion-0.9.41-motion.apk"
+          tag="v1.0.${GITHUB_RUN_NUMBER}"
+          apk="FaceFusion-1.0.${GITHUB_RUN_NUMBER}.apk"
           cp app/build/outputs/apk/debug/*.apk "$apk"
           cat > notes.md <<'NOTES'
           FaceFusion Mobile 0.9.41 with the occlusion mask (food, hands and cups in front of the face stay as filmed), "keep original mouth inside", fading the swap out on big head turns, motion smoothing for video/Live and rotated-face detection. The switches are under the gear on the face_swapper chip.
@@ -74,6 +74,14 @@ jobs:
           On first launch the app downloads its face models (Settings -> Models).
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
+
+          Version 1.0.40: every build now has its own version (Settings > About, the top bar, and the APK's name), and installs as an update of the last.
+          - Recommended settings are applied once on the first start: face parser with hair-aware and seamless edges, more detail on close-ups, occlusion mask, real mouth inside, skin tone, expression restorer 80, enhancer 50, head-turn fade, motion smoothing, Smart speed, Faster masks, Fast video 2, 30 fps, 4K at 1080p. Your own changes afterwards are kept.
+          - Hair-aware edges: hair and hats always stay as filmed, and the swap edge follows the picture's own edges, so hair across the face no longer turns into dark streaks.
+          - Seamless edges: the face edge blends into the video's own skin, no outline.
+          - More detail on close-ups: a face shown big is swapped at 1024 px instead of stretched.
+          - Smooth over time: skin tone and the swap edge do not flicker between frames.
+          Checked before release: the native code under a memory-error checker (4K close-up, 8 faces, all options on: no errors), and the Swap screen, Faces tab and the new switches rendered in tests.
 
           Build 39 adds a FACES tab (bottom bar, between Swap and Live): every source face with its 3 photo slots. Tap an empty slot or "Add photo" to add another photo of the same person, the X to remove one, "Use" to pick the face the swap uses, "Add a new person" for another face. Assign faces to the people in a video on the Swap tab as before.
 
@@ -159,5 +167,5 @@ jobs:
           cp /tmp/sz/sanjoyingti.zip sanjoyingti.zip
           gh release create "$tag" "$apk" sanjoyingti.zip \
             --target "$GITHUB_SHA" \
-            --title "FaceFusion Mobile 0.9.41 + occlusion & motion (build ${GITHUB_RUN_NUMBER})" \
+            --title "FaceFusion Mobile 1.0.${GITHUB_RUN_NUMBER}" \
             --notes-file notes.md

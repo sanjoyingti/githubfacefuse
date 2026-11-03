@@ -77,6 +77,20 @@ struct Config {
   // changed, and run the expression restorer only around blinks / closed eyes. Previews
   // and photos always compute everything.
   bool smartSpeed = true;
+  // AUTO PIXEL BOOST: a face shown larger than its swap crop (a close-up) is swapped at
+  // 1024 x 1024 (4 x 4 tiles) instead of being stretched up from 512; other faces keep
+  // pixelBoost. More time on close-ups only, same memory order.
+  bool autoBoost = true;
+  // SEAMLESS edges: multi-band blend of the swapped face into the original crop before the
+  // paste, so the mask edge leaves no outline in the shading.
+  bool seamless = true;
+  // HAIR-AWARE masks: the face parser's hair and hat stay original whatever else is chosen,
+  // and the mask edge snaps to the picture's own edges (guided filter) instead of a blur
+  // across hair strands -- no dark half-swapped streaks where hair crosses the face.
+  bool hairAware = true;
+  // Video: smooth the skin-tone transfer and the mask edge from frame to frame (less
+  // flicker). Needs Smart speed's per-face tracking; previews and photos are unaffected.
+  bool temporalSmooth = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;

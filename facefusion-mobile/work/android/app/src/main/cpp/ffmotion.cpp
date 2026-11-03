@@ -181,6 +181,11 @@ void labToBgr(const float* lab, float* bgr) {
 
 void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF& mask,
                 float strength) {
+  matchColor(target, swapped, mask, strength, nullptr);
+}
+
+void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF& mask,
+                float strength, ColorState* state) {
   if (strength <= 0.f) return;
   if (strength > 1.f) strength = 1.f;
   const int W = swapped.w, H = swapped.h;
@@ -215,6 +220,19 @@ void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF
     const double vs = std::max(0.0, qs[c] / cnt - (double)ms[c] * ms[c]);
     float r = vs > 1e-6 ? (float)std::sqrt(vt / vs) : 1.f;
     ratio[c] = r < 0.6f ? 0.6f : (r > 1.6f ? 1.6f : r);
+  }
+  if (state) {
+    if (!state->init) {
+      for (int c = 0; c < 3; ++c) { state->mt[c] = mt[c]; state->ratio[c] = ratio[c]; }
+      state->init = true;
+    } else {
+      constexpr float a = 0.35f;
+      for (int c = 0; c < 3; ++c) {
+        state->mt[c] += a * (mt[c] - state->mt[c]);
+        state->ratio[c] += a * (ratio[c] - state->ratio[c]);
+        mt[c] = state->mt[c]; ratio[c] = state->ratio[c];
+      }
+    }
   }
   for (int y = 0; y < H; ++y) {
     float* sr = swapped.row(y);
@@ -322,6 +340,166 @@ ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h) {
     }
   }
   return dst;
+}
+
+
+
+namespace {
+// Box sum over a (2r+1)^2 window via an integral image; borders clamp the window.
+void boxMean(const std::vector<float>& in, int W, int H, int r, std::vector<float>& out) {
+  std::vector<double> I((size_t)(W + 1) * (H + 1), 0.0);
+  for (int y = 0; y < H; ++y) {
+    double row = 0;
+    for (int x = 0; x < W; ++x) {
+      row += in[(size_t)y * W + x];
+      I[(size_t)(y + 1) * (W + 1) + x + 1] = I[(size_t)y * (W + 1) + x + 1] + row;
+    }
+  }
+  out.resize((size_t)W * H);
+  for (int y = 0; y < H; ++y) {
+    const int y0 = std::max(0, y - r), y1 = std::min(H, y + r + 1);
+    for (int x = 0; x < W; ++x) {
+      const int x0 = std::max(0, x - r), x1 = std::min(W, x + r + 1);
+      const double s = I[(size_t)y1 * (W + 1) + x1] - I[(size_t)y0 * (W + 1) + x1] -
+                       I[(size_t)y1 * (W + 1) + x0] + I[(size_t)y0 * (W + 1) + x0];
+      out[(size_t)y * W + x] = (float)(s / ((double)(x1 - x0) * (y1 - y0)));
+    }
+  }
+}
+
+// 5-tap binomial blur then drop every other row/column.
+std::vector<float> pyrDown(const std::vector<float>& in, int W, int H, int C) {
+  const float k[5] = {1 / 16.f, 4 / 16.f, 6 / 16.f, 4 / 16.f, 1 / 16.f};
+  std::vector<float> tmp((size_t)W * H * C);
+  for (int y = 0; y < H; ++y)
+    for (int x = 0; x < W; ++x)
+      for (int c = 0; c < C; ++c) {
+        float s = 0;
+        for (int t = -2; t <= 2; ++t) {
+          const int xx = std::min(W - 1, std::max(0, x + t));
+          s += k[t + 2] * in[((size_t)y * W + xx) * C + c];
+        }
+        tmp[((size_t)y * W + x) * C + c] = s;
+      }
+  const int w2 = W / 2, h2 = H / 2;
+  std::vector<float> out((size_t)w2 * h2 * C);
+  for (int y = 0; y < h2; ++y)
+    for (int x = 0; x < w2; ++x)
+      for (int c = 0; c < C; ++c) {
+        float s = 0;
+        for (int t = -2; t <= 2; ++t) {
+          const int yy = std::min(H - 1, std::max(0, 2 * y + t));
+          s += k[t + 2] * tmp[((size_t)yy * W + 2 * x) * C + c];
+        }
+        out[((size_t)y * w2 + x) * C + c] = s;
+      }
+  return out;
+}
+
+// Bilinear 2x upsample to exactly W x H.
+std::vector<float> pyrUp(const std::vector<float>& in, int w, int h, int W, int H, int C) {
+  std::vector<float> out((size_t)W * H * C);
+  for (int y = 0; y < H; ++y) {
+    float fy = (y + 0.5f) * 0.5f - 0.5f;
+    fy = std::max(0.f, std::min(fy, (float)(h - 1)));
+    const int y0 = (int)fy, y1 = std::min(y0 + 1, h - 1);
+    const float wy = fy - y0;
+    for (int x = 0; x < W; ++x) {
+      float fx = (x + 0.5f) * 0.5f - 0.5f;
+      fx = std::max(0.f, std::min(fx, (float)(w - 1)));
+      const int x0 = (int)fx, x1 = std::min(x0 + 1, w - 1);
+      const float wx = fx - x0;
+      for (int c = 0; c < C; ++c) {
+        const float a = in[((size_t)y0 * w + x0) * C + c], b = in[((size_t)y0 * w + x1) * C + c];
+        const float d = in[((size_t)y1 * w + x0) * C + c], e = in[((size_t)y1 * w + x1) * C + c];
+        out[((size_t)y * W + x) * C + c] =
+            (a * (1 - wx) + b * wx) * (1 - wy) + (d * (1 - wx) + e * wx) * wy;
+      }
+    }
+  }
+  return out;
+}
+}  // namespace
+
+void refineMaskEdges(const ffcv::Image& guide, ffcv::MatF& mask, int radius, float eps) {
+  const int W = mask.w, H = mask.h;
+  if (guide.w != W || guide.h != H || radius < 1) return;
+  const size_t n = (size_t)W * H;
+  std::vector<float> I(n), p(mask.data.begin(), mask.data.end()), Ip(n), II(n);
+  for (int y = 0; y < H; ++y) {
+    const uint8_t* g = guide.row(y);
+    for (int x = 0; x < W; ++x) {
+      const size_t i = (size_t)y * W + x;
+      I[i] = (0.114f * g[x * 3] + 0.587f * g[x * 3 + 1] + 0.299f * g[x * 3 + 2]) / 255.f;
+      Ip[i] = I[i] * p[i];
+      II[i] = I[i] * I[i];
+    }
+  }
+  std::vector<float> mI, mp, mIp, mII;
+  boxMean(I, W, H, radius, mI);
+  boxMean(p, W, H, radius, mp);
+  boxMean(Ip, W, H, radius, mIp);
+  boxMean(II, W, H, radius, mII);
+  std::vector<float> a(n), b(n);
+  for (size_t i = 0; i < n; ++i) {
+    const float cov = mIp[i] - mI[i] * mp[i];
+    const float var = mII[i] - mI[i] * mI[i];
+    a[i] = cov / (var + eps);
+    b[i] = mp[i] - a[i] * mI[i];
+  }
+  std::vector<float> ma, mb;
+  boxMean(a, W, H, radius, ma);
+  boxMean(b, W, H, radius, mb);
+  for (size_t i = 0; i < n; ++i) {
+    float q = ma[i] * I[i] + mb[i];
+    q = q < 0.f ? 0.f : (q > 1.f ? 1.f : q);
+    if (!std::isfinite(q)) q = p[i];
+    // Only ever shrink: hair, hands and food stay original.
+    if (q < mask.data[i]) mask.data[i] = q;
+  }
+}
+
+void seamlessBlend(const ffcv::Image& bg, ffcv::MatF& fg, const ffcv::MatF& mask, int levels) {
+  const int W = fg.w, H = fg.h;
+  if (bg.w != W || bg.h != H || mask.w != W || mask.h != H || fg.c != 3 || levels < 2) return;
+  if ((W % (1 << (levels - 1))) != 0 || (H % (1 << (levels - 1))) != 0) return;
+  std::vector<float> A(fg.data.begin(), fg.data.end()), B((size_t)W * H * 3),
+      M(mask.data.begin(), mask.data.end());
+  for (int y = 0; y < H; ++y) {
+    const uint8_t* r = bg.row(y);
+    for (int x = 0; x < W * 3; ++x) B[(size_t)y * W * 3 + x] = r[x];
+  }
+  // Gaussian pyramids.
+  std::vector<std::vector<float>> GA{A}, GB{B}, GM{M};
+  std::vector<int> ws{W}, hs{H};
+  for (int l = 1; l < levels; ++l) {
+    GA.push_back(pyrDown(GA.back(), ws.back(), hs.back(), 3));
+    GB.push_back(pyrDown(GB.back(), ws.back(), hs.back(), 3));
+    GM.push_back(pyrDown(GM.back(), ws.back(), hs.back(), 1));
+    ws.push_back(ws.back() / 2); hs.push_back(hs.back() / 2);
+  }
+  // Blend from the coarsest level up: R = up(R) + mask*(LA) + (1-mask)*(LB).
+  const int L = levels - 1;
+  std::vector<float> R((size_t)ws[L] * hs[L] * 3);
+  for (size_t i = 0; i < R.size(); ++i) {
+    const float m = GM[L][i / 3];
+    R[i] = GA[L][i] * m + GB[L][i] * (1.f - m);
+  }
+  for (int l = L - 1; l >= 0; --l) {
+    std::vector<float> upR = pyrUp(R, ws[l + 1], hs[l + 1], ws[l], hs[l], 3);
+    std::vector<float> upA = pyrUp(GA[l + 1], ws[l + 1], hs[l + 1], ws[l], hs[l], 3);
+    std::vector<float> upB = pyrUp(GB[l + 1], ws[l + 1], hs[l + 1], ws[l], hs[l], 3);
+    R.assign(upR.size(), 0.f);
+    for (size_t i = 0; i < R.size(); ++i) {
+      const float m = GM[l][i / 3];
+      const float la = GA[l][i] - upA[i], lb = GB[l][i] - upB[i];
+      R[i] = upR[i] + m * la + (1.f - m) * lb;
+    }
+  }
+  for (size_t i = 0; i < R.size(); ++i) {
+    const float v = R[i];
+    fg.data[i] = v < 0.f ? 0.f : (v > 255.f ? 255.f : v);
+  }
 }
 
 }  // namespace ffmotion

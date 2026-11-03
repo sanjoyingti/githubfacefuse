@@ -341,6 +341,18 @@ fun RealismCard(
         OptionSwitch(stringResource(R.string.opt_smart_speed), opts.smartSpeed,
                      { onChange(opts.copy(smartSpeed = it)) },
                      hint = stringResource(R.string.opt_smart_speed_hint))
+        OptionSwitch(stringResource(R.string.opt_hair_aware), opts.hairAware,
+                     { onChange(opts.copy(hairAware = it)) },
+                     hint = stringResource(R.string.opt_hair_aware_hint))
+        OptionSwitch(stringResource(R.string.opt_seamless), opts.seamless,
+                     { onChange(opts.copy(seamless = it)) },
+                     hint = stringResource(R.string.opt_seamless_hint))
+        OptionSwitch(stringResource(R.string.opt_auto_boost), opts.autoBoost,
+                     { onChange(opts.copy(autoBoost = it)) },
+                     hint = stringResource(R.string.opt_auto_boost_hint))
+        OptionSwitch(stringResource(R.string.opt_temporal), opts.temporalSmooth,
+                     { onChange(opts.copy(temporalSmooth = it)) },
+                     hint = stringResource(R.string.opt_temporal_hint))
 
         OptionSwitch(stringResource(R.string.opt_color_match), opts.colorMatch,
                      { onChange(opts.copy(colorMatch = it)) },

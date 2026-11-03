@@ -54,6 +54,17 @@
     <string name="opt_detect_rotated">Find rotated faces</string>
     <string name="opt_detect_rotated_hint">Also looks for heads turned sideways or upside down (90°, 180°, 270°). Slower on frames without a face.</string>
 
+    <!-- Build 40: edges and close-ups -->
+    <string name="opt_hair_aware">Hair-aware edges</string>
+    <string name="opt_hair_aware_hint">Hair (and hats) always stay as filmed, and the edge of the swap follows the real edges in the picture, so strands across the face never turn into dark streaks. Uses the face parser.</string>
+    <string name="opt_seamless">Seamless edges</string>
+    <string name="opt_seamless_hint">Blends the swapped face into the video\'s own skin at the edge, so there is no outline at the forehead, cheeks or jaw.</string>
+    <string name="opt_auto_boost">More detail on close-ups</string>
+    <string name="opt_auto_boost_hint">A face shown big in the frame is swapped at 1024 pixels instead of being stretched, so its edges stay clean. Takes longer on close-ups only.</string>
+    <string name="opt_temporal">Smooth over time</string>
+    <string name="opt_temporal_hint">Videos: the skin tone and the edge of the swap change gently from frame to frame instead of flickering.</string>
+    <string name="status_recommended_applied">Recommended settings are on: face parser with hair-aware and seamless edges, close-up detail, occlusion mask, real mouth inside, skin tone, expression restorer 80, enhancer 50, smoothing, 30 fps and 1080p for 4K. Change anything in the gear on face_swapper.</string>
+
     <!-- The Faces tab -->
     <string name="nav_faces">Faces</string>
     <string name="faces_tab_title">Faces and their photos</string>

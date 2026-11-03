@@ -147,6 +147,7 @@ struct Quality {
   bool smartSpeed = true;
   float poseFadeStart = 60.f;
   bool smooth = true, recover = true, rotated = false;
+  bool autoBoost = true, seamless = true, hairAware = true, temporalSmooth = true;
 };
 Quality g_quality;
 // Whether the caller is feeding consecutive frames (setSequence). Re-applied at initEx so a
@@ -165,6 +166,10 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.expressionRestoreFactor = g_quality.expressionFactor;
   cfg.parallelMasks = g_quality.parallelMasks;
   cfg.smartSpeed = g_quality.smartSpeed;
+  cfg.autoBoost = g_quality.autoBoost;
+  cfg.seamless = g_quality.seamless;
+  cfg.hairAware = g_quality.hairAware;
+  cfg.temporalSmooth = g_quality.temporalSmooth;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -354,6 +359,24 @@ Java_com_facefusion_mobile_NativePipe_setTrackPeriod(JNIEnv*, jclass, jint frame
 }
 
 // ---- Motion / occlusion quality ---------------------------------------------
+
+// The edge and close-up options (build 40), beside setQuality so its long signature does not
+// grow. Applied to the loaded pipeline at once, and re-applied by every init.
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setQuality2(JNIEnv*, jclass, jboolean autoBoost,
+                                                  jboolean seamless, jboolean hairAware,
+                                                  jboolean temporalSmooth) {
+  FF_PIPE_LOCK;
+  g_quality.autoBoost = autoBoost == JNI_TRUE;
+  g_quality.seamless = seamless == JNI_TRUE;
+  g_quality.hairAware = hairAware == JNI_TRUE;
+  g_quality.temporalSmooth = temporalSmooth == JNI_TRUE;
+  if (g_pipe) {
+    ffpipe::Config c = g_pipe->config();
+    applyQuality(c);
+    g_pipe->updateConfig(c);
+  }
+}
 
 JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setQuality(JNIEnv*, jclass, jboolean occlusion,

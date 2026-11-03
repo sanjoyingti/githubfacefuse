@@ -1721,6 +1721,18 @@ class MainActivity : ComponentActivity() {
             if (it.swapper == "inswapper") it.copy(swapper = "hyperswap") else it
         }
         ApiService.restore(this)
+        // RECOMMENDED SETTINGS, applied ONCE on the first start of build 40 and later, as
+        // asked: everything discussed is on without tuning. Said in the status line; after
+        // this the person's own changes are kept as always.
+        run {
+            val rp = getSharedPreferences("ff_recommended", MODE_PRIVATE)
+            if (!rp.getBoolean("applied_v40", false)) {
+                opts = opts.realisticPreset()
+                opts.save(this)
+                rp.edit().putBoolean("applied_v40", true).apply()
+                status = getString(R.string.status_recommended_applied)
+            }
+        }
         if (crashedLastTime) enterSafeMode()
         restoreFinishedOutput()
         offerResume()

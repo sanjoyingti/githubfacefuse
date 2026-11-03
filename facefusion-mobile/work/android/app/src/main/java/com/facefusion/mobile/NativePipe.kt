@@ -115,7 +115,12 @@ object NativePipe {
                    if (opts.colorMatch) opts.colorMatchStrength else 0f,
                    opts.expressionRestore, opts.expressionFactor, opts.parallelMasks,
                    opts.smartSpeed)
+        setQuality2(opts.autoBoost, opts.seamless, opts.hairAware, opts.temporalSmooth)
     }
+
+    /** Close-up boost, seamless edges, hair-aware masks, smoothing over time (build 40). */
+    @JvmStatic external fun setQuality2(autoBoost: Boolean, seamless: Boolean,
+                                        hairAware: Boolean, temporalSmooth: Boolean)
 
     /**
      * True while the caller feeds CONSECUTIVE frames of one clip (a video run, the Live

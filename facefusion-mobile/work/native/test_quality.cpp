@@ -156,7 +156,12 @@ int main(int argc, char** argv) {
     else if (a == "--sequence") sequence = v() == "1";
     else if (a == "--rotated") cfg.detectRotated = v() == "1";
     else if (a == "--track") track = atoi(v().c_str());
-    else if (a == "--extra") extras.push_back(v());   // another photo of the source person
+    else if (a == "--extra") extras.push_back(v());
+    else if (a == "--boost") cfg.pixelBoost = atoi(v().c_str());
+    else if (a == "--autoboost") cfg.autoBoost = v() == "1";
+    else if (a == "--seamless") cfg.seamless = v() == "1";
+    else if (a == "--hair") cfg.hairAware = v() == "1";
+    else if (a == "--tsmooth") cfg.temporalSmooth = v() == "1";   // another photo of the source person
     else frames.push_back(a);
   }
   setenv("FFBACKEND", "ncnn", 1);

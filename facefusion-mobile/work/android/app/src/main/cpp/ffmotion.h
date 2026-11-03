@@ -64,6 +64,31 @@ float iou(const float* a, const float* b);
 void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF& mask,
                 float strength);
 
+// The same transfer with its statistics smoothed over a video: [state] carries the last
+// frame's target mean and spread ratio per Lab channel, and each frame moves 35% of the way
+// to its own measurement. The face's colour then follows real lighting changes but not the
+// frame-to-frame jitter of the mask edge, which read as flicker.
+struct ColorState {
+  bool init = false;
+  float mt[3] = {}, ratio[3] = {1.f, 1.f, 1.f};
+};
+void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF& mask,
+                float strength, ColorState* state);
+
+// EDGE-AWARE mask refinement (a guided filter, He et al. 2010, guide = the target crop's
+// brightness): the soft mask edge snaps to the real edges in the picture -- hair strands,
+// the jaw line, a finger -- instead of a uniform blur across them. The result is only ever
+// allowed to SHRINK the mask (min with the input), so hair and objects stay original and
+// the swap can never leak onto them. radius in crop pixels.
+void refineMaskEdges(const ffcv::Image& guide, ffcv::MatF& mask, int radius, float eps);
+
+// SEAMLESS blend (multi-band / Laplacian pyramid, Burt & Adelson): [fg] (the swapped crop,
+// BGR floats 0..255) takes [bg]'s (the original crop's) low frequencies outside the mask
+// and its own inside, each frequency band blended over a width proportional to it. The
+// edge between the two disappears in the large-scale shading while fine detail stays
+// sharp. Writes the result into [fg]. W, H must be divisible by 2^(levels-1).
+void seamlessBlend(const ffcv::Image& bg, ffcv::MatF& fg, const ffcv::MatF& mask, int levels);
+
 // Re-map a mask made for one crop of the frame into another crop of the same frame.
 // `fromAffine` and `toAffine` are the frame->crop affines of the two crops; pixels of the
 // new crop that fall outside the old one get 0.
