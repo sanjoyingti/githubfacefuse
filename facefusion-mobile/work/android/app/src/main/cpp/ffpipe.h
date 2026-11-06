@@ -104,6 +104,9 @@ struct Config {
   // TOUCHING FACES: where two faces overlap, each face's swap stops at the other face
   // instead of spilling onto it. Only when faces overlap.
   bool overlapGuard = true;
+  // SECOND LOOK: a video frame with no face found is searched again in overlapping zoomed
+  // tiles, so small or distant faces are not left as filmed.
+  bool secondLook = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;

@@ -440,6 +440,16 @@ class VideoSwapper(
         }
 
         var swapped = 0
+        // Frames in which no face was found (they pass through unchanged), and where.
+        var noFaceFrames = 0
+        var noFaceRunStartUs = -1L
+        val noFaceRuns = ArrayList<String>()
+        fun closeNoFaceRun(endUs: Long) {
+            if (noFaceRunStartUs >= 0 && noFaceRuns.size < 12)
+                noFaceRuns += "%.1f-%.1fs".format((noFaceRunStartUs - trimStartUs) / 1e6,
+                                                  (endUs - trimStartUs) / 1e6)
+            noFaceRunStartUs = -1L
+        }
         // Zero the native counters so the line below is THIS run, not this run plus
         // every earlier one -- they accumulate for the life of the pipeline.
         NativePipe.resetStats()
@@ -629,6 +639,10 @@ class VideoSwapper(
                 val faces = NativePipe.processFrameAt(f.bgr, outW, outH,
                                                       if (syncing) swapped else -1)
                 if (faces < 0) error("native: ${NativePipe.lastError()}")
+                if (faces == 0) {
+                    noFaceFrames++
+                    if (noFaceRunStartUs < 0) noFaceRunStartUs = f.ptsUs
+                } else closeNoFaceRun(f.ptsUs)
                 onFrame(f.bgr, outW, outH)
                 while (!encodeQ.offer(f, 50, java.util.concurrent.TimeUnit.MILLISECONDS)) {
                     encodeError.get()?.let { throw it }
@@ -736,6 +750,10 @@ class VideoSwapper(
             onLog("%.1f fps  (%.1f ms/frame, %d frames in %.1fs)"
                 .format(swapped * 1000.0 / elapsedMs, elapsedMs.toDouble() / swapped,
                         swapped, elapsedMs / 1000.0))
+        closeNoFaceRun(lastFramePtsUs)
+        if (noFaceFrames > 0)
+            onLog("no face found in $noFaceFrames of $swapped frames (left as filmed): " +
+                  noFaceRuns.joinToString(", "))
         NativePipe.stageMillis().takeIf { it.isNotEmpty() }?.let(onLog)
         outputPath
     }

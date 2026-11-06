@@ -75,6 +75,11 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.44 (scenes where the swap did not happen):
+          - Second look: a video frame in which no face is found is searched again in overlapping zoomed tiles, so small or distant faces are swapped instead of left as filmed. Frames with a face pay nothing; a stretch with no face is re-checked only every 3rd frame (every 8th after a second).
+          - Upside-down or sideways heads: on such a frame, if a face was seen in the last half second, rotated faces are tried too, even with "detect rotated faces" off. Your settings are unchanged.
+          - The run log now says "no face found in N of M frames (left as filmed): times", so any scene that still stays unswapped can be pinpointed.
+
           Version 1.0.43:
           - sanjoyingti.zip now compiles with newer Kotlin versions too (a `when` at the end of a lambda had no else branch, which a stricter compiler rejects; an AI agent then edited the source and removed the extra-photos controls). The app itself is unchanged by this.
           - The motion-blur match is now several times faster (3.8 ms instead of 88 ms on a 512 px face crop), so fast head moves cost almost nothing.

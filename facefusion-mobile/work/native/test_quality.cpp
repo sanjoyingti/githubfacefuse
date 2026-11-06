@@ -163,7 +163,8 @@ int main(int argc, char** argv) {
     else if (a == "--hair") cfg.hairAware = v() == "1";
     else if (a == "--tsmooth") cfg.temporalSmooth = v() == "1";
     else if (a == "--blurmatch") cfg.motionBlurMatch = v() == "1";
-    else if (a == "--overlap") cfg.overlapGuard = v() == "1";   // another photo of the source person
+    else if (a == "--overlap") cfg.overlapGuard = v() == "1";
+    else if (a == "--second") cfg.secondLook = v() == "1";   // another photo of the source person
     else frames.push_back(a);
   }
   setenv("FFBACKEND", "ncnn", 1);

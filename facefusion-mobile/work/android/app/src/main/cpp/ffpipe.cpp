@@ -288,6 +288,9 @@ struct Pipeline::Impl {
   void rememberAssignment(const float* embeddingNorm, int sourceIndex, bool keepOriginal);
 
   // ---- temporal state for Pipeline::setSequence
+  // Consecutive analysed frames in which no face was found (second look throttle).
+  int noFaceStreak = 0;
+
   struct SeqFace {
     float box[4] = {};
     ffmotion::OneEuro5 filt;
@@ -1000,18 +1003,25 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   // --face-detector-angles: upright first; the rotated passes only run when it found
   // nothing, so a frame with a face never pays for them.
   static const int kAngles[4] = {0, 90, 270, 180};
-  const int nAngles = cfg.detectRotated ? 4 : 1;
+  // HARDER LOOK on a frame that has none: the second look (tiles) and, when a face was seen
+  // in the last half second, the rotated passes too even with "detect rotated faces" off --
+  // a head thrown upside down mid-dance is exactly the face that vanishes. Throttled: on
+  // a run of face-less frames it repeats every 3rd frame, every 8th after one second.
+  const int streak = p_->noFaceStreak;
+  const int lookPeriod = streak < 30 ? 3 : 8;
+  const bool videoLook = cfg.secondLook && p_->seq.on && !noTrack && !boxesOnly;
+  const bool harder = videoLook && (streak % lookPeriod) == 0;
+  const bool autoRot = !cfg.detectRotated && harder && streak <= 15;
+  const int nAngles = (cfg.detectRotated || autoRot) ? 4 : 1;
   const bool recover = cfg.lowScoreRecovery && p_->seq.on && !noTrack && !boxesOnly &&
                        !p_->seq.faces.empty();
   const float detThr = recover ? std::min(cfg.detectorScore,
                                           std::max(0.2f, cfg.detectorScore - 0.25f))
                                : cfg.detectorScore;
-  for (int ai = 0; ai < nAngles; ++ai) {
-  const int angle = kAngles[ai];
-  ffcv::Image rotated;
-  if (angle != 0) rotated = ffmotion::rotateImage(frame, angle);
-  const ffcv::Image& dimg = angle != 0 ? rotated : frame;
-  boxes.clear(); scores.clear(); lms.clear(); keep.clear();
+  // One detector pass over `dimg` (the frame, a rotated copy of it, or a tile of it at
+  // offset ox, oy): appends the faces it finds, in whole-frame coordinates, to
+  // boxes/scores/lms and recomputes `keep` over everything collected so far.
+  auto passOn = [&](const ffcv::Image& dimg, int angle, float ox, float oy) -> bool {
 
   t0 = nowMs();
   // restrict_frame + zero-pad to SxS  (vision.py:222, face_detector.py:445)
@@ -1035,7 +1045,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   std::vector<std::vector<float>> out;
   if (!ffnn::execute(p_->n.det, {"input"}, {in.data()}, out)) {
     err_ = std::string("detector: ") + ffnn::lastError();
-    return faces;
+    return false;
   }
   msDetect += nowMs() - t0;
 
@@ -1114,6 +1124,11 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
         l[2 * k] = px; l[2 * k + 1] = py;
       }
     }
+    // A tile of the frame (second look): back to whole-frame coordinates.
+    if (ox != 0.f || oy != 0.f) {
+      bb[0] += ox; bb[2] += ox; bb[1] += oy; bb[3] += oy;
+      for (int k = 0; k < 5; ++k) { l[2 * k] += ox; l[2 * k + 1] += oy; }
+    }
     // LOW-SCORE RECOVERY: under the user's threshold only when it overlaps a face the
     // sequence saw in the last few frames -- motion blur, not a new false positive.
     if (sc <= cfg.detectorScore) {
@@ -1128,9 +1143,47 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   }
   keep = ffcv::nmsBoxes(boxes, scores, detThr, cfg.nmsThreshold);
   msGeom += nowMs() - t0;
+  return true;
+  };
+  for (int ai = 0; ai < nAngles; ++ai) {
+  const int angle = kAngles[ai];
+  ffcv::Image rotated;
+  if (angle != 0) rotated = ffmotion::rotateImage(frame, angle);
+  const ffcv::Image& dimg = angle != 0 ? rotated : frame;
+  boxes.clear(); scores.clear(); lms.clear(); keep.clear();
+  if (!passOn(dimg, angle, 0.f, 0.f)) return faces;
   if (!keep.empty()) break;
   }  // angles
+  // SECOND LOOK (video only): the whole frame is squeezed into the detector's 640 px, so a
+  // small or distant face can fall below what it sees and the frame then goes out as
+  // filmed. A frame with NO face is looked at again in overlapping tiles of ~3/4 of the
+  // short side -- up to 2.4x the detail -- and only then, so frames with faces pay nothing.
+  // On a run of face-less frames it repeats every third frame, so a scene with no one in
+  // it costs a third of the extra passes.
+  if (keep.empty() && harder && std::max(frame.w, frame.h) > S) {
+    {
+      const int W = frame.w, H = frame.h;
+      int L = std::max(S, (int)(0.75f * std::min(W, H)));
+      L = std::min(L, std::min(W, H));
+      const int stride = std::max(1, (int)(0.7f * L));
+      const int nx = W <= L ? 1 : (W - L + stride - 1) / stride + 1;
+      const int ny = H <= L ? 1 : (H - L + stride - 1) / stride + 1;
+      boxes.clear(); scores.clear(); lms.clear(); keep.clear();
+      for (int ty = 0; ty < ny && true; ++ty)
+        for (int tx = 0; tx < nx; ++tx) {
+          const int x0 = nx == 1 ? 0 : (int)((long long)(W - L) * tx / (nx - 1));
+          const int y0 = ny == 1 ? 0 : (int)((long long)(H - L) * ty / (ny - 1));
+          ffcv::Image tile(L, L, 3);
+          for (int y = 0; y < L; ++y)
+            std::memcpy(tile.row(y), frame.row(y0 + y) + (size_t)x0 * 3, (size_t)L * 3);
+          if (!passOn(tile, 0, (float)x0, (float)y0)) return faces;
+        }
+    }
+  }
   }  // end of the real-detection path
+  if (!noTrack && !boxesOnly) {
+    if (keep.empty()) ++p_->noFaceStreak; else p_->noFaceStreak = 0;
+  }
 
   // LOST-FACE RECOVERY (video): a face seen a moment ago that the detector missed on this
   // frame -- a head flip blurs and tilts it past the detector -- is looked for again where
