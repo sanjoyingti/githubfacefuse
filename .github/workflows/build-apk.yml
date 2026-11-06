@@ -75,6 +75,11 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.48 (the zip):
+          - sanjoyingti.zip now carries AGENTS.md and .github/copilot-instructions.md: instructions that AI coding agents (Copilot, Claude, Cursor) read, telling them never to edit the source to make a build pass, how to build, and to report the exact error instead. BUILDING.md lists what is inside and what the first build downloads (the Qualcomm runtime, about 2.4 GB, needs internet).
+          - Checked from scratch: the zip was extracted into a new folder and built with ./gradlew :app:assembleDebug (native code included): a complete APK, version 1.0.47 at the time, with the photo controls, the NPU masks and the Qualcomm runtime inside. Also compiles with Kotlin 2.2.20.
+          - The app is unchanged from 1.0.47.
+
           Version 1.0.47 (upside-down faces, winks):
           - Upside-down or sideways faces: the normal face finder also "finds" such a head, but with its points in the wrong order, so the swap was distorted or faded out, and the search for rotated faces never ran. A face like that now triggers the rotated search (even with "detect rotated faces" off) and is replaced by the properly oriented one. Tested: a 180-degree and a 90-degree turned copy of a frame now swap exactly like the upright one. Frames without such a face cost nothing extra.
           - Winks: the expression restorer now also runs when one eye is clearly more closed than the other (before: only when an eye was almost shut), so the swapped face follows a wink instead of keeping two open eyes. It needs the face editor models (Settings > Models).

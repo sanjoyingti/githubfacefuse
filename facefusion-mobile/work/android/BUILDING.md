@@ -66,3 +66,12 @@ wrapper and its pinned Kotlin (2.0.21) instead:
 
 or in Android Studio: Build > Build APK(s). If a build fails, send the exact error text
 instead of letting the agent change files.
+
+## What is in this zip
+
+Everything Android Studio needs is here: the sources, the Gradle wrapper, the bundled
+ncnn libraries (`ncnn/`), the mask models (`app/src/main/assets`), the debug keystore and
+the build scripts. Two things are fetched on the FIRST build, automatically:
+
+* the Qualcomm AI Runtime (about 2.4 GB, into `.qairt-cache/`) - needs internet;
+* Gradle dependencies and, if missing, the Android SDK pieces named in `AGENTS.md`.
