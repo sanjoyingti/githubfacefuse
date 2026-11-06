@@ -75,3 +75,13 @@ the build scripts. Two things are fetched on the FIRST build, automatically:
 
 * the Qualcomm AI Runtime (about 2.4 GB, into `.qairt-cache/`) - needs internet;
 * Gradle dependencies and, if missing, the Android SDK pieces named in `AGENTS.md`.
+
+## When Qualcomm's download is blocked (HTTP 403)
+
+Some cloud IDEs (GitHub Codespaces among them) cannot reach Qualcomm's download. The build
+then falls back by itself: it downloads the published APK of THIS release (named by the
+`BUILD_NUMBER` file) into `.apk-cache/`, takes the arm64 native libraries out of it, and
+compiles only the Kotlin code around them - no C++ compile, no Qualcomm download. The result
+is the same app. `-PapkFallbackUrl=<url>` names a different APK; `-PprebuiltNativeDir=<dir>`
+names the libraries directly. They MUST be from the same release as this source: the build
+refuses libraries that lack any native function the Kotlin code declares.

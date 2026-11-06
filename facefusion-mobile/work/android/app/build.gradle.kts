@@ -196,17 +196,125 @@ val checkMaskModels by tasks.registering {
     }
 }
 
-tasks.named("preBuild") {
-    dependsOn(qnnStage, checkMaskModels)
+
+// ---------------------------------------------------------------------------------------
+// NATIVE LIBRARIES WITHOUT THE QUALCOMM DOWNLOAD
+//
+// Normally the build compiles the C++ and stages Qualcomm's runtime (qnnStage above). Where
+// Qualcomm's download is blocked (HTTP 403 in some cloud IDEs), the build can instead take
+// the native libraries (libffnative.so and the Qualcomm runtime, all arm64-v8a) out of the
+// PUBLISHED APK OF THE SAME RELEASE and compile only the Kotlin/UI code around them:
+//
+//   * automatic: if nothing is staged, QNN_SDK_ROOT is not set, the QAIRT zip is not cached
+//     and Qualcomm's URL does not answer, the build downloads
+//     https://github.com/sanjoyingti/githubfacefuse/releases/download/v1.0.<BUILD_NUMBER>/
+//     FaceFusion-1.0.<BUILD_NUMBER>.apk (the zip's BUILD_NUMBER file names its release);
+//   * manual: -PprebuiltNativeDir=<dir containing arm64-v8a/libffnative.so>;
+//   * -PapkFallbackUrl=<url> names another APK.
+//
+// ⚠ The native libraries MUST be those of this source's release. An older APK lacks the
+// newer native functions and the app crashes when it calls them, so checkPrebuiltNative
+// refuses a library that does not export every `external fun` of NativePipe.kt.
+// ---------------------------------------------------------------------------------------
+val qairtProbeUrl = (findProperty("qairtUrl") as String?) ?: qairtUrl
+
+fun qairtReachable(url: String): Boolean = try {
+    var u = url
+    var hops = 0
+    var ok = false
+    while (hops++ < 6) {
+        val c = URI(u).toURL().openConnection() as HttpURLConnection
+        c.setRequestProperty("Range", "bytes=0-0")
+        c.connectTimeout = 15000; c.readTimeout = 15000
+        val code = c.responseCode
+        val next = c.getHeaderField("Location")
+        c.disconnect()
+        if (code in 300..399 && next != null) { u = next; continue }
+        ok = code == 200 || code == 206
+        break
+    }
+    ok
+} catch (e: Exception) { false }
+
+fun nativeFromReleaseApk(): File? {
+    val n = rootProject.file("BUILD_NUMBER").takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull()
+    val url = (findProperty("apkFallbackUrl") as String?) ?: n?.let {
+        "https://github.com/sanjoyingti/githubfacefuse/releases/download/v1.0.$it/FaceFusion-1.0.$it.apk"
+    } ?: return null
+    val cache = rootProject.file(".apk-cache").apply { mkdirs() }
+    val out = File(cache, "native")
+    if (File(out, "arm64-v8a/libffnative.so").isFile) return out
+    val apk = File(cache, "release.apk")
+    try {
+        if (!apk.isFile) {
+            logger.lifecycle("Qualcomm's download is not reachable; taking the native libraries from the matching release APK:\n  $url")
+            var conn = URI(url).toURL().openConnection() as HttpURLConnection
+            var hops = 0
+            while (conn.responseCode in 300..399 && hops++ < 6) {
+                val next = conn.getHeaderField("Location"); conn.disconnect()
+                conn = URI(next).toURL().openConnection() as HttpURLConnection
+            }
+            if (conn.responseCode != 200) throw GradleException("HTTP ${conn.responseCode}")
+            val part = File(cache, "release.apk.part")
+            conn.inputStream.use { i -> part.outputStream().use { o -> i.copyTo(o, 1 shl 20) } }
+            if (!part.renameTo(apk)) throw GradleException("cannot rename the downloaded APK")
+        }
+        ZipFile(apk).use { z ->
+            for (e in z.entries()) {
+                if (e.isDirectory || !e.name.startsWith("lib/arm64-v8a/")) continue
+                val d = File(out, e.name.removePrefix("lib/"))
+                d.parentFile.mkdirs()
+                z.getInputStream(e).use { i -> d.outputStream().use { o -> i.copyTo(o) } }
+            }
+        }
+        return if (File(out, "arm64-v8a/libffnative.so").isFile) out else null
+    } catch (e: Exception) {
+        logger.warn("Could not get the native libraries from the release APK: ${e.message}")
+        return null
+    }
 }
 
-// Optional matching native binaries for Kotlin/UI-only builds without the Qualcomm SDK.
-// Supply a directory containing arm64-v8a/libffnative.so and its runtime dependencies.
-val prebuiltNativeDir = providers.gradleProperty("prebuiltNativeDir").orNull?.let { file(it) }
+val qnnAlreadyStaged = run {
+    val jni = file("src/main/jniLibs/arm64-v8a")
+    File(file("src/main/cpp/include"), "QNN/QnnBackend.h").isFile &&
+        (listOf("libQnnHtp.so", "libQnnSystem.so") + qnnTiers.map { "libQnnHtpV${it}Stub.so" } +
+            qnnTiers.map { "libQnnHtpV${it}Skel.so" }).all { File(jni, it).isFile }
+}
+val qnnSdkRootOk = System.getenv("QNN_SDK_ROOT")?.let { File(it, "include/QNN/QnnBackend.h").isFile } == true
+val prebuiltNativeDir: File? =
+    providers.gradleProperty("prebuiltNativeDir").orNull?.let { file(it) }
+        ?: if (!qnnAlreadyStaged && !qnnSdkRootOk &&
+               !rootProject.file(".qairt-cache/qairt-$qairtVersion.zip").isFile &&
+               !qairtReachable(qairtProbeUrl)) nativeFromReleaseApk() else null
 if (prebuiltNativeDir != null) {
     require(File(prebuiltNativeDir, "arm64-v8a/libffnative.so").isFile) {
         "prebuiltNativeDir must contain arm64-v8a/libffnative.so"
     }
+    logger.lifecycle("Using prebuilt native libraries from $prebuiltNativeDir (no C++ compile, no Qualcomm download)")
+}
+
+val checkPrebuiltNative by tasks.registering {
+    onlyIf { prebuiltNativeDir != null }
+    doLast {
+        val so = File(prebuiltNativeDir!!, "arm64-v8a/libffnative.so").readBytes()
+            .toString(Charsets.ISO_8859_1)
+        val wanted = Regex("external fun (\\w+)").findAll(
+            file("src/main/java/com/facefusion/mobile/NativePipe.kt").readText()).map { it.groupValues[1] }.toSet()
+        val missing = wanted.filter { !so.contains("Java_com_facefusion_mobile_NativePipe_$it") }
+        if (missing.isNotEmpty())
+            throw GradleException(
+                "The prebuilt native libraries do not belong to this source: libffnative.so lacks " +
+                "${missing.size} of ${wanted.size} native functions (for example ${missing.take(4).joinToString()}). " +
+                "An APK of another release would crash the app. Use the APK of THIS release " +
+                "(BUILD_NUMBER file), or build normally with the Qualcomm download.")
+        logger.lifecycle("Prebuilt native libraries match this source (${wanted.size} native functions).")
+    }
+}
+
+// qnnStage is skipped when the native libraries come prebuilt (they carry the Qualcomm runtime).
+qnnStage.configure { onlyIf { prebuiltNativeDir == null } }
+tasks.named("preBuild") {
+    dependsOn(qnnStage, checkMaskModels, checkPrebuiltNative)
 }
 
 android {
