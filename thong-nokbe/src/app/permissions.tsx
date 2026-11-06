@@ -12,7 +12,7 @@ import { APP_NAME, colors } from '../theme';
 const ITEMS: { key: PermKey; icon: React.ComponentProps<typeof Ionicons>['name']; title: string; why: string }[] = [
   { key: 'notifications', icon: 'notifications', title: 'Notifications', why: 'Calls ring, new messages, fee reminders and app updates.' },
   { key: 'contacts', icon: 'people', title: 'Contacts', why: 'Find gym friends who use the app and add them to groups.' },
-  { key: 'location', icon: 'location', title: 'Location', why: 'Share your live location with your gym groups on the map.' },
+  { key: 'location', icon: 'location', title: 'Location', why: 'Share your live location with your gym groups. Choose “Allow all the time” so they see you even when the app is closed.' },
   { key: 'calls', icon: 'videocam', title: 'Microphone & camera', why: 'Voice and video calls with members.' },
 ];
 

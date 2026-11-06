@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc } from '@react-native-firebase/firestore';
+import { onAuthStateChanged } from '@react-native-firebase/auth';
 import { auth, db } from './firebase';
 import type { LiveLocation } from './types';
 
@@ -56,9 +57,29 @@ async function myGroups(): Promise<string[]> {
   }
 }
 
+/**
+ * The signed-in user. When Android wakes the app in the background (app closed), the login is
+ * restored a moment after the code starts — wait for it instead of dropping the location.
+ */
+function signedInUid(timeoutMs = 10_000): Promise<string | null> {
+  if (auth.currentUser) return Promise.resolve(auth.currentUser.uid);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (uid: string | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(t);
+      unsub();
+      resolve(uid);
+    };
+    const t = setTimeout(() => finish(auth.currentUser?.uid ?? null), timeoutMs);
+    const unsub = onAuthStateChanged(auth, (u) => u && finish(u.uid));
+  });
+}
+
 /** Writes my point to every group I'm in (only while sharing is ON). */
 async function pushPoint(lat: number, lng: number, accuracy?: number, only?: string[]) {
-  const uid = auth.currentUser?.uid;
+  const uid = await signedInUid();
   if (!uid || !(await isSharingOn())) return;
   const name = (await AsyncStorage.getItem(NAME_KEY)) || 'Member';
   const groups = only ?? (await myGroups());
@@ -76,16 +97,23 @@ TaskManager.defineTask(TASK, async ({ data, error }: any) => {
   await pushPoint(last.coords.latitude, last.coords.longitude, last.coords.accuracy);
 });
 
-async function startBackgroundUpdates() {
+/** Can my location be shared while the app is closed? (needs Location = "Allow all the time") */
+export async function hasBackgroundLocation(): Promise<boolean> {
   const bg = await Location.getBackgroundPermissionsAsync().catch(() => ({ granted: false }));
-  if (!bg.granted) return; // "while using the app" only: the app-open updater covers it
+  return !!bg.granted;
+}
+
+async function startBackgroundUpdates() {
+  if (!(await hasBackgroundLocation())) return; // "while using the app" only: the app-open updater covers it
   if (await Location.hasStartedLocationUpdatesAsync(TASK).catch(() => false)) return;
   await Location.startLocationUpdatesAsync(TASK, {
     accuracy: Location.Accuracy.Balanced,
     timeInterval: 30_000,
     distanceInterval: 25,
     showsBackgroundLocationIndicator: true,
+    pausesUpdatesAutomatically: false,
     foregroundService: {
+      killServiceOnDestroy: false, // keep sharing after the app is swiped away
       notificationTitle: 'Thong Nokbe Gym — sharing your live location',
       notificationBody: 'Your gym groups can see where you are. Turn it off in the app any time.',
       notificationColor: '#16A34A',

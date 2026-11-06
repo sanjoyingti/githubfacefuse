@@ -12,6 +12,7 @@ import { Avatar, Empty } from '../../components/ui';
 import { useBottomInset } from '../../components/useBottomInset';
 import { colors } from '../../theme';
 import { CALL_SERVER_URL } from '../../config';
+import { BackgroundLocationTips } from '../../components/BackgroundLocationTips';
 import type { UserProfile } from '../../lib/types';
 
 // react-native-webview's TypeScript types don't match React 19 yet; the component itself works.
@@ -102,6 +103,7 @@ export default function GroupMap() {
           </View>
           <Switch value={sharing} onValueChange={toggle} disabled={busy} trackColor={{ true: colors.primary }} />
         </View>
+        {sharing && <BackgroundLocationTips myName={me.name} />}
 
         <Text style={styles.count}>
           {count ? `📍 ${count} of ${chat.members.length} sharing now` : 'Nobody is sharing right now'} · tap a name to find them

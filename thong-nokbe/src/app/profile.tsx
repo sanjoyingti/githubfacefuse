@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Alert, Linking, ScrollView, Switch, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { setSharing, useSharingOn } from '../lib/liveLocation';
+import { BackgroundLocationTips } from '../components/BackgroundLocationTips';
 import { useAuth, useMe } from '../context/AuthProvider';
 import { useChats } from '../context/ChatsProvider';
 import { Avatar, Button, Card, Input } from '../components/ui';
@@ -86,6 +87,7 @@ export default function Profile() {
           </View>
           <Switch value={sharing} onValueChange={toggleSharing} disabled={sharingBusy} trackColor={{ true: colors.primary }} />
         </View>
+        {sharing && <BackgroundLocationTips myName={me.name} />}
         <Button title="🔐 Permissions" variant="outline" onPress={() => router.push('/permissions')} style={{ marginTop: 12 }} />
       </Card>
       <Card>

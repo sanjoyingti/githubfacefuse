@@ -1,6 +1,7 @@
 import { PermissionsAndroid, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import * as Location from 'expo-location';
+import { startActivityAsync } from 'expo-intent-launcher';
 import { getPermissionsAsync as getContactsPermission, requestPermissionsAsync as requestContactsPermission } from 'expo-contacts';
 
 /** Set once the person has been through the first-launch permissions screen on this phone. */
@@ -40,5 +41,18 @@ export async function requestPermission(key: PermKey): Promise<boolean> {
     return Object.values(res).every((v) => v === PermissionsAndroid.RESULTS.GRANTED);
   } catch {
     return false;
+  }
+}
+
+/**
+ * Android battery saving (Samsung, Xiaomi, Vivo, Oppo…) stops apps in the background, which stops
+ * live location while the app is closed. This opens Android's "allow running in background" box.
+ */
+export async function askIgnoreBatteryOptimization() {
+  if (Platform.OS !== 'android') return;
+  try {
+    await startActivityAsync('android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS', { data: 'package:com.thongnokbe.app' });
+  } catch {
+    await startActivityAsync('android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS').catch(() => {});
   }
 }
