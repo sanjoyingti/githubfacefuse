@@ -138,6 +138,7 @@ int main(int argc, char** argv) {
   int track = 0;
   std::vector<std::string> frames, extras;
   bool detectOnly = false;
+  bool likeness = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto v = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -169,6 +170,7 @@ int main(int argc, char** argv) {
     else if (a == "--detect-only") detectOnly = v() == "1";
     else if (a == "--sidehold") cfg.sideHold = v() == "1";
     else if (a == "--weight") cfg.swapperWeight = (float)atof(v().c_str());
+    else if (a == "--likeness") likeness = v() == "1";
     else if (a == "--eyes") cfg.keepClosedEyes = v() == "1";   // another photo of the source person
     else frames.push_back(a);
   }
@@ -194,6 +196,17 @@ int main(int argc, char** argv) {
     const int r = pipe.addSourcePhoto(0, e);
     printf("extra %s -> %d %s\n", ep.c_str(), r, r < 0 ? pipe.error().c_str() : "");
   }
+  // LIKENESS: the source photo's identity, to score each swapped face against it.
+  std::vector<float> srcId;
+  if (likeness) {
+    auto sf = pipe.analyse(s, false, true);
+    float area = -1;
+    for (const auto& f : sf) {
+      const float a = (f.box[2] - f.box[0]) * (f.box[3] - f.box[1]);
+      if (a > area) { area = a; srcId.assign(f.embeddingNorm, f.embeddingNorm + 512); }
+    }
+  }
+  double likeSum = 0; int likeN = 0;
   int idx = 0;
   for (const std::string& fp : frames) {
     ffcv::Image fr;
@@ -204,6 +217,17 @@ int main(int argc, char** argv) {
     char name[64];
     snprintf(name, sizeof(name), "/out_%03d.ppm", idx++);
     if (!detectOnly) writePpm(out + name, fr);
+    if (likeness && !srcId.empty()) {
+      auto of = pipe.analyse(fr, false, true);
+      printf("like");
+      for (const auto& f : of) {
+        double c = 0;
+        for (int i = 0; i < 512; ++i) c += f.embeddingNorm[i] * srcId[(size_t)i];
+        printf(" %.3f", c);
+        likeSum += c; ++likeN;
+      }
+      printf("\n");
+    }
     printf("frame %d faces %zu", idx - 1, faces.size());
     for (const auto& f : faces) {
       ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
@@ -216,6 +240,7 @@ int main(int argc, char** argv) {
     printf("  mask %.0f ms  swap %.0f ms  occ=%d parse=%d\n", pipe.msGeomMask, pipe.msSwap,
            pipe.hasOcclusionModel(), pipe.hasParserModel());
   }
+  if (likeN) printf("LIKENESS mean %.3f over %d faces\n", likeSum / likeN, likeN);
   printf("%s\n", ffpipe::Pipeline::maskStatus().c_str());
   {
     // Thread count at the end: a leak per frame shows here.
