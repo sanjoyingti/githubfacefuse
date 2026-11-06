@@ -145,6 +145,17 @@ export default function Fees() {
     });
   };
 
+  // Back from paying by QR: a QR payment can't be seen by the app, so ask for the receipt's UTR straight away.
+  const askUtrAfterQr = () =>
+    setTimeout(
+      () =>
+        Alert.alert('Did you pay by QR?', `If you paid ${rs(amount)}, enter the UPI reference (UTR) from the receipt. Your admin confirms it and it shows as paid for everyone.`, [
+          { text: 'Not yet', style: 'cancel' },
+          { text: 'Enter UTR', onPress: () => setModal({ kind: 'utr' }) },
+        ]),
+      600,
+    );
+
   // ---- admin -------------------------------------------------------------------------------------------
   const remind = async (targets: UserProfile[]) => {
     if (!targets.length) return;
@@ -293,7 +304,7 @@ export default function Fees() {
                 <Ionicons name="copy-outline" size={22} color={colors.primary} />
               </Pressable>
             </View>
-            <UpiQr upi={{ ...upi, amount }} shareable />
+            <UpiQr upi={{ ...upi, amount }} shareable onShared={askUtrAfterQr} />
             <Text style={{ color: colors.muted, marginTop: 8, fontSize: 13, textAlign: 'center' }}>QR for {rs(amount)}. Scan with another phone, or tap “Pay by QR from this phone”.</Text>
             <Pressable onPress={() => setModal({ kind: 'utr' })} style={{ alignSelf: 'center', marginTop: 10 }} hitSlop={8}>
               <Text style={{ color: colors.primary, fontWeight: '800' }}>Already paid? Enter the UPI reference (UTR)</Text>
@@ -424,7 +435,15 @@ export default function Fees() {
         }}
       />
       <ActionSheet title={sheet?.title ?? null} options={sheet?.options ?? []} onClose={() => setSheet(null)} />
-      {upi && qrShare && <UpiQrShare upi={{ ...upi, amount }} onDone={() => setQrShare(false)} />}
+      {upi && qrShare && (
+        <UpiQrShare
+          upi={{ ...upi, amount }}
+          onDone={(shared) => {
+            setQrShare(false);
+            if (shared) askUtrAfterQr();
+          }}
+        />
+      )}
     </View>
   );
 }

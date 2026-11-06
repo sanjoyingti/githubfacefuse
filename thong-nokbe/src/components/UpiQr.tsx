@@ -15,7 +15,7 @@ type QrRef = { toDataURL: (cb: (base64: string) => void) => void } | null;
  * With `shareable`, a button sends the QR image to a UPI app on THIS phone, which reads it and opens the payment —
  * the same safe "scan & pay" route UPI apps always accept.
  */
-export function UpiQr({ upi, size = 190, shareable }: { upi: UpiSettings; size?: number; shareable?: boolean }) {
+export function UpiQr({ upi, size = 190, shareable, onShared }: { upi: UpiSettings; size?: number; shareable?: boolean; onShared?: () => void }) {
   const url = buildUpiUrl(upi, { note: 'Gym fee' });
   const qr = useRef<QrRef>(null);
   const [busy, setBusy] = useState(false);
@@ -29,6 +29,7 @@ export function UpiQr({ upi, size = 190, shareable }: { upi: UpiSettings; size?:
         await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
         if (!(await Sharing.isAvailableAsync())) throw new Error('Sharing is not available on this phone.');
         await Sharing.shareAsync(path, { mimeType: 'image/png', dialogTitle: 'Pay with your UPI app' });
+        onShared?.(); // back from the UPI app: ask for the UTR right away
       } catch (e: any) {
         Alert.alert('Could not share the QR', e?.message ?? String(e));
       } finally {
@@ -60,7 +61,7 @@ export function UpiQr({ upi, size = 190, shareable }: { upi: UpiSettings; size?:
  * Draws the payment QR off-screen and sends it straight to the share sheet, so the member picks
  * Google Pay / PhonePe / Paytm / BHIM, which reads the QR and opens the payment. Calls onDone after.
  */
-export function UpiQrShare({ upi, onDone }: { upi: UpiSettings; onDone: () => void }) {
+export function UpiQrShare({ upi, onDone }: { upi: UpiSettings; onDone: (shared: boolean) => void }) {
   const url = buildUpiUrl(upi, { note: 'Gym fee' });
   const started = useRef(false);
   const onRef = (c: QrRef) => {
@@ -74,10 +75,10 @@ export function UpiQrShare({ upi, onDone }: { upi: UpiSettings; onDone: () => vo
             const path = `${FileSystem.cacheDirectory}upi-qr.png`;
             await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
             await Sharing.shareAsync(path, { mimeType: 'image/png', dialogTitle: 'Pay with your UPI app' });
+            onDone(true);
           } catch (e: any) {
             Alert.alert('Could not share the QR', e?.message ?? String(e));
-          } finally {
-            onDone();
+            onDone(false);
           }
         }),
       150,
