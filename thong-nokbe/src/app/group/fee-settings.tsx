@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { Alert, ScrollView, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { updateDoc } from '@react-native-firebase/firestore';
+import { arrayUnion, updateDoc } from '@react-native-firebase/firestore';
+import { feeFor } from '../../lib/feeMath';
+import { monthKey } from '../../lib/dates';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
 import { chatRef, sendMessage } from '../../lib/chats';
@@ -10,6 +12,13 @@ import { Button, Card, Empty, Input } from '../../components/ui';
 import { UpiQr } from '../../components/UpiQr';
 import { colors } from '../../theme';
 import { useBottomInset } from '../../components/useBottomInset';
+
+/** Fee steps to add. Groups set up before fee history existed keep their old fee for past months. */
+function newSteps(steps: { from: string; amount: number }[], oldAmount: number | undefined, now: string, amt: number) {
+  if (steps.length) return [{ from: now, amount: amt }];
+  if (oldAmount && oldAmount !== amt) return [{ from: '2000-01', amount: oldAmount }, { from: now, amount: amt }];
+  return [{ from: '2000-01', amount: amt }];
+}
 
 export default function FeeSettings() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -31,7 +40,15 @@ export default function FeeSettings() {
     if (!amt || amt <= 0) return Alert.alert('Monthly fee', 'Enter the monthly gym fee in rupees.');
     setBusy(true);
     try {
-      await updateDoc(chatRef(chat.id), { upi: { vpa: vpa.trim(), payeeName: payeeName.trim(), amount: amt } });
+      // The monthly fee is kept as a history: a new amount applies from this month on, and past months keep
+      // the fee they had (nothing earlier is rewritten).
+      const steps = chat.feeHistory ?? [];
+      const now = monthKey();
+      const changed = !steps.length || feeFor(now, steps, chat.upi?.amount ?? 0) !== amt;
+      await updateDoc(chatRef(chat.id), {
+        upi: { vpa: vpa.trim(), payeeName: payeeName.trim(), amount: amt },
+        ...(changed ? { feeHistory: arrayUnion(...newSteps(steps, chat.upi?.amount, now, amt)) } : {}),
+      });
       await sendMessage(chat.id, me, `${me.name} updated the gym fee: ₹${amt}/month, due on the 1st. Pay from the Fees tab.`, 'system');
       router.back();
     } catch (e: any) {

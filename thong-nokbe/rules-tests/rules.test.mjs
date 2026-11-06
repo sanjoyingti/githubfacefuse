@@ -104,14 +104,14 @@ test('attendance: only admin marks, members view', async () => {
   await assertFails(getDocs(collection(as(OUTSIDER), 'chats/g1/attendance')));
 });
 
-test('fees: member records own UPI payment only; admin can mark cash or undo', async () => {
+test('fees (old-version records): can still be added, but never rewritten or deleted', async () => {
   const p = (uid, method) => ({ month: '2026-11', status: 'paid', amount: 800, method, txnId: 'T1', recordedBy: uid, paidAt: serverTimestamp() });
   await assertSucceeds(setDoc(doc(as(MEMBER), 'chats/g1/fees/2026-11/payments/member'), p('member', 'upi')));
   await assertFails(setDoc(doc(as(MEMBER), 'chats/g1/fees/2026-11/payments/admin'), p('member', 'upi')));
-  await assertFails(setDoc(doc(as(MEMBER), 'chats/g1/fees/2026-11/payments/member'), p('member', 'cash')));
   await assertFails(deleteDoc(doc(as(MEMBER), 'chats/g1/fees/2026-11/payments/member')));
-  await assertSucceeds(setDoc(doc(as(ADMIN), 'chats/g1/fees/2026-11/payments/member'), p('admin', 'cash')));
-  await assertSucceeds(deleteDoc(doc(as(ADMIN), 'chats/g1/fees/2026-11/payments/member')));
+  await assertFails(setDoc(doc(as(ADMIN), 'chats/g1/fees/2026-11/payments/member'), p('admin', 'cash'))); // overwrite
+  await assertFails(deleteDoc(doc(as(ADMIN), 'chats/g1/fees/2026-11/payments/member'))); // delete
+  await assertSucceeds(setDoc(doc(as(ADMIN), 'chats/g1/fees/2026-12/payments/member'), p('admin', 'cash'))); // new record
   await assertSucceeds(getDocs(collection(as(MEMBER), 'chats/g1/fees/2026-11/payments')));
 });
 
@@ -248,4 +248,55 @@ test('UPI: the admin and co-admins set the UPI ID; ordinary members cannot', asy
     await updateDoc(doc(ctx.firestore(), 'chats/g1'), { admins: [ADMIN.uid, MEMBER.uid] });
   });
   await assertSucceeds(updateDoc(doc(as(MEMBER), 'chats/g1'), { upi: upi('coadmin@okaxis') }));
+});
+
+const entry = (uid, extra = {}) => ({
+  uid, kind: 'payment', amount: 800, forMonth: '2026-11', method: 'upi', status: 'confirmed', utr: null, reversalOf: null,
+  note: '', recordedBy: uid, createdAt: serverTimestamp(), v: 1, ...extra,
+});
+
+test('ledger: members add only their own payments; admins add cash and corrections; nothing is deleted or rewritten', async () => {
+  const m = as(MEMBER), a = as(ADMIN);
+  await assertSucceeds(setDoc(doc(m, 'chats/g1/ledger/e1'), entry('member'))); // UPI app said success
+  await assertSucceeds(setDoc(doc(m, 'chats/g1/ledger/e2'), entry('member', { amount: 2400 }))); // advance: 3 months
+  await assertSucceeds(setDoc(doc(m, 'chats/g1/ledger/e3'), entry('member', { amount: 300 }))); // partial
+  await assertFails(setDoc(doc(m, 'chats/g1/ledger/x1'), entry('member', { uid: 'admin' }))); // for someone else
+  await assertFails(setDoc(doc(m, 'chats/g1/ledger/x2'), entry('member', { method: 'cash' }))); // members can't mark cash
+  await assertFails(setDoc(doc(m, 'chats/g1/ledger/x3'), entry('member', { kind: 'reversal', reversalOf: 'e1' }))); // nor corrections
+  await assertFails(setDoc(doc(m, 'chats/g1/ledger/x4'), entry('member', { amount: 0 })));
+  await assertFails(setDoc(doc(m, 'chats/g1/ledger/x5'), entry('member', { extra: 1 })));
+  await assertFails(setDoc(doc(as(OUTSIDER), 'chats/g1/ledger/x6'), entry('outsider')));
+  await assertSucceeds(setDoc(doc(a, 'chats/g1/ledger/c1'), entry('member', { method: 'cash', recordedBy: 'admin' })));
+  await assertSucceeds(setDoc(doc(a, 'chats/g1/ledger/r1'), entry('member', { kind: 'reversal', reversalOf: 'e1', method: 'cash', recordedBy: 'admin' })));
+  await assertFails(setDoc(doc(a, 'chats/g1/ledger/c2'), entry('outsider', { method: 'cash', recordedBy: 'admin' }))); // not a member
+  // history is permanent
+  await assertFails(deleteDoc(doc(a, 'chats/g1/ledger/e1')));
+  await assertFails(deleteDoc(doc(m, 'chats/g1/ledger/e1')));
+  await assertFails(updateDoc(doc(a, 'chats/g1/ledger/e1'), { amount: 1 }));
+  await assertFails(setDoc(doc(a, 'chats/g1/ledger/e1'), entry('member', { amount: 1, recordedBy: 'admin' })));
+  await assertSucceeds(getDocs(collection(m, 'chats/g1/ledger')));
+  await assertFails(getDocs(collection(as(OUTSIDER), 'chats/g1/ledger')));
+});
+
+test('ledger: a UTR payment waits for the admin, and a UTR can be used only once', async () => {
+  const m = as(MEMBER), a = as(ADMIN);
+  const claim = (db, id, utr) => {
+    const b = writeBatch(db);
+    b.set(doc(db, `chats/g1/ledger/${id}`), entry('member', { method: 'upi-manual', status: 'pending', utr }));
+    b.set(doc(db, `chats/g1/utrs/${utr}`), { entryId: id, uid: 'member', createdAt: serverTimestamp() });
+    return b.commit();
+  };
+  await assertSucceeds(claim(m, 'u1', '431298765432'));
+  await assertFails(claim(m, 'u2', '431298765432')); // same UTR again
+  await assertFails(setDoc(doc(m, 'chats/g1/ledger/u3'), entry('member', { method: 'upi-manual', status: 'confirmed', utr: 'ABCDEFGH1234' }))); // can't self-confirm
+  await assertFails(updateDoc(doc(m, 'chats/g1/ledger/u1'), { status: 'confirmed', verifiedBy: 'member', verifiedAt: serverTimestamp() })); // member can't verify
+  await assertSucceeds(updateDoc(doc(a, 'chats/g1/ledger/u1'), { status: 'confirmed', verifiedBy: 'admin', verifiedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(a, 'chats/g1/ledger/u1'), { status: 'rejected', verifiedBy: 'admin', verifiedAt: serverTimestamp() })); // only once
+  await assertFails(deleteDoc(doc(m, 'chats/g1/utrs/431298765432')));
+});
+
+test('attendance: days are never deleted', async () => {
+  await assertSucceeds(setDoc(doc(as(ADMIN), 'chats/g1/attendance/2026-11-03'), { date: '2026-11-03', month: '2026-11', records: { member: 'present' }, markedBy: 'admin' }));
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1/attendance/2026-11-03'), { 'records.member': 'absent' })); // correct a day
+  await assertFails(deleteDoc(doc(as(ADMIN), 'chats/g1/attendance/2026-11-03')));
 });

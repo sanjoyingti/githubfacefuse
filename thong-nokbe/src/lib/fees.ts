@@ -1,53 +1,8 @@
-import { useEffect, useState } from 'react';
-import { collection, deleteDoc, doc, getDocs, onSnapshot, serverTimestamp, setDoc } from '@react-native-firebase/firestore';
-import { db } from './firebase';
 import { getOrCreateDirectChat, sendMessage } from './chats';
-import type { FeePayment, UserProfile } from './types';
+import type { UserProfile } from './types';
 
-const paymentsCol = (chatId: string, month: string) => collection(db, 'chats', chatId, 'fees', month, 'payments');
-
-/** Live map uid -> payment for a month. Anyone missing from the map has not paid (red). */
-export function useMonthPayments(chatId: string | undefined, month: string) {
-  const [payments, setPayments] = useState<Record<string, FeePayment>>({});
-  useEffect(() => {
-    if (!chatId) return;
-    return onSnapshot(
-      paymentsCol(chatId, month),
-      (snap) => {
-        const out: Record<string, FeePayment> = {};
-        snap.forEach((d) => {
-          out[d.id] = { uid: d.id, ...(d.data() as Omit<FeePayment, 'uid'>) };
-        });
-        setPayments(out);
-      },
-      (e) => console.warn('listener error', e),
-    );
-  }, [chatId, month]);
-  return { payments };
-}
-
-export async function recordPayment(
-  chatId: string,
-  month: string,
-  uid: string,
-  data: { amount: number; method: FeePayment['method']; txnId?: string | null; recordedBy: string; upiResponse?: string | null },
-) {
-  await setDoc(doc(paymentsCol(chatId, month), uid), {
-    month,
-    status: 'paid',
-    amount: data.amount,
-    method: data.method,
-    txnId: data.txnId ?? null,
-    upiResponse: data.upiResponse ?? null,
-    recordedBy: data.recordedBy,
-    paidAt: serverTimestamp(),
-  });
-}
-
-/** Admin only: mark a member as unpaid again. */
-export async function clearPayment(chatId: string, month: string, uid: string) {
-  await deleteDoc(doc(paymentsCol(chatId, month), uid));
-}
+// Fee payments live in the permanent ledger (feeLedger.ts / feeMath.ts). This file keeps the reminder
+// and notice messages.
 
 export const FEE_REMINDER_PREFIX = '🔔 Gym fee reminder';
 
@@ -71,22 +26,4 @@ export async function sendFeeNoticeToAll(admin: UserProfile, groupId: string, te
   const body = text.trim();
   if (!body) return;
   await sendMessage(groupId, admin, `${FEE_NOTICE_PREFIX}: ${body}`);
-}
-
-/** All payments for the months of a year (for the admin fee report). month -> uid -> payment */
-export async function fetchYearPayments(chatId: string, year: number): Promise<Record<string, Record<string, FeePayment>>> {
-  const now = new Date();
-  const lastMonth = year < now.getFullYear() ? 12 : now.getMonth() + 1;
-  const months = Array.from({ length: lastMonth }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
-  const results = await Promise.all(
-    months.map(async (m) => {
-      const snap = await getDocs(paymentsCol(chatId, m));
-      const byUid: Record<string, FeePayment> = {};
-      snap.forEach((d) => {
-        byUid[d.id] = { uid: d.id, ...(d.data() as Omit<FeePayment, 'uid'>) };
-      });
-      return [m, byUid] as const;
-    }),
-  );
-  return Object.fromEntries(results);
 }

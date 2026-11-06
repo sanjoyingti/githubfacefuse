@@ -33,6 +33,8 @@ export interface Chat {
   lastMessage?: { text: string; senderId: string; senderName: string; at: Timestamp | null } | null;
   updatedAt?: Timestamp | null;
   upi?: UpiSettings | null;
+  /** Monthly fee over time, oldest first: each step applies from its month on (added to, never rewritten). */
+  feeHistory?: { from: string; amount: number }[];
 }
 
 export interface LiveLocation {

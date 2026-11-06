@@ -83,6 +83,9 @@ jobs:
             echo "CONFIG=preview" >> "$GITHUB_ENV"
           fi
 
+      - name: Fee calculation tests (advance, partial, corrections)
+        run: node --test tests/*.test.mjs
+
       - name: Generate Android project
         run: CI=1 npx expo prebuild --platform android --no-install
 

@@ -111,9 +111,11 @@ service cloud.firestore {
       }
 
       // Attendance: admins mark, every member views.
+      // Attendance is permanent history: admins mark and correct days, nobody can delete a day.
       match /attendance/{date} {
         allow read: if isMemberOf(chatId);
-        allow write: if isAdminOf(chatId);
+        allow create, update: if isAdminOf(chatId);
+        allow delete: if false;
       }
 
       // Live location: once a member turns on location for this group, their phone keeps their point
@@ -128,15 +130,60 @@ service cloud.firestore {
         allow delete: if uid == me() || isAdminOf(chatId);
       }
 
-      // Fees: members record their own payment, admins record/undo anyone's, every member views.
+      // Fees (older app versions, one record per member per month). Kept forever and still counted:
+      // old app versions may still add a record, but nothing can rewrite or delete one.
       match /fees/{month}/payments/{uid} {
         allow read: if isMemberOf(chatId);
-        allow create, update: if isAdminOf(chatId)
+        allow create: if isAdminOf(chatId)
           || (isMemberOf(chatId) && uid == me()
               && request.resource.data.status == 'paid'
               && request.resource.data.method in ['upi', 'upi-manual']
               && request.resource.data.recordedBy == me());
-        allow delete: if isAdminOf(chatId);
+        allow update, delete: if false;
+      }
+
+      // Fee ledger: every payment / correction is a NEW entry and stays forever (partial and advance
+      // payments are worked out from it). Never deleted, never rewritten — except that an admin moves a
+      // member's "pending" UTR payment to "confirmed" or "rejected" once.
+      match /ledger/{entryId} {
+        allow read: if isMemberOf(chatId);
+        allow create: if isMemberOf(chatId)
+          && request.resource.data.keys().hasOnly(['uid', 'kind', 'amount', 'forMonth', 'method', 'status', 'utr', 'reversalOf', 'note', 'recordedBy', 'createdAt', 'v'])
+          && request.resource.data.uid is string
+          && request.resource.data.amount is number && request.resource.data.amount > 0 && request.resource.data.amount <= 1000000
+          && request.resource.data.forMonth is string && request.resource.data.forMonth.matches('^[0-9]{4}-[0-9]{2}$')
+          && request.resource.data.recordedBy == me()
+          && request.resource.data.createdAt == request.time
+          && (
+            // Admins: payments (cash, UPI…) or corrections for any member of this group, confirmed.
+            (isAdminOf(chatId) && request.resource.data.uid in chatData(chatId).members
+              && request.resource.data.status == 'confirmed'
+              && ((request.resource.data.kind == 'payment' && request.resource.data.reversalOf == null)
+                  || (request.resource.data.kind == 'reversal' && request.resource.data.reversalOf is string)))
+            ||
+            // Members: only their own payment. 'upi' = the UPI app reported success; 'upi-manual' =
+            // a UTR typed in, which waits for an admin, and each UTR can be used only once.
+            (request.resource.data.uid == me() && request.resource.data.kind == 'payment' && request.resource.data.reversalOf == null
+              && ((request.resource.data.method == 'upi' && request.resource.data.status == 'confirmed')
+                  || (request.resource.data.method == 'upi-manual' && request.resource.data.status == 'pending'
+                      && request.resource.data.utr is string
+                      && getAfter(/databases/$(database)/documents/chats/$(chatId)/utrs/$(request.resource.data.utr)).data.entryId == entryId)))
+          );
+        allow update: if isAdminOf(chatId) && resource.data.status == 'pending'
+          && request.resource.data.status in ['confirmed', 'rejected']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'verifiedBy', 'verifiedAt'])
+          && request.resource.data.verifiedBy == me();
+        allow delete: if false;
+      }
+
+      // A UTR (UPI reference) can be claimed once per group: created with its ledger entry, never changed.
+      match /utrs/{utr} {
+        allow read: if isMemberOf(chatId);
+        allow create: if isMemberOf(chatId) && utr.matches('^[A-Z0-9]{8,30}$')
+          && request.resource.data.keys().hasOnly(['entryId', 'uid', 'createdAt'])
+          && (request.resource.data.uid == me() || isAdminOf(chatId))
+          && existsAfter(/databases/$(database)/documents/chats/$(chatId)/ledger/$(request.resource.data.entryId));
+        allow update, delete: if false;
       }
     }
 

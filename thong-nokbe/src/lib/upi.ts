@@ -65,7 +65,7 @@ export const IOS_UPI_APPS = [
  * Opens a UPI app to pay the admin. On Android we launch the intent "for result",
  * so the app tells us whether the payment succeeded and gives the transaction id.
  */
-export async function payWithUpi(upi: UpiSettings, opts: { note: string; ref: string; iosScheme?: string }): Promise<UpiResult> {
+export async function payWithUpi(upi: UpiSettings, opts: { note: string; ref?: string; iosScheme?: string }): Promise<UpiResult> {
   if (Platform.OS === 'android') {
     const url = buildUpiUrl(upi, opts);
     const res = await IntentLauncher.startActivityAsync('android.intent.action.VIEW', { data: url });
