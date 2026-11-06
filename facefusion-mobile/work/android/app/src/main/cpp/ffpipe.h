@@ -38,6 +38,9 @@ struct Face {
   // How far this face moved since the previous frame of a sequence (pixels, frame space;
   // 0 outside a sequence). Used to blur the swapped face like the real, motion-blurred one.
   float vel[2] = {0.f, 0.f};
+  // True when this face was not found by the detector but held from the previous frames
+  // (lost-face recovery); the sequence counts how long it has been held.
+  bool recovered = false;
   float embedding[512];
   float embeddingNorm[512];
 };

@@ -137,6 +137,7 @@ int main(int argc, char** argv) {
   bool sequence = false;
   int track = 0;
   std::vector<std::string> frames, extras;
+  bool detectOnly = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto v = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -164,7 +165,8 @@ int main(int argc, char** argv) {
     else if (a == "--tsmooth") cfg.temporalSmooth = v() == "1";
     else if (a == "--blurmatch") cfg.motionBlurMatch = v() == "1";
     else if (a == "--overlap") cfg.overlapGuard = v() == "1";
-    else if (a == "--second") cfg.secondLook = v() == "1";   // another photo of the source person
+    else if (a == "--second") cfg.secondLook = v() == "1";
+    else if (a == "--detect-only") detectOnly = v() == "1";   // another photo of the source person
     else frames.push_back(a);
   }
   setenv("FFBACKEND", "ncnn", 1);
@@ -195,10 +197,10 @@ int main(int argc, char** argv) {
     if (!readPpm(fp, fr)) { fprintf(stderr, "cannot read %s\n", fp.c_str()); return 4; }
     pipe.resetStats();
     auto faces = pipe.analyse(fr);
-    if (!pipe.swapAll(fr, faces)) { fprintf(stderr, "swap: %s\n", pipe.error().c_str()); return 5; }
+    if (!detectOnly && !pipe.swapAll(fr, faces)) { fprintf(stderr, "swap: %s\n", pipe.error().c_str()); return 5; }
     char name[64];
     snprintf(name, sizeof(name), "/out_%03d.ppm", idx++);
-    writePpm(out + name, fr);
+    if (!detectOnly) writePpm(out + name, fr);
     printf("frame %d faces %zu", idx - 1, faces.size());
     for (const auto& f : faces) {
       ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);

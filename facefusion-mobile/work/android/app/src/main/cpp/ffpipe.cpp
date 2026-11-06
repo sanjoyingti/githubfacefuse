@@ -319,6 +319,7 @@ struct Pipeline::Impl {
     float span = 0.f;
     float vel[2] = {0.f, 0.f};
     bool haveLm = false;
+    int recRun = 0;   // consecutive frames this face was held, not detected
   };
   // The sequence state of faces[fi] on THIS frame, or null outside a sequence. temporal()
   // writes this frame's faces first and in order, so index fi is face fi.
@@ -1021,7 +1022,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   // One detector pass over `dimg` (the frame, a rotated copy of it, or a tile of it at
   // offset ox, oy): appends the faces it finds, in whole-frame coordinates, to
   // boxes/scores/lms and recomputes `keep` over everything collected so far.
-  auto passOn = [&](const ffcv::Image& dimg, int angle, float ox, float oy) -> bool {
+  auto passOn = [&](const ffcv::Image& dimg, int angle, float ox, float oy, float zoom = 1.f) -> bool {
 
   t0 = nowMs();
   // restrict_frame + zero-pad to SxS  (vision.py:222, face_detector.py:445)
@@ -1125,16 +1126,17 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
       }
     }
     // A tile of the frame (second look): back to whole-frame coordinates.
-    if (ox != 0.f || oy != 0.f) {
-      bb[0] += ox; bb[2] += ox; bb[1] += oy; bb[3] += oy;
-      for (int k = 0; k < 5; ++k) { l[2 * k] += ox; l[2 * k + 1] += oy; }
+    if (ox != 0.f || oy != 0.f || zoom != 1.f) {
+      bb[0] = bb[0] / zoom + ox; bb[2] = bb[2] / zoom + ox;
+      bb[1] = bb[1] / zoom + oy; bb[3] = bb[3] / zoom + oy;
+      for (int k = 0; k < 5; ++k) { l[2 * k] = l[2 * k] / zoom + ox; l[2 * k + 1] = l[2 * k + 1] / zoom + oy; }
     }
     // LOW-SCORE RECOVERY: under the user's threshold only when it overlaps a face the
     // sequence saw in the last few frames -- motion blur, not a new false positive.
     if (sc <= cfg.detectorScore) {
       bool near = false;
       for (const auto& sf : p_->seq.faces)
-        if (sf.miss <= 3 && ffmotion::iou(bb.data(), sf.box) >= 0.3f) { near = true; break; }
+        if (sf.miss <= 12 && ffmotion::iou(bb.data(), sf.box) >= 0.2f) { near = true; break; }
       if (!near) continue;
     }
     boxes.push_back(bb);
@@ -1206,8 +1208,10 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
     }
     for (size_t si = 0; si < p_->seq.faces.size(); ++si) {
       const auto& sf = p_->seq.faces[si];
-      if (claimed[si] || !sf.haveLm || sf.miss > 1) continue;
-      const float steps = (float)(sf.miss + 1);
+      if (claimed[si] || !sf.haveLm || sf.miss > 4 || sf.recRun >= 12) continue;
+      // The head keeps drifting for a frame or two, then is assumed to stay where it was
+      // (a hand across the mouth hides a face that is not going anywhere).
+      const float steps = std::min(2.f, (float)(sf.miss + 1));
       const float dx = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[0] * steps));
       const float dy = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[1] * steps));
       std::array<float, 4> bb = {sf.box[0] + dx, sf.box[1] + dy, sf.box[2] + dx, sf.box[3] + dy};
@@ -1316,7 +1320,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
       ffcv::toLandmark5(f.landmark68, l5);
       const float span = std::hypot(l5[2] - l5[0], l5[3] - l5[1]);
       const float want = recoverSpan[(size_t)idx];
-      if (score68 < 0.7f || !(span > 0.7f * want && span < 1.4f * want)) continue;
+      if (score68 < 0.6f || !(span > 0.6f * want && span < 1.6f * want)) continue;
       // ...and not a face already found (the landmarker can lock on the neighbour).
       const float cx = (l5[0] + l5[2] + l5[4] + l5[6] + l5[8]) / 5.f;
       const float cy = (l5[1] + l5[3] + l5[5] + l5[7] + l5[9]) / 5.f;
@@ -1328,6 +1332,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
       }
       if (dup) continue;
       f.detScore = score68;
+      f.recovered = true;
     }
     if (score68 > cfg.landmarkerScore)
       ffcv::toLandmark5(f.landmark68, f.landmark5_68);
@@ -1520,6 +1525,7 @@ void Pipeline::Impl::temporal(std::vector<Face>& faces) {
     // Slower going towards the original (0.2) than back to the swap (0.35): near the limit
     // of a big turn or tilt the swap eases out instead of flicking on and off.
     sf.fade += (f.poseFade < sf.fade ? 0.2f : 0.35f) * (f.poseFade - sf.fade);
+    sf.recRun = f.recovered ? sf.recRun + 1 : 0;
     std::memcpy(sf.lm5, f.landmark5_68, sizeof(sf.lm5));
     sf.span = std::hypot(f.landmark5_68[2] - f.landmark5_68[0], f.landmark5_68[3] - f.landmark5_68[1]);
     sf.vel[0] = f.vel[0]; sf.vel[1] = f.vel[1];
@@ -1534,7 +1540,7 @@ void Pipeline::Impl::temporal(std::vector<Face>& faces) {
   for (size_t i = 0; i < seq.faces.size(); ++i) {
     if (used[i]) continue;
     SeqFace sf = seq.faces[i];
-    if (++sf.miss <= 5) { sf.filt.reset(); next.push_back(sf); }
+    if (++sf.miss <= 12) { sf.filt.reset(); next.push_back(sf); }
   }
   seq.faces.swap(next);
 }
