@@ -65,10 +65,26 @@ export const IOS_UPI_APPS = [
  * Opens a UPI app to pay the admin. On Android we launch the intent "for result",
  * so the app tells us whether the payment succeeded and gives the transaction id.
  */
-export async function payWithUpi(upi: UpiSettings, opts: { note: string; ref?: string; iosScheme?: string }): Promise<UpiResult> {
+/**
+ * UPI apps a member can choose on Android. Google Pay (and sometimes PhonePe) refuse payments that
+ * another app starts to a PERSONAL UPI ID, with a misleading "exceeded the bank limit" message;
+ * Paytm and BHIM usually accept them. Paying by QR works with every app.
+ */
+export const ANDROID_UPI_APPS = [
+  { name: 'Paytm', pkg: 'net.one97.paytm' },
+  { name: 'BHIM UPI', pkg: 'in.org.npci.upiapp' },
+  { name: 'PhonePe', pkg: 'com.phonepe.app' },
+  { name: 'Google Pay', pkg: 'com.google.android.apps.nbu.paisa.user' },
+  { name: 'Amazon Pay', pkg: 'in.amazon.mShop.android.shopping' },
+];
+
+export async function payWithUpi(upi: UpiSettings, opts: { note: string; ref?: string; iosScheme?: string; androidPackage?: string }): Promise<UpiResult> {
   if (Platform.OS === 'android') {
     const url = buildUpiUrl(upi, opts);
-    const res = await IntentLauncher.startActivityAsync('android.intent.action.VIEW', { data: url });
+    const res = await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+      data: url,
+      ...(opts.androidPackage ? { packageName: opts.androidPackage } : {}),
+    });
     const extra = (res.extra ?? {}) as Record<string, unknown>;
     const raw = (extra.response as string) ?? (extra.Status ? `Status=${extra.Status}&txnId=${extra.txnId ?? ''}` : undefined);
     const parsed = parseUpiResponse(raw);

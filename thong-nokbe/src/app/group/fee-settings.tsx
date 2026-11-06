@@ -68,7 +68,12 @@ export default function FeeSettings() {
         </Text>
         <Input label="Your UPI ID (VPA)" placeholder="gymowner@okaxis" autoCapitalize="none" autoCorrect={false} value={vpa} onChangeText={setVpa} />
         <Input label="Payee name" placeholder="Name on the UPI account" value={payeeName} onChangeText={setPayeeName} />
-        <Input label="Monthly fee (₹)" placeholder="800" keyboardType="number-pad" value={amount} onChangeText={setAmount} />
+        <Input label="Monthly fee (₹) — 1 month" placeholder="500" keyboardType="number-pad" value={amount} onChangeText={setAmount} />
+        {Number(amount) > 0 && (
+          <Text style={{ color: colors.muted, marginTop: -4, marginBottom: 6 }}>
+            Members see: 1 month ₹{Number(amount)} · 2 months ₹{Number(amount) * 2} · 3 months ₹{Number(amount) * 3} · 6 months ₹{Number(amount) * 6} · 12 months ₹{Number(amount) * 12}
+          </Text>
+        )}
       </Card>
       {isValidVpa(vpa) && Number(amount) > 0 ? (
         <Card>

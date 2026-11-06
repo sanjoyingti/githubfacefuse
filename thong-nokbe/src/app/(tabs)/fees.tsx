@@ -7,12 +7,12 @@ import { useMe } from '../../context/AuthProvider';
 import { useChats } from '../../context/ChatsProvider';
 import { GroupSwitcher, NoGroups } from '../../components/GroupSwitcher';
 import { Avatar, Button, Card, Loading } from '../../components/ui';
-import { UpiQr } from '../../components/UpiQr';
+import { UpiQr, UpiQrShare } from '../../components/UpiQr';
 import { ActionSheet, type SheetOption } from '../../components/ActionSheet';
 import { sendFeeNoticeToAll, sendFeeReminder } from '../../lib/fees';
 import { addPayment, addReversal, useGroupLedger, verifyPayment } from '../../lib/feeLedger';
 import { allocate, feeFor, firstUnpaid, paidThrough, statusOf, totals, type LedgerEntry, type MonthInfo } from '../../lib/feeMath';
-import { IOS_UPI_APPS, payWithUpi } from '../../lib/upi';
+import { ANDROID_UPI_APPS, IOS_UPI_APPS, payWithUpi } from '../../lib/upi';
 import { addMonths, formatMonth, monthKey, parseMonthKey } from '../../lib/dates';
 import { displayName, useUsers } from '../../lib/users';
 import { colors } from '../../theme';
@@ -48,6 +48,7 @@ export default function Fees() {
   const [reminded, setReminded] = useState<Record<string, boolean>>({});
   const [reminding, setReminding] = useState<string | null>(null);
   const [noticeOpen, setNoticeOpen] = useState(false);
+  const [qrShare, setQrShare] = useState(false);
 
   const feeHistory = group?.feeHistory;
   const upiAmount = group?.upi?.amount;
@@ -83,7 +84,14 @@ export default function Fees() {
   const through = paidThrough(myMonths, month);
   const ahead = through && through > monthKey() ? monthsBetween(monthKey(), through) : 0;
   const left = mine.status === 'partial' ? mine.fee - mine.paid : 0;
-  const choices = fee > 0 ? [...(left > 0 ? [{ label: `Rest of ${label(month)}`, amount: left }] : []), { label: '1 month', amount: fee }, { label: '3 months', amount: fee * 3 }, { label: '6 months', amount: fee * 6 }, { label: '12 months', amount: fee * 12 }] : [];
+  // 1 month = fee, 2 months = 2 × fee, … (e.g. ₹500, ₹1000, ₹1500…), plus a whole year.
+  const choices =
+    fee > 0
+      ? [
+          ...(left > 0 ? [{ label: `Rest of ${label(month)}`, amount: left }] : []),
+          ...[1, 2, 3, 4, 5, 6, 12].map((n) => ({ label: n === 1 ? '1 month' : `${n} months`, amount: fee * n })),
+        ]
+      : [];
   const amount = amountChoice ?? (left > 0 ? left : fee);
   const pendingAll = entries.filter((e) => e.kind === 'payment' && e.status === 'pending');
   const paidCount = members.filter((m) => statusOf(monthsOf[m.uid] ?? {}, month, steps, fallback).status === 'paid').length;
@@ -91,11 +99,11 @@ export default function Fees() {
   const myLook = look(mine.status);
 
   // ---- paying ------------------------------------------------------------------------------------------
-  const startPay = async (iosScheme?: string) => {
+  const startPay = async (iosScheme?: string, androidPackage?: string) => {
     if (!upi || amount <= 0) return;
     setPaying(true);
     try {
-      const res = await payWithUpi({ ...upi, amount }, { note: `${group.name} gym fee ${me.name}`, iosScheme });
+      const res = await payWithUpi({ ...upi, amount }, { note: `${group.name} gym fee ${me.name}`, iosScheme, androidPackage });
       if (res.outcome === 'success') {
         await addPayment(group, me, { uid: me.uid, amount, forMonth: startFrom, method: 'upi' });
         Alert.alert('Payment successful ✅', `${rs(amount)} received. Everyone in the group sees it now.`);
@@ -103,7 +111,7 @@ export default function Fees() {
       } else if (res.outcome === 'failed') {
         Alert.alert(
           'Payment did not go through',
-          'Your UPI app stopped this payment. No money should have been deducted.\n\nSome UPI apps block direct payments to a personal UPI ID. Use "Pay by QR from this phone" below, then "Already paid? Enter UTR". If money WAS deducted, enter the UTR.',
+          'No money should have been deducted.\n\n"Exceeded the bank limit" from Google Pay or PhonePe does NOT mean your bank limit: those apps block payments that another app starts to a personal UPI ID.\n\nTry again with Paytm or BHIM, or use "Pay by QR" (works with every UPI app). If money WAS deducted, tap "Already paid? Enter UTR".',
         );
       } else {
         Alert.alert('Did the payment go through?', 'Your UPI app did not report the result. If the money was sent, confirm with the UPI reference (UTR) number.', [
@@ -112,7 +120,8 @@ export default function Fees() {
         ]);
       }
     } catch (e: any) {
-      Alert.alert('No UPI app found', e?.message?.includes('No Activity') ? 'Install Google Pay, PhonePe, Paytm or BHIM to pay.' : e?.message ?? String(e));
+      const missing = /No Activity|ActivityNotFound|not found/i.test(String(e?.message));
+      Alert.alert(missing ? 'App not installed' : 'Could not open the UPI app', missing ? 'That UPI app is not on this phone. Choose another one, or use "Pay by QR".' : e?.message ?? String(e));
     } finally {
       setPaying(false);
     }
@@ -123,7 +132,17 @@ export default function Fees() {
         { title: 'Pay with', options: [...IOS_UPI_APPS.map((a) => a.name), 'Cancel'], cancelButtonIndex: IOS_UPI_APPS.length },
         (i) => i < IOS_UPI_APPS.length && startPay(IOS_UPI_APPS[i].scheme),
       );
-    } else startPay();
+      return;
+    }
+    // Android: the member picks the UPI app (Google Pay often refuses personal UPI IDs).
+    setSheet({
+      title: `Pay ${rs(amount)} with`,
+      options: [
+        { label: 'Pay by QR (works with every UPI app)', icon: 'qr-code', onPress: () => setQrShare(true) },
+        ...ANDROID_UPI_APPS.map((a) => ({ label: a.name, icon: 'wallet' as const, onPress: () => startPay(undefined, a.pkg) })),
+        { label: 'Other UPI app', icon: 'apps', onPress: () => startPay() },
+      ],
+    });
   };
 
   // ---- admin -------------------------------------------------------------------------------------------
@@ -244,7 +263,7 @@ export default function Fees() {
                 <Text style={[styles.chipSub, !choices.some((c) => c.amount === amount) && { color: '#0b0f0d' }]}>{choices.some((c) => c.amount === amount) ? '✏️' : rs(amount)}</Text>
               </Pressable>
             </View>
-            <Text style={styles.hint}>Counts from {label(startFrom)} onward. Extra money moves to the next months automatically.</Text>
+            <Text style={styles.hint}>Counts from {label(startFrom)} onward. Extra money moves to the next months automatically. If Google Pay says “exceeded the bank limit”, choose Paytm, BHIM or Pay by QR.</Text>
             <Pressable style={[styles.payBtn, paying && { opacity: 0.6 }]} onPress={pay} disabled={paying}>
               <Ionicons name="flash" size={18} color="#fff" />
               <Text style={styles.payText}>{paying ? 'Opening UPI app…' : `Pay ${rs(amount)} now`}</Text>
@@ -405,6 +424,7 @@ export default function Fees() {
         }}
       />
       <ActionSheet title={sheet?.title ?? null} options={sheet?.options ?? []} onClose={() => setSheet(null)} />
+      {upi && qrShare && <UpiQrShare upi={{ ...upi, amount }} onDone={() => setQrShare(false)} />}
     </View>
   );
 }

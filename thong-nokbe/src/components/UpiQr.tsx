@@ -55,3 +55,37 @@ export function UpiQr({ upi, size = 190, shareable }: { upi: UpiSettings; size?:
     </View>
   );
 }
+
+/**
+ * Draws the payment QR off-screen and sends it straight to the share sheet, so the member picks
+ * Google Pay / PhonePe / Paytm / BHIM, which reads the QR and opens the payment. Calls onDone after.
+ */
+export function UpiQrShare({ upi, onDone }: { upi: UpiSettings; onDone: () => void }) {
+  const url = buildUpiUrl(upi, { note: 'Gym fee' });
+  const started = useRef(false);
+  const onRef = (c: QrRef) => {
+    if (!c || started.current) return;
+    started.current = true;
+    // Give the QR one frame to draw before reading it as an image.
+    setTimeout(
+      () =>
+        c.toDataURL(async (base64) => {
+          try {
+            const path = `${FileSystem.cacheDirectory}upi-qr.png`;
+            await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
+            await Sharing.shareAsync(path, { mimeType: 'image/png', dialogTitle: 'Pay with your UPI app' });
+          } catch (e: any) {
+            Alert.alert('Could not share the QR', e?.message ?? String(e));
+          } finally {
+            onDone();
+          }
+        }),
+      150,
+    );
+  };
+  return (
+    <View style={{ position: 'absolute', left: -1000, top: 0, backgroundColor: '#fff', padding: 12 }} pointerEvents="none">
+      <QRCode value={url} size={300} getRef={onRef} quietZone={12} />
+    </View>
+  );
+}
