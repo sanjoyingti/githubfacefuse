@@ -2355,6 +2355,10 @@ class MainActivity : ComponentActivity() {
                                               fmt(j.doneUs / 1000f), fmt(j.totalUs / 1000f))
                                 },
                                 onResume = { resumeAvailable?.let { resumeSwap(it) } },
+                                onSaveDonePart = if ((resumeAvailable?.done ?: 0) > 0)
+                                    ({ saveDonePart() }) else null,
+                                onDiscardResume = { discardUnfinished() },
+                                onNewProject = { newProject() },
                                 onTest3s = if (photoMakesVideo || batchQueue.size > 1) null
                                            else ({ runTest3s() }),
                                 estimate = swapEstimate(),
@@ -3641,7 +3645,7 @@ class MainActivity : ComponentActivity() {
         f
     }.getOrNull()
 
-    private fun loadTarget(uri: Uri, onLoaded: (() -> Unit)? = null) {
+    private fun loadTarget(uri: Uri, keepOutput: Boolean = false, onLoaded: (() -> Unit)? = null) {
         resetSwapPersonState()
         dropLipReferenceFace()
         lipPickMode = false
@@ -3713,7 +3717,8 @@ class MainActivity : ComponentActivity() {
                 // The old result belongs to the old target. Dropping it here is also the
                 // fix for a stale-result bug: nothing cleared `outputFile` on a new pick, so
                 // the pane went on offering to save and share the PREVIOUS video.
-                discardOutput()
+                // Not for Continue: that reloads the SAME video and the swapped part must stay.
+                if (!keepOutput) discardOutput()
                 targetImage = null
                 // face_animator moves a STILL's face; it has nothing to do on a clip.
                 if (opts.faceAnimate) applyOpts(opts.copy(faceAnimate = false))
@@ -5037,7 +5042,8 @@ class MainActivity : ComponentActivity() {
         appendLog(msg)
         status = if (status.isBlank()) msg else "$status\n$msg"
         val last = File(cacheDir, "target.mp4")
-        if (last.isFile && last.length() > 0) loadTarget(Uri.fromFile(last))
+        // keepOutput: the swapped video the last run left behind must survive this reload.
+        if (last.isFile && last.length() > 0) loadTarget(Uri.fromFile(last), keepOutput = true)
     }
 
     /**
@@ -5096,16 +5102,80 @@ class MainActivity : ComponentActivity() {
         if (busy) return
         // Re-read: the record on disk is the truth (pieces may have been checked away).
         val fresh = runCatching { ResumeStore.load(this) }.getOrNull() ?: run {
-            refreshResume(); return
+            refreshResume()
+            status = getString(R.string.resume_gone)
+            return
         }
         if (fresh.targetPath != job.targetPath) { refreshResume(); return }
-        loadTarget(Uri.fromFile(File(job.targetPath))) {
+        fun go() {
             trimStartMs = job.startUs / 1000f
             trimEndMs = if (job.toEnd) durationMs.toFloat() else job.endUs / 1000f
             if (opts.outputFps != job.outputFps || opts.outputMaxShortEdge != job.outputMaxShortEdge)
                 applyOpts(opts.copy(outputFps = job.outputFps,
                                     outputMaxShortEdge = job.outputMaxShortEdge))
             runSwap(resume = job)
+        }
+        // The same video is already on screen (the app restored it, or it never left):
+        // carry on at once. Reloading it would restart the preview, which holds the
+        // models, and clear the swapped part from the screen.
+        val tgt = targetFile
+        if (tgt != null && tgt.isFile && tgt.length() == File(job.targetPath).length() &&
+            durationMs > 0L) {
+            go(); return
+        }
+        loadTarget(Uri.fromFile(File(job.targetPath)), keepOutput = true) { go() }
+    }
+
+    /** Forget the unfinished swap: its saved pieces and its copy of the video. */
+    private fun discardUnfinished() {
+        confirm(R.string.resume_discard_title, R.string.resume_discard_body,
+                R.string.resume_discard_ok, destructive = true) {
+            if (busy) return@confirm
+            ResumeStore.clear(this)
+            refreshResume()
+            status = getString(R.string.resume_discarded)
+        }
+    }
+
+    /** A clean slate: no unfinished swap, no result, no video. Faces and settings stay. */
+    private fun newProject() {
+        confirm(R.string.newproj_title, R.string.newproj_body, R.string.newproj_ok,
+                destructive = true) {
+            if (busy) return@confirm
+            ResumeStore.clear(this)
+            refreshResume()
+            discardOutput()
+            clearTarget()
+            status = getString(R.string.newproj_done)
+        }
+    }
+
+    /**
+     * Join the saved pieces of the unfinished swap into a video you can watch, save or
+     * share right now -- the part that is done -- without touching the unfinished swap.
+     */
+    private fun saveDonePart() {
+        val job = runCatching { ResumeStore.load(this) }.getOrNull() ?: return
+        if (busy || job.done == 0) return
+        busy = true
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val out = File(outputDir(), "swapped_part_${System.currentTimeMillis()}.mp4")
+                    val pieces = (0 until job.done).map {
+                        ResumeStore.part(this@MainActivity, it) to job.offset(it)
+                    }
+                    Mp4Concat.join(pieces, out)
+                    out
+                }
+            }
+            result.onSuccess { out ->
+                discardOutput()
+                outputFile = out; outputPartial = true; progress = 1f
+                rememberFinishedOutput(out, partial = true)
+                status = getString(R.string.resume_part_saved, fmt(job.doneUs / 1000f))
+            }.onFailure { failStatus(getString(R.string.status_failed, it.message ?: "")) }
+            busy = false
         }
     }
 
@@ -5168,25 +5238,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun runSwap(resume: ResumeJob? = null, testFromMs: Float? = null) {
-        if (opts.swapsFace && sourceUri == null) return
-        val tgt = targetFile ?: return
+        // Each early exit SAYS why: a tap that silently does nothing is what Continue was.
+        if (opts.swapsFace && sourceUri == null) {
+            status = getString(R.string.status_run_no_source); return
+        }
+        val tgt = targetFile ?: run { status = getString(R.string.status_run_no_target); return }
         // Defence in depth: the Swap button in SwapScreen is already disabled without one
         // when Lip Sync is on, but this is the actual place a no-op run would happen, so it
         // is checked again here rather than trusted from the UI alone.
-        if (opts.lipSync && voiceFile == null) return
+        if (opts.lipSync && voiceFile == null) {
+            status = getString(R.string.status_run_no_voice); return
+        }
         // The preview holds a loaded pipeline and `g_pipe` is a single global, so the run
         // cannot start until it lets go.
         invalidatePreview()
         cancelRequested = false
         busy = true; progress = 0f; log = ""
         val testRun = testFromMs != null
-        // Deletes the PREVIOUS run's file, not merely the reference to it. A TEST keeps a
-        // real result on disk (it comes back on the next start) and replaces only a test.
-        if (!testRun) discardOutput()
-        else {
-            if (outputFile?.name?.startsWith("test_") == true) outputFile?.safeDelete()
-            outputFile = null; outputPartial = false; savedUri = null; savedPathLabel = null
-        }
         preview = null; framesDone = 0; framesTotal = 0; elapsedS = 0.0
         // Background keep-alive: a foreground notification and a wake lock for the length
         // of the run, so leaving the app or turning the screen off does not stop it.
@@ -5196,10 +5264,30 @@ class MainActivity : ComponentActivity() {
           try {
             // The run owns the pipeline for its whole length, minutes on a long clip. The
             // API server gets 503 for the duration, which is the honest answer.
-            if (!PipeGuard.acquire("swap", 5000)) {
-                status = pipeBusyMessage()
-                busy = false
-                return@launch
+            // The models may still be loading for the preview (a minute on a cold start):
+            // wait for them instead of giving up after 5 s, and say so. Cancel ends the wait.
+            if (!PipeGuard.acquire("swap", 2000)) {
+                status = getString(R.string.status_waiting_models)
+                var waited = 0
+                var got = false
+                while (waited < 120_000 && !cancelRequested && !SwapStatus.cancelRequested) {
+                    if (PipeGuard.acquire("swap", 500)) { got = true; break }
+                    waited += 500
+                }
+                if (!got) {
+                    status = if (cancelRequested || SwapStatus.cancelRequested)
+                        getString(R.string.status_cancelled) else pipeBusyMessage()
+                    busy = false
+                    return@launch
+                }
+            }
+            // Only now is the previous result replaced: a run that could not start must not
+            // have thrown away the swapped video that was already there. A TEST keeps a real
+            // result on disk (it comes back on the next start) and replaces only a test.
+            if (!testRun) discardOutput()
+            else {
+                if (outputFile?.name?.startsWith("test_") == true) outputFile?.safeDelete()
+                outputFile = null; outputPartial = false; savedUri = null; savedPathLabel = null
             }
             val result = withContext(Dispatchers.Default) {
                 runCatching {

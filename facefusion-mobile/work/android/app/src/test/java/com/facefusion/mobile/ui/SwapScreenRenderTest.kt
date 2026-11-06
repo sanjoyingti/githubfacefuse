@@ -7,6 +7,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import com.facefusion.mobile.SourcePhotos
 import com.facefusion.mobile.SwapOptions
 import org.junit.Rule
@@ -197,5 +198,100 @@ class SwapScreenRenderTest {
         rule.onNode(androidx.compose.ui.test.hasText("Test 3 seconds")).performScrollTo().performClick()
         println("TEST3S tapped=$tested")
         org.junit.Assert.assertEquals(1, tested)
+    }
+
+    @Test fun resumeButtonsWork() {
+        val bmp = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        var resumed = 0; var part = 0; var discarded = 0; var fresh = 0
+        rule.setContent {
+            SwapScreen(
+                sourceThumb = bmp,
+                sourceThumbs = listOf(bmp),
+                hasSource = true,
+                hasTarget = true,
+                imageTarget = false,
+                durationMs = 20_000L,
+                trimStartMs = 0f,
+                trimEndMs = 20_000f,
+                onTrimChange = { _, _, _ -> },
+                targetAspect = 0f,
+                inputFps = 0,
+                targetW = 0,
+                targetH = 0,
+                fmt = { it.toString() },
+                preview = PreviewUi(),
+                run = RunUi(),
+                status = "",
+                statusIsError = false,
+                log = "",
+                opts = SwapOptions(),
+                onOptsChange = { _ -> },
+                hasEnhancer = false,
+                hasLipSyncer = false,
+                onRequestModel = { _, _ -> },
+                showFaceBoxes = false,
+                batch = emptyList(),
+                onRemoveFromBatch = { _ -> },
+                onAddToBatch = { },
+                onLivePlay = { },
+                onOpenBatchOutput = { _ -> },
+                outputAutoSaved = false,
+                batchAutoSave = false,
+                onBatchAutoSave = { _ -> },
+                openCard = "",
+                onToggleCard = { _ -> },
+                hasOutput = false,
+                outputFile = null,
+                outputPartial = false,
+                onSaveFrame = { _ -> },
+                saved = false,
+                savedPath = null,
+                onPickSource = { },
+                onPickTarget = { },
+                hasVoice = false,
+                voiceName = null,
+                voiceDurationMs = 0L,
+                voiceTrimStartMs = 0f,
+                voiceTrimEndMs = 0f,
+                onVoiceTrimChange = { _, _ -> },
+                voicePosMs = 0f,
+                voicePlaying = false,
+                onVoicePlayPause = { },
+                onVoiceSeek = { _ -> },
+                onPickVoice = { },
+                onClearVoice = { },
+                recordingVoice = false,
+                onToggleRecordVoice = { },
+                onSavePreviewFrame = { },
+                onClearSource = { },
+                onCaptureSource = { },
+                onCapturePhoto = { },
+                onCaptureVideo = { },
+                onClearTarget = { },
+                onDeleteOutput = { },
+                onSwap = { },
+                resumeLabel = "Continue unfinished swap: clip (0:06.0 of 0:10.3 done)",
+                onResume = { resumed++ },
+                onSaveDonePart = { part++ },
+                onDiscardResume = { discarded++ },
+                onNewProject = { fresh++ },
+                estimate = "About 2 min · phone gets warm",
+                onCancel = { },
+                modelsMissing = false,
+                onDownload = { },
+                onShareLog = { },
+                onSave = { },
+                onShare = { },
+                modifier = Modifier,
+
+
+            )
+        }
+        rule.onNode(androidx.compose.ui.test.hasText("Continue unfinished swap", substring = true)).performScrollTo().performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+        rule.onNode(androidx.compose.ui.test.hasText("Save the part that is done")).performScrollTo().performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+        rule.onNode(androidx.compose.ui.test.hasText("Discard unfinished swap")).performScrollTo().performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+        rule.onNode(androidx.compose.ui.test.hasText("New project")).performScrollTo().performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+        println("RESUME resumed=$resumed part=$part discarded=$discarded fresh=$fresh")
+        org.junit.Assert.assertEquals(listOf(1, 1, 1, 1), listOf(resumed, part, discarded, fresh))
     }
 }

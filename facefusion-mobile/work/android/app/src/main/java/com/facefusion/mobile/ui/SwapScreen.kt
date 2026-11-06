@@ -330,6 +330,12 @@ fun SwapScreen(
     /** An unfinished swap can be continued: the button's text, or null for no button. */
     resumeLabel: String? = null,
     onResume: () -> Unit = {},
+    /** Make the part that is done into a video now; null hides the button. */
+    onSaveDonePart: (() -> Unit)? = null,
+    /** Throw the unfinished swap away; null hides the button. */
+    onDiscardResume: (() -> Unit)? = null,
+    /** Start again from nothing (no video, no result, no unfinished swap); null hides it. */
+    onNewProject: (() -> Unit)? = null,
     /** Swap 3 seconds from the preview position into a short test clip; null hides it. */
     onTest3s: (() -> Unit)? = null,
     /** "About 4 min · phone gets warm", or null when there is nothing to estimate. */
@@ -1290,6 +1296,27 @@ fun SwapScreen(
         ) {
             Text(resumeLabel, fontSize = 14.sp, textAlign = TextAlign.Center)
         }
+        if (resumeLabel != null && idle && (onSaveDonePart != null || onDiscardResume != null)) Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (onSaveDonePart != null) OutlinedButton(
+                onClick = onSaveDonePart,
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text(stringResource(R.string.resume_save_part), fontSize = 13.sp,
+                     textAlign = TextAlign.Center) }
+            if (onDiscardResume != null) OutlinedButton(
+                onClick = onDiscardResume,
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text(stringResource(R.string.resume_discard), fontSize = 13.sp,
+                     textAlign = TextAlign.Center) }
+        }
+        if (onNewProject != null && idle && (hasTarget || resumeLabel != null)) TextButton(
+            onClick = onNewProject,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(stringResource(R.string.newproj_button)) }
 
         // ---------------------------------------------------------------- run
         // One button, two jobs: a separate Cancel would sit dead for the entire time the

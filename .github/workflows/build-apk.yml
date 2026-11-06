@@ -75,6 +75,13 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.45 (Continue):
+          - Continue works: it used to reload the video, which started loading the models for the preview, and the swap gave up after waiting only 5 seconds for them, so nothing happened. It now carries on at once when the video is already on screen, and otherwise waits (up to 2 minutes, with a message, Cancel stops it) for the models to finish loading.
+          - The swapped part is no longer deleted: reloading the video after Continue, or after a crash, used to delete the swapped video left by the last run. It stays until the new run has really started.
+          - New buttons next to Continue: "Save the part that is done" (makes a video from the saved pieces right now, to watch, save or share), "Discard unfinished swap", and "New project" (removes the video, result and unfinished swap; faces and settings stay).
+          - A Swap or Continue that cannot start now says why instead of doing nothing.
+          - Progress was already saved every 2 seconds of video; an accidental close loses at most the last 2 seconds.
+
           Version 1.0.44 (scenes where the swap did not happen):
           - Second look: a video frame in which no face is found is searched again in overlapping zoomed tiles, so small or distant faces are swapped instead of left as filmed. Frames with a face pay nothing; a stretch with no face is re-checked only every 3rd frame (every 8th after a second).
           - Upside-down or sideways heads: on such a frame, if a face was seen in the last half second, rotated faces are tried too, even with "detect rotated faces" off. Your settings are unchanged.

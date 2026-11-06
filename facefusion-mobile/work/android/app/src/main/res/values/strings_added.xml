@@ -209,4 +209,22 @@
     <string name="estimate_hot">phone gets hot, the app slows down to protect it</string>
     <string name="estimate_line">About %1$s · %2$s</string>
     <string name="estimate_line_guess">About %1$s (rough guess until your first swap) · %2$s</string>
+    <!-- 1.0.45: Continue, discard, new project -->
+    <string name="resume_gone">The unfinished swap could not be found any more. Press Swap to start again.</string>
+    <string name="resume_save_part">Save the part that is done</string>
+    <string name="resume_discard">Discard unfinished swap</string>
+    <string name="resume_discard_title">Discard the unfinished swap?</string>
+    <string name="resume_discard_body">The part that is already swapped is deleted and cannot be continued. Your faces and settings stay.</string>
+    <string name="resume_discard_ok">Discard</string>
+    <string name="resume_discarded">Unfinished swap discarded.</string>
+    <string name="resume_part_saved">The first %1$s are saved as a video below. The unfinished swap is still there to continue.</string>
+    <string name="newproj_button">New project</string>
+    <string name="newproj_title">Start a new project?</string>
+    <string name="newproj_body">This removes the video, the result and any unfinished swap. Your faces and settings stay.</string>
+    <string name="newproj_ok">New project</string>
+    <string name="newproj_done">New project: pick a video to start.</string>
+    <string name="status_waiting_models">Waiting for the models to finish loading, then the swap starts… (Cancel stops it)</string>
+    <string name="status_run_no_source">Pick a source face first.</string>
+    <string name="status_run_no_target">Pick a video first.</string>
+    <string name="status_run_no_voice">Lip sync needs a voice: add one or switch lip sync off.</string>
 </resources>
