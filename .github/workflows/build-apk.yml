@@ -75,6 +75,11 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.51 (swap only on faces, closer likeness):
+          - No more faces pasted where there is no face: the detector sometimes fires on face-like patterns (a plaid shirt in a test clip, at knee height), and the swap then pasted a face there. Such boxes are now dropped: the face landmarker scored them 0.07-0.11, while every real face in the clip (turned, blurred, looking down) scored 0.36 or more. On that clip all 25 false faces are gone and both people are still found in every frame.
+          - Closer likeness to the source photo: the face swapper weight is now 0.65 by default (was 0.5), which keeps more of the source face. If you never moved that slider it moves to 0.65 once; a value you set is kept.
+          - Includes 1.0.50: sideways faces keep the swap with side photos, natural closed eyes, sticky face selection.
+
           Version 1.0.50 (sideways faces, closed eyes):
           - Sideways faces: when the person's Faces card has a photo turned the same way, a turned face keeps the full swap 15 degrees further round before the head-turn fade. On a 15 s two-person clip (both faces found in every frame) fully swapped faces went from 140 to 301 of 330, and none is left unswapped (was 10). Switch: "Swap turned faces with side photos". Add left- and right-turned photos on the Faces tab to get it.
           - Natural closed eyes: while an eye is shut, its own lids and lashes stay as filmed instead of being drawn from the source photo's open eyes (which smeared them). Each eye on its own, fading in as it closes. Switch: "Natural closed eyes". No extra model needed.

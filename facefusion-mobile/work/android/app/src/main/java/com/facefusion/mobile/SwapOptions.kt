@@ -26,7 +26,7 @@ data class SwapOptions(
      * unmodified; above it the source is amplified and the target identity subtracted,
      * which is the direction to push for a stronger resemblance.
      */
-    val weight: Float = 0.5f,
+    val weight: Float = 0.65f,
 
     /** `--face-mask-blur`, 0.0-1.0 step 0.05. How soft the swapped region's edge is. */
     val maskBlur: Float = 0.3f,
@@ -259,7 +259,7 @@ data class SwapOptions(
      * matching, which is cheap. Fast video re-detects every 2 frames.
      */
     fun fastPreset(): SwapOptions = copy(
-        weight = 0.5f,
+        weight = 0.65f,
         pixelBoost = 1,
         maskBlur = 0.4f,
         maskPadding = listOf(0, 0, 0, 0),
@@ -280,7 +280,7 @@ data class SwapOptions(
     )
 
     fun realisticPreset(): SwapOptions = copy(
-        weight = 0.5f,
+        weight = 0.65f,
         pixelBoost = 2,
         maskBlur = 0.3f,
         maskPadding = listOf(0, 0, 0, 0),

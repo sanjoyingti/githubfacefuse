@@ -1397,6 +1397,11 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
     meanPeak /= 68.0;
     float score68 = (float)std::min(1.0, std::max(0.0, meanPeak / 0.9));  // numpy.interp
     f.lmScore = score68;
+    // NOT A FACE: the detector also fires on face-like patterns (a plaid shirt, a logo), and
+    // the swap then pastes a face there. The landmarker cannot find a face on those: on a
+    // test clip they scored 0.07-0.11, while real faces -- turned, blurred, looking down --
+    // never went below 0.36 (median 0.93). Under 0.2 the box is dropped.
+    if (cfg.rejectFalseFaces && score68 < 0.2f) continue;
     if ((size_t)idx < recovered.size() && recovered[(size_t)idx]) {
       // A recovered face must be a confident face of about the size it had.
       float l5[10];

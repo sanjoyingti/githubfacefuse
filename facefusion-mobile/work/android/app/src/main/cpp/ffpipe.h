@@ -117,6 +117,8 @@ struct Config {
   // SIDE PHOTOS: a face turned the way one of its source photos is turned keeps the swap
   // 15 degrees further round before the head-turn fade (see Impl::sideBonus).
   bool sideHold = true;
+  // NOT A FACE: detections whose landmarker score is under 0.2 are dropped (see analyse).
+  bool rejectFalseFaces = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;

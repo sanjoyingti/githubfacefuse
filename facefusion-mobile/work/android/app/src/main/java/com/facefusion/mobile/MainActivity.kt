@@ -1954,6 +1954,17 @@ class MainActivity : ComponentActivity() {
             // offers, and Settings keeps a delete-only row for the file itself.
             if (it.swapper == "inswapper") it.copy(swapper = "hyperswap") else it
         }
+        // STRONGER LIKENESS, once (build 51): a swapper weight still at the old default 0.5
+        // moves to 0.65, which keeps more of the source photo's face. A value the user set is kept.
+        run {
+            val rp = getSharedPreferences("ff_recommended", MODE_PRIVATE)
+            if (!rp.getBoolean("weight_v51", false)) {
+                if (kotlin.math.abs(opts.weight - 0.5f) < 1e-4f) {
+                    opts = opts.copy(weight = 0.65f); opts.save(this)
+                }
+                rp.edit().putBoolean("weight_v51", true).apply()
+            }
+        }
         VideoSwapper.lowMemory = opts.lowestMemory
         ApiService.restore(this)
         // RECOMMENDED SETTINGS, applied ONCE on the first start of build 40 and later, as

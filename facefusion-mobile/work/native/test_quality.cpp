@@ -168,6 +168,7 @@ int main(int argc, char** argv) {
     else if (a == "--second") cfg.secondLook = v() == "1";
     else if (a == "--detect-only") detectOnly = v() == "1";
     else if (a == "--sidehold") cfg.sideHold = v() == "1";
+    else if (a == "--weight") cfg.swapperWeight = (float)atof(v().c_str());
     else if (a == "--eyes") cfg.keepClosedEyes = v() == "1";   // another photo of the source person
     else frames.push_back(a);
   }
@@ -206,8 +207,9 @@ int main(int argc, char** argv) {
     printf("frame %d faces %zu", idx - 1, faces.size());
     for (const auto& f : faces) {
       ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
-      printf(" [det %.2f yaw %.0f pitch %.0f fade %.2f box %.0f,%.0f,%.0f,%.0f mouth %.0f,%.0f]",
-             f.detScore, p.yaw, p.pitch, f.poseFade, f.box[0], f.box[1], f.box[2], f.box[3],
+      float eL = 1, eR = 1; ffmotion::eyeOpenness2(f.landmark68, &eL, &eR);
+      printf(" [lm %.2f eyes %.2f/%.2f det %.2f yaw %.0f pitch %.0f fade %.2f box %.0f,%.0f,%.0f,%.0f mouth %.0f,%.0f]",
+             f.lmScore, eL, eR, f.detScore, p.yaw, p.pitch, f.poseFade, f.box[0], f.box[1], f.box[2], f.box[3],
              (f.landmark5_68[6] + f.landmark5_68[8]) * 0.5f,
              (f.landmark5_68[7] + f.landmark5_68[9]) * 0.5f);
     }
