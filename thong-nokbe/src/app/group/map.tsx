@@ -119,6 +119,16 @@ export default function GroupMap() {
                   {isMe ? 'You' : displayName(u)}
                 </Text>
                 <Text style={[styles.status, { color: p ? colors.primary : colors.muted }]}>{p ? `📍 ${ago(p.updatedMs)}` : 'Location off'}</Text>
+                {p && (
+                  <Pressable
+                    style={styles.gmaps}
+                    hitSlop={6}
+                    accessibilityLabel={`Open ${isMe ? 'my' : u.name + "'s"} location in Google Maps`}
+                    onPress={() => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}`)}
+                  >
+                    <Text style={styles.gmapsText}>Google Maps</Text>
+                  </Pressable>
+                )}
                 {!p && !isMe && (
                   <Pressable
                     style={[styles.ask, asked[u.uid] && { opacity: 0.5 }]}
@@ -147,6 +157,8 @@ const styles = StyleSheet.create({
   member: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
   memberName: { flex: 1, color: colors.text, fontSize: 15, fontWeight: '700' },
   status: { fontSize: 13, fontWeight: '700' },
+  gmaps: { marginLeft: 8, paddingHorizontal: 10, height: 30, borderRadius: 15, borderWidth: 1.5, borderColor: colors.primary, justifyContent: 'center' },
+  gmapsText: { color: colors.primary, fontWeight: '800', fontSize: 12 },
   ask: { marginLeft: 8, paddingHorizontal: 12, height: 30, borderRadius: 15, backgroundColor: colors.primary, justifyContent: 'center' },
   askText: { color: '#fff', fontWeight: '800', fontSize: 13 },
 });

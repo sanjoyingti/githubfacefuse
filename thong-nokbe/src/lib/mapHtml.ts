@@ -16,12 +16,33 @@ export function mapHtml(): string {
 .pin.me{background:#2563EB}
 .pin.stale{opacity:.6}
 .dot{width:12px;height:12px;border-radius:6px;background:#16A34A;border:2px solid #fff;transform:translate(-50%,-50%)}
-.dot.me{background:#2563EB}</style>
+.dot.me{background:#2563EB}
+#layers{position:absolute;top:10px;right:10px;z-index:1000;display:flex;background:#fff;border-radius:18px;overflow:hidden;box-shadow:0 1px 6px rgba(0,0,0,.4);font-family:sans-serif}
+#layers button{border:0;background:#fff;color:#111;font-weight:700;font-size:13px;padding:8px 12px}
+#layers button.on{background:#16A34A;color:#fff}
+.leaflet-control-attribution{font-size:9px}</style>
 </head><body><div id="map"></div>
+<div id="layers"><button id="b-map" class="on">Map</button><button id="b-sat">Satellite</button></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-var map = L.map('map', { zoomControl: true, attributionControl: false }).setView([26.14, 91.74], 12);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+var map = L.map('map', { zoomControl: true, attributionControl: true }).setView([26.14, 91.74], 12);
+map.attributionControl.setPrefix(false);
+// Street map (OpenStreetMap) and satellite photos (Esri World Imagery) with place names on top.
+var street = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
+var sat = L.layerGroup([
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' }),
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 })
+]);
+street.addTo(map);
+function setLayer(name){
+  if (name === 'sat') { map.removeLayer(street); sat.addTo(map); } else { map.removeLayer(sat); street.addTo(map); }
+  document.getElementById('b-map').className = name === 'sat' ? '' : 'on';
+  document.getElementById('b-sat').className = name === 'sat' ? 'on' : '';
+  try { localStorage.setItem('layer', name); } catch (e) {}
+}
+document.getElementById('b-map').onclick = function(){ setLayer('map'); };
+document.getElementById('b-sat').onclick = function(){ setLayer('sat'); };
+try { if (localStorage.getItem('layer') === 'sat') setLayer('sat'); } catch (e) {}
 var markers = {}, dots = {}, pts = {}, fitted = false;
 function send(o){ if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(o)); }
 function ago(ms){ var s=Math.round(ms/1000); if(s<60)return 'now'; var m=Math.round(s/60); if(m<60)return m+' min ago'; var h=Math.round(m/60); return h+' h ago'; }
