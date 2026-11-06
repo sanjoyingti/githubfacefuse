@@ -26,7 +26,21 @@ const listeners = new Set<(on: boolean) => void>();
 let onCache: boolean | null = null;
 
 export async function isSharingOn(): Promise<boolean> {
-  if (onCache === null) onCache = (await AsyncStorage.getItem(ON_KEY).catch(() => null)) === '1';
+  if (onCache === null) {
+    const v = await AsyncStorage.getItem(ON_KEY).catch(() => null);
+    if (v === null) {
+      // Older versions asked per group ("Share your live location?"). Anyone who said yes there, and
+      // still allows location, keeps sharing without being asked again.
+      const legacy = await AsyncStorage.getItem('liveLocationGroups').catch(() => null);
+      let agreed = false;
+      try {
+        agreed = Array.isArray(JSON.parse(legacy ?? '[]')) && JSON.parse(legacy ?? '[]').length > 0;
+      } catch {}
+      const perm = agreed ? await Location.getForegroundPermissionsAsync().catch(() => ({ granted: false })) : { granted: false };
+      onCache = agreed && perm.granted;
+      await AsyncStorage.setItem(ON_KEY, onCache ? '1' : '0').catch(() => {});
+    } else onCache = v === '1';
+  }
   return onCache;
 }
 async function setOnFlag(on: boolean) {

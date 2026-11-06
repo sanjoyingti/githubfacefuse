@@ -4,7 +4,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { updateDoc } from '@react-native-firebase/firestore';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
-import { chatRef, isMainAdmin, sendMessage } from '../../lib/chats';
+import { chatRef, sendMessage } from '../../lib/chats';
 import { isValidVpa } from '../../lib/upi';
 import { Button, Card, Empty, Input } from '../../components/ui';
 import { UpiQr } from '../../components/UpiQr';
@@ -21,8 +21,8 @@ export default function FeeSettings() {
   const [amount, setAmount] = useState(chat?.upi?.amount ? String(chat.upi.amount) : '');
   const [busy, setBusy] = useState(false);
 
-  if (!chat || !isMainAdmin(chat, me.uid))
-    return <Empty title="Only the group's creator can set its UPI" subtitle="Fees for this group are paid to the creator's own UPI ID." />;
+  if (!chat || !chat.admins.includes(me.uid))
+    return <Empty title="Only the group's admins can set its UPI" subtitle="Fees for this group are paid to the UPI ID the admin sets." />;
 
   const save = async () => {
     const amt = Number(amount);

@@ -235,12 +235,17 @@ test('live location: a member shares only their own point; members see it, outsi
   await assertSucceeds(deleteDoc(doc(memberDb, 'chats/g1/locations/member'))); // turn off
 });
 
-test('UPI: only the group creator sets the UPI ID; a second admin cannot redirect fees', async () => {
+test('UPI: the admin and co-admins set the UPI ID; ordinary members cannot', async () => {
+  const upi = (vpa) => ({ vpa, payeeName: 'Gym', amount: 800 });
+  // ordinary member
+  await assertFails(updateDoc(doc(as(MEMBER), 'chats/g1'), { upi: upi('member@ybl') }));
+  // outsider
+  await assertFails(updateDoc(doc(as(OUTSIDER), 'chats/g1'), { upi: upi('outsider@ybl') }));
+  // main admin
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { upi: upi('owner@okaxis') }));
+  // co-admin (second admin)
   await env.withSecurityRulesDisabled(async (ctx) => {
-    await updateDoc(doc(ctx.firestore(), 'chats/g1'), { admins: [ADMIN.uid, MEMBER.uid] }); // MEMBER becomes second admin
+    await updateDoc(doc(ctx.firestore(), 'chats/g1'), { admins: [ADMIN.uid, MEMBER.uid] });
   });
-  const upi = { vpa: 'thief@ybl', payeeName: 'X', amount: 500 };
-  await assertFails(updateDoc(doc(as(MEMBER), 'chats/g1'), { upi })); // second admin
-  await assertSucceeds(updateDoc(doc(as(MEMBER), 'chats/g1'), { name: 'Gym 2' })); // other edits still fine
-  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { upi: { vpa: 'owner@okaxis', payeeName: 'Owner', amount: 800 } })); // creator
+  await assertSucceeds(updateDoc(doc(as(MEMBER), 'chats/g1'), { upi: upi('coadmin@okaxis') }));
 });

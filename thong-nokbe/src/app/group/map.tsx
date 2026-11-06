@@ -7,6 +7,7 @@ import { useChat } from '../../context/ChatsProvider';
 import { setSharing, useGroupLocations, useSharingOn } from '../../lib/liveLocation';
 import { mapHtml, pointsForMap } from '../../lib/mapHtml';
 import { displayName, useUsers } from '../../lib/users';
+import { sendMessage } from '../../lib/chats';
 import { Avatar, Empty } from '../../components/ui';
 import { useBottomInset } from '../../components/useBottomInset';
 import { colors } from '../../theme';
@@ -31,6 +32,7 @@ export default function GroupMap() {
   const bottomInset = useBottomInset();
   const web = useRef<any>(null);
   const [busy, setBusy] = useState(false);
+  const [asked, setAsked] = useState<Record<string, boolean>>({});
   const html = useMemo(() => mapHtml(), []);
   const points = useGroupLocations(id);
   const sharing = useSharingOn();
@@ -50,6 +52,12 @@ export default function GroupMap() {
     .map((uid) => users[uid] ?? ({ uid, name: '…', phone: '' } as UserProfile))
     .sort((a, b) => Number(!!byUid[b.uid]) - Number(!!byUid[a.uid]) || a.name.localeCompare(b.name));
   const count = mapPoints.length;
+
+  // Remind someone whose location is off: a message in the group (they get a notification).
+  const ask = async (u: UserProfile) => {
+    setAsked((a) => ({ ...a, [u.uid]: true }));
+    await sendMessage(chat.id, me, `📍 ${me.name} asked ${u.name} to turn on live location: Me → "Share my live location", or 📍 in this group.`).catch(() => {});
+  };
 
   const toggle = async (on: boolean) => {
     setBusy(true);
@@ -109,6 +117,16 @@ export default function GroupMap() {
                   {isMe ? 'You' : displayName(u)}
                 </Text>
                 <Text style={[styles.status, { color: p ? colors.primary : colors.muted }]}>{p ? `📍 ${ago(p.updatedMs)}` : 'Location off'}</Text>
+                {!p && !isMe && (
+                  <Pressable
+                    style={[styles.ask, asked[u.uid] && { opacity: 0.5 }]}
+                    disabled={asked[u.uid]}
+                    onPress={() => ask(u)}
+                    hitSlop={6}
+                  >
+                    <Text style={styles.askText}>{asked[u.uid] ? 'Asked' : 'Ask'}</Text>
+                  </Pressable>
+                )}
               </Pressable>
             );
           })}
@@ -127,4 +145,6 @@ const styles = StyleSheet.create({
   member: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
   memberName: { flex: 1, color: colors.text, fontSize: 15, fontWeight: '700' },
   status: { fontSize: 13, fontWeight: '700' },
+  ask: { marginLeft: 8, paddingHorizontal: 12, height: 30, borderRadius: 15, backgroundColor: colors.primary, justifyContent: 'center' },
+  askText: { color: '#fff', fontWeight: '800', fontSize: 13 },
 });
