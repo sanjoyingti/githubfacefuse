@@ -75,6 +75,14 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.50 (sideways faces, closed eyes):
+          - Sideways faces: when the person's Faces card has a photo turned the same way, a turned face keeps the full swap 15 degrees further round before the head-turn fade. On a 15 s two-person clip (both faces found in every frame) fully swapped faces went from 140 to 301 of 330, and none is left unswapped (was 10). Switch: "Swap turned faces with side photos". Add left- and right-turned photos on the Faces tab to get it.
+          - Natural closed eyes: while an eye is shut, its own lids and lashes stay as filmed instead of being drawn from the source photo's open eyes (which smeared them). Each eye on its own, fading in as it closes. Switch: "Natural closed eyes". No extra model needed.
+          - Sticky face selection: after tapping a face ("swap only this face"), the same person keeps being swapped while the eyes close or the head turns, instead of being dropped when the matcher is unsure.
+          - After a video swap the log says in how many frames a found face was not swapped and why (face selection, turned too far, kept as filmed, largest face only).
+          - "More photos of Source N" shows "of 5" (it said "of 3").
+          Both new switches are on by default; your other settings are kept.
+
           Version 1.0.49 (the zip builds where Qualcomm's download is blocked):
           - If Qualcomm's runtime download is refused (HTTP 403, seen in GitHub Codespaces), the build now takes the native libraries by itself from the published APK of THIS SAME release (named by the BUILD_NUMBER file) and compiles only the Kotlin code around them: same app, no Qualcomm download, no C++ compile. Tested from a fresh copy with Qualcomm made unreachable: a complete APK.
           - A new check refuses native libraries from another release: an APK of an older version (for example v0.9.0) lacks newer native functions and the app would crash. The build stops with a clear message instead. Tested with a 1.0.40 APK: refused.

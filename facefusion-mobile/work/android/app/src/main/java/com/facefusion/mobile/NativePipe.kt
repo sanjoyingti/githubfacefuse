@@ -117,7 +117,14 @@ object NativePipe {
                    opts.smartSpeed)
         setQuality2(opts.autoBoost, opts.seamless, opts.hairAware, opts.temporalSmooth)
         setEnhanceSharpen(if (opts.enhanceSharpen) opts.enhanceSharpenStrength else 0f)
+        setQuality3(opts.keepClosedEyes, opts.sideHold)
     }
+
+    /** Closed eyes stay as filmed; side photos hold the swap further round (build 50). */
+    @JvmStatic external fun setQuality3(keepClosedEyes: Boolean, sideHold: Boolean)
+
+    /** Why found faces were not swapped since the last call ("" when all were); resets. */
+    @JvmStatic external fun swapReport(): String
 
     /** Sharper enhancer: unsharp mask after the face enhancer, 0 = off (build 41). */
     @JvmStatic external fun setEnhanceSharpen(amount: Float)

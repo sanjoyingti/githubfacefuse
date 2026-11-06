@@ -142,6 +142,21 @@ int main() {
     const float mn = std::min(l, r), mx = std::max(l, r);
     printf("wink trigger fires for half-shut vs open: %d\n", (mn < 0.22f || (mx - mn > 0.09f && mn < 0.30f)) ? 1 : 0);
   }
+  // closed eyes: the mask is lowered over a shut eye, untouched elsewhere and for keep 0
+  {
+    float lm[136] = {};
+    auto pt = [&](int k, float x, float y) { lm[2 * k] = x; lm[2 * k + 1] = y; };
+    for (int k = 0; k < 6; ++k) { pt(36 + k, 30 + (k == 3 ? 30 : (k == 0 ? 0 : 15)), 40); pt(42 + k, 70 + (k == 3 ? 30 : (k == 0 ? 0 : 15)), 40); }
+    for (int k = 48; k < 68; ++k) pt(k, 64, 100);
+    ffcv::MatF m(128, 128, 1); for (auto& v : m.data) v = 1.f;
+    ffcv::Affine id;
+    ffcv::MatF a = m; ffmotion::keepEyesOriginal(a, id, lm, 1.f, 0.f);
+    const float lEye = a.row(37)[45], rEye = a.row(37)[85], cheek = a.row(90)[40];
+    printf("EYEKEEP left=%.2f right=%.2f cheek=%.2f\n", lEye, rEye, cheek);
+    if (!(lEye < 0.05f && rEye == 1.f && cheek == 1.f)) { printf("FAIL eye keep\n"); ++fails; }
+    ffcv::MatF b = m; ffmotion::keepEyesOriginal(b, id, lm, 0.f, 0.f);
+    if (b.data != m.data) { printf("FAIL eye keep 0\n"); ++fails; }
+  }
   printf(fails ? "test_new41: %d FAILED\n" : "test_new41: all passed\n", fails);
   return fails ? 1 : 0;
 }

@@ -131,4 +131,10 @@ void directionalBlur(ffcv::MatF& img, float vx, float vy, float len);
 void excludeOtherFaces(ffcv::MatF& mask, const ffcv::Affine& am, const float* box,
                        const std::vector<std::array<float, 4>>& others);
 
+// CLOSED EYES: in a crop-space mask (crop = am * frame), lower the mask over each eye --
+// lids, lashes and the crease above -- by keepL / keepR (0 nothing .. 1 fully original),
+// a soft ellipse around that eye's six landmarks (68-point indices 36-41 and 42-47).
+void keepEyesOriginal(ffcv::MatF& mask, const ffcv::Affine& am, const float* landmark68,
+                      float keepL, float keepR);
+
 }  // namespace ffmotion

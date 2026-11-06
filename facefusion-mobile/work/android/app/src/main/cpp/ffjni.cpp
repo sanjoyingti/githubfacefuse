@@ -152,6 +152,8 @@ struct Quality {
   bool smooth = true, recover = true, rotated = false;
   bool autoBoost = true, seamless = true, hairAware = true, temporalSmooth = true;
   float enhanceSharpen = 0.f;
+  bool keepClosedEyes = true;
+  bool sideHold = true;
 };
 Quality g_quality;
 // Whether the caller is feeding consecutive frames (setSequence). Re-applied at initEx so a
@@ -175,6 +177,8 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.hairAware = g_quality.hairAware;
   cfg.temporalSmooth = g_quality.temporalSmooth;
   cfg.enhanceSharpen = g_quality.enhanceSharpen;
+  cfg.keepClosedEyes = g_quality.keepClosedEyes;
+  cfg.sideHold = g_quality.sideHold;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -754,6 +758,26 @@ Java_com_facefusion_mobile_NativePipe_scanFaces(JNIEnv* env, jclass, jbyteArray 
   jfloatArray out = env->NewFloatArray((jsize)flat.size());
   if (out && !flat.empty()) env->SetFloatArrayRegion(out, 0, (jsize)flat.size(), flat.data());
   return out;
+}
+
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setQuality3(JNIEnv*, jclass, jboolean eyes, jboolean side) {
+  FF_PIPE_LOCK;
+  g_quality.keepClosedEyes = eyes == JNI_TRUE;
+  g_quality.sideHold = side == JNI_TRUE;
+  if (g_pipe) {
+    ffpipe::Config c = g_pipe->config();
+    applyQuality(c);
+    g_pipe->updateConfig(c);
+  }
+}
+
+/** Why found faces were not swapped since the last call (empty when all were); resets. */
+JNIEXPORT jstring JNICALL
+Java_com_facefusion_mobile_NativePipe_swapReport(JNIEnv* env, jclass) {
+  FF_PIPE_LOCK;
+  if (!g_pipe) return env->NewStringUTF("");
+  return env->NewStringUTF(g_pipe->swapReport(true).c_str());
 }
 
 JNIEXPORT void JNICALL

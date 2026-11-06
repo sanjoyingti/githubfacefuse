@@ -616,4 +616,53 @@ void excludeOtherFaces(ffcv::MatF& mask, const ffcv::Affine& am, const float* bo
   }
 }
 
+void keepEyesOriginal(ffcv::MatF& mask, const ffcv::Affine& am, const float* l,
+                      float keepL, float keepR) {
+  if (mask.c != 1) return;
+  auto tx = [&](int k, float* x, float* y) {
+    const float X = l[2 * k], Y = l[2 * k + 1];
+    *x = (float)(am(0, 0) * X + am(0, 1) * Y + am(0, 2));
+    *y = (float)(am(1, 0) * X + am(1, 1) * Y + am(1, 2));
+  };
+  // The mouth's centre (48-67), to know which side of the eye line is "up".
+  float mx = 0, my = 0;
+  for (int k = 48; k < 68; ++k) { float x, y; tx(k, &x, &y); mx += x; my += y; }
+  mx /= 20.f; my /= 20.f;
+  for (int e = 0; e < 2; ++e) {
+    const float keep = e == 0 ? keepL : keepR;
+    if (!(keep > 0.f)) continue;
+    const int a = e == 0 ? 36 : 42;   // outer corner .. inner corner are a, a+3
+    float cx = 0, cy = 0;
+    for (int k = a; k < a + 6; ++k) { float x, y; tx(k, &x, &y); cx += x; cy += y; }
+    cx /= 6.f; cy /= 6.f;
+    float x0, y0, x3, y3;
+    tx(a, &x0, &y0); tx(a + 3, &x3, &y3);
+    float ux = x3 - x0, uy = y3 - y0;
+    const float w = std::sqrt(ux * ux + uy * uy);
+    if (!(w > 1.f)) continue;
+    ux /= w; uy /= w;
+    float nx = -uy, ny = ux;                       // perpendicular
+    if ((mx - cx) * nx + (my - cy) * ny > 0) { nx = -nx; ny = -ny; }   // pointing up
+    // The lid and crease sit above the eye line: centre moved up, ellipse taller above.
+    const float ccx = cx + nx * 0.18f * w, ccy = cy + ny * 0.18f * w;
+    const float ra = 0.80f * w, rb = 0.55f * w;
+    const int x1 = std::max(0, (int)(ccx - ra - 2)), x2 = std::min(mask.w - 1, (int)(ccx + ra + 2));
+    const int y1 = std::max(0, (int)(ccy - ra - 2)), y2 = std::min(mask.h - 1, (int)(ccy + ra + 2));
+    for (int y = y1; y <= y2; ++y) {
+      float* row = mask.row(y);
+      for (int x = x1; x <= x2; ++x) {
+        const float dx = x - ccx, dy = y - ccy;
+        const float pa = (dx * ux + dy * uy) / ra, pb = (dx * nx + dy * ny) / rb;
+        const float r = std::sqrt(pa * pa + pb * pb);
+        if (r >= 1.f) continue;
+        // Full inside 0.55 of the radius, fading to nothing at the edge (smoothstep).
+        float t = (1.f - r) / 0.45f;
+        t = t > 1.f ? 1.f : t;
+        t = t * t * (3.f - 2.f * t);
+        row[x] *= 1.f - keep * t;
+      }
+    }
+  }
+}
+
 }  // namespace ffmotion

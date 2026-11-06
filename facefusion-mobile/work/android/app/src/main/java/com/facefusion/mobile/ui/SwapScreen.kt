@@ -873,7 +873,7 @@ fun SwapScreen(
         ) {
             Icon(Icons.Default.Add, contentDescription = null, Modifier.size(18.dp))
             Text(stringResource(R.string.photos_row_button, activeSource + 1,
-                                photoCounts.getOrNull(activeSource) ?: 1, 3),
+                                photoCounts.getOrNull(activeSource) ?: 1, com.facefusion.mobile.SourcePhotos.MAX),
                  Modifier.padding(start = 6.dp))
         }
 

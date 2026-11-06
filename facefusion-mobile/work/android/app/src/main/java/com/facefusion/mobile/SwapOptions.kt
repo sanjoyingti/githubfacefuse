@@ -241,6 +241,10 @@ data class SwapOptions(
     // Lowest memory: one frame in flight between decode, swap and encode instead of two.
     // Same output, a little slower. Off by default.
     val lowestMemory: Boolean = false,
+    // Closed eyes keep their own lids and lashes (ffpipe keepClosedEyes).
+    val keepClosedEyes: Boolean = true,
+    // A face turned the way one of its photos is turned keeps the swap further round.
+    val sideHold: Boolean = true,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -304,6 +308,8 @@ data class SwapOptions(
         expressionFactor = 0.8f,
         faceEnhance = true,
         enhanceBlend = 0.5f,
+        keepClosedEyes = true,
+        sideHold = true,
     )
 
     val pixelBoostLabel get() = "${256 * pixelBoost}x${256 * pixelBoost}"
@@ -369,6 +375,8 @@ data class SwapOptions(
             .putBoolean(K_SHARPEN, enhanceSharpen)
             .putFloat(K_SHARPEN_STRENGTH, enhanceSharpenStrength)
             .putBoolean(K_LOWEST_MEMORY, lowestMemory)
+            .putBoolean(K_CLOSED_EYES, keepClosedEyes)
+            .putBoolean(K_SIDE_HOLD, sideHold)
             .apply()
     }
 
@@ -414,6 +422,8 @@ data class SwapOptions(
         private const val K_SHARPEN = "enhance_sharpen"
         private const val K_SHARPEN_STRENGTH = "enhance_sharpen_strength"
         private const val K_LOWEST_MEMORY = "lowest_memory"
+        private const val K_CLOSED_EYES = "keep_closed_eyes"
+        private const val K_SIDE_HOLD = "side_hold"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -504,6 +514,8 @@ data class SwapOptions(
                 enhanceSharpenStrength = p.getFloat(K_SHARPEN_STRENGTH, d.enhanceSharpenStrength)
                     .coerceIn(0f, 1f),
                 lowestMemory = p.getBoolean(K_LOWEST_MEMORY, d.lowestMemory),
+                keepClosedEyes = p.getBoolean(K_CLOSED_EYES, d.keepClosedEyes),
+                sideHold = p.getBoolean(K_SIDE_HOLD, d.sideHold),
             )
         }
     }

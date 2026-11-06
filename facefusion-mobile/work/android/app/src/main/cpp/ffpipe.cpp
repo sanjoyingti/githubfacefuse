@@ -158,6 +158,8 @@ bool probeExecutes(ffnn::Handle h, std::string* why) {
  */
 static constexpr int kNoSource = -1;
 
+static float faceDistance(const float* a, const float* b);
+
 struct Pipeline::Impl {
   Nets n;
   AudioState audio;
@@ -320,13 +322,45 @@ struct Pipeline::Impl {
     float vel[2] = {0.f, 0.f};
     bool haveLm = false;
     int recRun = 0;   // consecutive frames this face was held, not detected
+    // STICKY SELECTION: frames left during which this face, once recognised as the chosen
+    // person, stays chosen although the matcher is unsure (eyes shut, head turned); and
+    // this frame's verdict, so every later pass of the frame gives the same answer.
+    int refHold = 0;
+    bool refPass = false;
   };
+  // The sequence state of faces[fi] on this frame (any options), or null.
+  SeqFace* seqFaceAny(const Face& f, size_t fi) {
+    if (!seq.on || fi >= seq.faces.size()) return nullptr;
+    SeqFace& sf = seq.faces[fi];
+    return std::memcmp(sf.box, f.box, sizeof(sf.box)) == 0 ? &sf : nullptr;
+  }
   // The sequence state of faces[fi] on THIS frame, or null outside a sequence. temporal()
   // writes this frame's faces first and in order, so index fi is face fi.
   SeqFace* seqFaceFor(const Face& f, size_t fi) {
     if (!seq.on || !cfg.smartSpeed || fi >= seq.faces.size()) return nullptr;
     SeqFace& sf = seq.faces[fi];
     return std::memcmp(sf.box, f.box, sizeof(sf.box)) == 0 ? &sf : nullptr;
+  }
+  // SIDE PHOTOS: when a source face has a photo turned the same way as this face (25 degrees
+  // or more), the swap holds 15 degrees further round before it fades: the identity for that
+  // angle then comes mostly from the matching photo (identityFor). Turned-off fade (>= 90)
+  // and a face without such a photo are unchanged.
+  float sideBonus(const Face& f, const Config& c) const {
+    if (!c.sideHold || c.poseFadeStart >= 90.f) return 0.f;
+    const ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
+    if (!p.ok || std::fabs(p.yaw) < 25.f) return 0.f;
+    for (const auto& slot : slotPhotoPose)
+      for (const auto& pp : slot)
+        if (std::isfinite(pp[0]) && std::fabs(pp[0]) >= 25.f && (pp[0] > 0) == (p.yaw > 0))
+          return 15.f;
+    return 0.f;
+  }
+
+  // The swap's verdict on face fi when it made one this frame, else the plain match.
+  bool refAllows(const Face& f, size_t fi, float refDistance) {
+    if (SeqFace* sq = seqFaceAny(f, fi)) return sq->refPass ||
+        faceDistance(f.embeddingNorm, refEmbeddingNorm) < refDistance;
+    return faceDistance(f.embeddingNorm, refEmbeddingNorm) < refDistance;
   }
   struct Sequence {
     // Written by setSequence from ANY thread (the UI thread stops the live player), read by
@@ -1452,7 +1486,8 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   // Pose fade and the temporal pass. A source image (noTrack) and a boxes-only question
   // never touch the sequence state.
   if (!boxesOnly) {
-    for (Face& f : faces) f.poseFade = ffmotion::poseFade(f.landmark5_68, cfg.poseFadeStart);
+    for (Face& f : faces)
+      f.poseFade = ffmotion::poseFade(f.landmark5_68, cfg.poseFadeStart + p_->sideBonus(f, cfg));
     if (p_->seq.on && !noTrack) p_->temporal(faces);
   }
 
@@ -2333,6 +2368,18 @@ bool Pipeline::hasLipReferenceFace() const {
   return !p_->lipRefs.empty();
 }
 
+std::string Pipeline::swapReport(bool reset) {
+  char buf[320];
+  if (framesWithFaces == 0) buf[0] = 0;
+  else snprintf(buf, sizeof(buf),
+                "faces found but not swapped in some frames: face selection %d, turned too far "
+                "%d, kept as filmed (assign) %d, largest face only %d (of %d frames with faces)",
+                skipRefFrames, skipFadeFrames, skipKeepFrames, skipLargestFrames, framesWithFaces);
+  std::string out = (skipRefFrames + skipFadeFrames + skipKeepFrames + skipLargestFrames) ? buf : "";
+  if (reset) skipRefFrames = skipFadeFrames = skipKeepFrames = skipLargestFrames = framesWithFaces = 0;
+  return out;
+}
+
 void Pipeline::resetStats() {
   msDetect = msLandmark = msRecognise = msSwap = msGeom = msEnhance = msLipSync = 0;
   msEdit = msEditCpu = 0;
@@ -2410,9 +2457,7 @@ bool Pipeline::syncLip(ffcv::Image& frame, const std::vector<Face>& faces,
   for (size_t fi = 0; fi < faces.size(); ++fi) {
     const Face& f = faces[fi];
     if (only && &f != only) continue;
-    if (byReference &&
-        faceDistance(f.embeddingNorm, p_->refEmbeddingNorm) >= cfg.referenceDistance)
-      continue;
+    if (byReference && !p_->refAllows(f, fi, cfg.referenceDistance)) continue;
     if (byLipReference) {
       if (lipBest[fi] < 0) continue;
     } else {
@@ -2817,19 +2862,42 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     }
   }
 
+  bool skipRef = false, skipFade = false, skipKeep = false, skipLargest = false;
+  struct SkipCount {
+    Pipeline* p; const bool& r; const bool& f; const bool& k; const bool& l; bool any;
+    ~SkipCount() {
+      if (!any) return;
+      ++p->framesWithFaces;
+      if (r) ++p->skipRefFrames;
+      if (f) ++p->skipFadeFrames;
+      if (k) ++p->skipKeepFrames;
+      if (l) ++p->skipLargestFrames;
+    }
+  } skipCount{this, skipRef, skipFade, skipKeep, skipLargest, !faces.empty()};
   for (size_t fi = 0; fi < faces.size(); ++fi) {
     const Face& f = faces[fi];
-    if (only && &f != only) continue;
+    if (only && &f != only) { skipLargest = true; continue; }
     // face_selector.py:find_match_faces -- ALL faces near the reference, not the nearest
     // one. Upstream returns a list, and a clip where the same person is detected twice
     // (a reflection, a poster) should swap both rather than pick between them.
-    if (byReference &&
-        faceDistance(f.embeddingNorm, p_->refEmbeddingNorm) >= cfg.referenceDistance)
-      continue;
+    // STICKY in a video: a face the sequence has been following, recognised as the chosen
+    // person within the last 45 frames, stays chosen while the match is merely weak (eyes
+    // shut, looking down, turned) -- a different person scores far lower than 0.42.
+    if (byReference) {
+      const float d = faceDistance(f.embeddingNorm, p_->refEmbeddingNorm);
+      Impl::SeqFace* sq = p_->seqFaceAny(f, fi);
+      bool pass = d < cfg.referenceDistance;
+      if (!pass && sq && sq->refHold > 0 && d < 0.42f) pass = true;
+      if (sq) {
+        sq->refPass = pass;
+        sq->refHold = d < cfg.referenceDistance ? 45 : (sq->refHold > 0 ? sq->refHold - 1 : 0);
+      }
+      if (!pass) { skipRef = true; continue; }
+    }
 
     // POSE FADE: a head turned far enough that the swapper would stretch it keeps its own
     // face. Checked before any pixel work, so a profile costs nothing.
-    if (f.poseFade < 0.02f) continue;
+    if (f.poseFade < 0.02f) { skipFade = true; continue; }
 
     // AUTO PIXEL BOOST, per face: the frame->crop scale of the alignment at the normal
     // size says how much the swapped face would be STRETCHED when pasted back. A face
@@ -2867,7 +2935,7 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // ⚠ The ONE assignment that is an instruction NOT to swap. It has to be honoured
     // here, before any pixel is read, rather than by pointing the face at some harmless
     // slot: "keep this person's own face" is not a swap with a different source.
-    if (six == kNoSource) continue;
+    if (six == kNoSource) { skipKeep = true; continue; }
 
     // The MASK MODELS run on THIS thread, before the paste. Build 7 ran them on a
     // std::async thread per face to overlap the swapper; on device that path crashed
@@ -3007,7 +3075,16 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
         if (&g != &f && g.box[0] < gx1 && g.box[2] > gx0 && g.box[1] < gy1 && g.box[3] > gy0)
           touching.push_back(&g);
     }
-    if (modelMasks || f.poseFade < 0.999f || !touching.empty()) {
+    // CLOSED EYES: how much of each eye stays as filmed (0 open .. 1 shut).
+    float eyeKeepL = 0.f, eyeKeepR = 0.f;
+    if (cfg.keepClosedEyes) {
+      float oL = 1.f, oR = 1.f;
+      ffmotion::eyeOpenness2(f.landmark68, &oL, &oR);
+      auto keepOf = [](float o) { return std::max(0.f, std::min(1.f, (0.20f - o) / 0.07f)); };
+      eyeKeepL = keepOf(oL); eyeKeepR = keepOf(oR);
+    }
+    const bool keepEyes = eyeKeepL > 0.f || eyeKeepR > 0.f;
+    if (modelMasks || f.poseFade < 0.999f || !touching.empty() || keepEyes) {
       t0 = nowMs();
       if (parallel) {
         p_->maskWorker.wait();
@@ -3036,6 +3113,7 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
             faceMask.data[i] = 0.7f * faceMask.data[i] + 0.3f * sface->lastMask->data[i];
         sface->lastMask = std::make_shared<ffcv::MatF>(faceMask);
       }
+      if (keepEyes) ffmotion::keepEyesOriginal(faceMask, am, f.landmark68, eyeKeepL, eyeKeepR);
       if (!touching.empty()) {
         std::vector<std::array<float, 4>> ob;
         for (const Face* g : touching) ob.push_back({g->box[0], g->box[1], g->box[2], g->box[3]});
@@ -3365,9 +3443,7 @@ bool Pipeline::restoreExpression(ffcv::Image& frame, const std::vector<Face>& fa
     const Face& f = faces[fi];
     // The faces swapAll changed, and only those.
     if (only && &f != only) continue;
-    if (p_->haveReference &&
-        faceDistance(f.embeddingNorm, p_->refEmbeddingNorm) >= cfg.referenceDistance)
-      continue;
+    if (p_->haveReference && !p_->refAllows(f, fi, cfg.referenceDistance)) continue;
     if (p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance) == kNoSource) continue;
     if (f.poseFade < 0.02f) continue;
     // SMART SPEED: the restorer's job the swap cannot do is the EYES -- a blink or closed

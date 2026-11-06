@@ -110,6 +110,13 @@ struct Config {
   // SECOND LOOK: a video frame with no face found is searched again in overlapping zoomed
   // tiles, so small or distant faces are not left as filmed.
   bool secondLook = true;
+  // CLOSED EYES: while an eye is shut (or nearly), its lids and lashes stay as filmed. The
+  // swapper draws the source photo's OPEN eyes into a closed eye, which smears the lids.
+  // Per eye (a wink works), fading in as the eye closes; nothing changes while eyes are open.
+  bool keepClosedEyes = true;
+  // SIDE PHOTOS: a face turned the way one of its source photos is turned keeps the swap
+  // 15 degrees further round before the head-turn fade (see Impl::sideBonus).
+  bool sideHold = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;
@@ -654,6 +661,11 @@ class Pipeline {
   double msGeomMask = 0;     // createBoxMask alone -- frame-invariant, so suspect
   double msGeomPaste = 0;    // pasteBack alone
   int framesDone = 0, facesDone = 0;
+  // Frames in which a found face was NOT swapped, by why (reported after a run, see
+  // swapReport): face selection, turned too far, "keep this face", largest face only.
+  int skipRefFrames = 0, skipFadeFrames = 0, skipKeepFrames = 0, skipLargestFrames = 0;
+  int framesWithFaces = 0;
+  std::string swapReport(bool reset);
   // Zero every counter above.  A run has to call this itself: the accumulators are
   // cumulative across frames by design, and setSource clears only SOME of them --
   // msSwap and msLipSync survive it, so a second run without this reports the first

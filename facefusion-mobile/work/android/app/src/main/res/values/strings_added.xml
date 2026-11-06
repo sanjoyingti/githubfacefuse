@@ -227,4 +227,9 @@
     <string name="status_run_no_source">Pick a source face first.</string>
     <string name="status_run_no_target">Pick a video first.</string>
     <string name="status_run_no_voice">Lip sync needs a voice: add one or switch lip sync off.</string>
+    <!-- 1.0.50 -->
+    <string name="opt_closed_eyes">Natural closed eyes</string>
+    <string name="opt_closed_eyes_hint">While an eye is shut, its own lids and lashes stay as filmed, so they do not smear. Each eye on its own (winks too).</string>
+    <string name="opt_side_hold">Swap turned faces with side photos</string>
+    <string name="opt_side_hold_hint">If this person has a photo turned the same way (Faces tab), a face turned sideways keeps the swap 15 degrees further round before fading.</string>
 </resources>

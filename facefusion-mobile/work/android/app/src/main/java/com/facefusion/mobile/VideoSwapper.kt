@@ -453,6 +453,7 @@ class VideoSwapper(
         // Zero the native counters so the line below is THIS run, not this run plus
         // every earlier one -- they accumulate for the life of the pipeline.
         NativePipe.resetStats()
+        runCatching { NativePipe.swapReport() }   // clears the previous run's counts
         var cancelled = false
         var lastThermal = -1
 
@@ -751,6 +752,7 @@ class VideoSwapper(
                 .format(swapped * 1000.0 / elapsedMs, elapsedMs.toDouble() / swapped,
                         swapped, elapsedMs / 1000.0))
         closeNoFaceRun(lastFramePtsUs)
+        runCatching { NativePipe.swapReport() }.getOrNull()?.takeIf { it.isNotEmpty() }?.let(onLog)
         if (noFaceFrames > 0)
             onLog("no face found in $noFaceFrames of $swapped frames (left as filmed): " +
                   noFaceRuns.joinToString(", "))
