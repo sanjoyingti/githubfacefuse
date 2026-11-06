@@ -11,6 +11,7 @@
 export function ytPlayerHtml(videoId: string, targetHeightPx: number | null): string {
   const id = videoId.replace(/[^\w-]/g, '');
   return `<!DOCTYPE html><html><head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#wrap{position:absolute;left:0;top:0;transform-origin:0 0}#wrap iframe{display:block;border:0}</style>
 </head><body><div id="wrap"><div id="player"></div></div>

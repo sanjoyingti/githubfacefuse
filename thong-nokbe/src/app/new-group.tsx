@@ -6,7 +6,7 @@ import { useChats } from '../context/ChatsProvider';
 import { createGroup } from '../lib/chats';
 import { MemberPicker, type Selection } from '../components/MemberPicker';
 import { Button, Input } from '../components/ui';
-import { colors } from '../theme';
+import { APP_NAME, colors } from '../theme';
 import { useBottomInset } from '../components/useBottomInset';
 
 export default function NewGroup() {
@@ -24,6 +24,18 @@ export default function NewGroup() {
       const id = await createGroup(me, name, sel.users.map((u) => u.uid), sel.phones);
       selectGroup(id);
       router.replace(`/chat/${id}`);
+      // Each group collects fees to its creator's own UPI ID, used only for this group.
+      const notOnApp = sel.phones.length;
+      Alert.alert(
+        'Group created ✅',
+        (notOnApp ? `${notOnApp} of the people you chose ${notOnApp > 1 ? "aren't" : "isn't"} on ${APP_NAME} yet — send them the group's invite link so they can install the app and join.\n\n` : '') +
+          `Add your UPI ID so members of “${name.trim()}” can pay fees to you. It is used only for this group.`,
+        [
+          { text: 'Later', style: 'cancel' },
+          ...(notOnApp ? [{ text: 'Invite link', onPress: () => router.push({ pathname: '/group/invite', params: { id } }) }] : []),
+          { text: 'Add UPI', onPress: () => router.push({ pathname: '/group/fee-settings', params: { id } }) },
+        ],
+      );
     } catch (e: any) {
       Alert.alert('Could not create group', e?.message ?? String(e));
       setBusy(false);

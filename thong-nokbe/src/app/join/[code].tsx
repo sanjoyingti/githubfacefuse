@@ -4,7 +4,6 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useMe } from '../../context/AuthProvider';
 import { useChats } from '../../context/ChatsProvider';
 import { getInvite, joinWithCode } from '../../lib/invites';
-import { startSharing } from '../../lib/liveLocation';
 import { clearPendingInvite } from '../../lib/pendingInvite';
 import { Avatar, Button } from '../../components/ui';
 import { APP_NAME, colors } from '../../theme';
@@ -48,22 +47,7 @@ export default function JoinGroup() {
     setBusy(true);
     try {
       const chatId = await joinWithCode(code!, me);
-      // Ask once, right after joining, whether to share live location with this group.
-      Alert.alert(
-        '📍 Share your live location?',
-        `Members of "${invite.name}" can see where you are on a map while you share. You can stop any time, and your phone shows a notice while it is on.`,
-        [
-          { text: 'No, not now', style: 'cancel', onPress: () => router.replace(`/chat/${chatId}`) },
-          {
-            text: 'Yes, share',
-            onPress: async () => {
-              const r = await startSharing(chatId, me.name);
-              if (r === 'denied') Alert.alert('Location is off', 'You can turn it on later from the group → 📍 Live location map.');
-              router.replace(`/chat/${chatId}`);
-            },
-          },
-        ],
-      );
+      router.replace(`/chat/${chatId}`);
     } catch (e: any) {
       Alert.alert('Could not join', e?.message ?? String(e));
       setBusy(false);

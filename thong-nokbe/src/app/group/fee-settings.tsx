@@ -4,7 +4,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { updateDoc } from '@react-native-firebase/firestore';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
-import { chatRef, sendMessage } from '../../lib/chats';
+import { chatRef, isMainAdmin, sendMessage } from '../../lib/chats';
 import { isValidVpa } from '../../lib/upi';
 import { Button, Card, Empty, Input } from '../../components/ui';
 import { UpiQr } from '../../components/UpiQr';
@@ -21,7 +21,8 @@ export default function FeeSettings() {
   const [amount, setAmount] = useState(chat?.upi?.amount ? String(chat.upi.amount) : '');
   const [busy, setBusy] = useState(false);
 
-  if (!chat || !chat.admins.includes(me.uid)) return <Empty title="Only group admins can change fee settings" />;
+  if (!chat || !isMainAdmin(chat, me.uid))
+    return <Empty title="Only the group's creator can set its UPI" subtitle="Fees for this group are paid to the creator's own UPI ID." />;
 
   const save = async () => {
     const amt = Number(amount);
@@ -42,10 +43,11 @@ export default function FeeSettings() {
   return (
     <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 16 + bottomInset }} keyboardShouldPersistTaps="handled">
       <Card>
-        <Text style={{ fontWeight: '800', fontSize: 16, color: colors.text, marginBottom: 4 }}>Where members pay</Text>
+        <Text style={{ fontWeight: '800', fontSize: 16, color: colors.text, marginBottom: 4 }}>UPI for “{chat.name}”</Text>
         <Text style={{ color: colors.muted, marginBottom: 14 }}>
-          Members tap "Pay now" in the Fees tab, their UPI app opens with your UPI ID and the amount filled in, and once the payment
-          succeeds they are marked as paid (green) automatically. Fees are due on the 1st of every month.
+          This UPI ID is used only for this group. Members of “{chat.name}” pay their fees to it; your other groups keep their own
+          UPI. Fees are due on the 1st of every month. Tip: a business UPI ID (PhonePe Business, Google Pay for Business, Paytm
+          Business — all free) lets members pay straight from the app without the UPI app blocking it.
         </Text>
         <Input label="Your UPI ID (VPA)" placeholder="gymowner@okaxis" autoCapitalize="none" autoCorrect={false} value={vpa} onChangeText={setVpa} />
         <Input label="Payee name" placeholder="Name on the UPI account" value={payeeName} onChangeText={setPayeeName} />

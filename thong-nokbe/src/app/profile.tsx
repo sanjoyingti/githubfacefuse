@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { Alert, ScrollView, Text, View } from 'react-native';
+import { Alert, Linking, ScrollView, Switch, Text, View } from 'react-native';
+import { router } from 'expo-router';
+import { setSharing, useSharingOn } from '../lib/liveLocation';
 import { useAuth, useMe } from '../context/AuthProvider';
 import { useChats } from '../context/ChatsProvider';
 import { Avatar, Button, Card, Input } from '../components/ui';
@@ -16,6 +18,23 @@ export default function Profile() {
   const [name, setName] = useState(me.name);
   const [about, setAbout] = useState(me.about ?? '');
   const [checking, setChecking] = useState(false);
+  const sharing = useSharingOn();
+  const [sharingBusy, setSharingBusy] = useState(false);
+  const toggleSharing = async (on: boolean) => {
+    setSharingBusy(true);
+    const r = await setSharing(on, me.name);
+    setSharingBusy(false);
+    if (r === 'denied')
+      Alert.alert('Location is not allowed', 'Allow location for Thong Nokbe Gym in the phone settings, then turn this on again.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open settings', onPress: () => Linking.openSettings() },
+      ]);
+    else if (r === 'on-while-open')
+      Alert.alert('Sharing while the app is open', 'To be seen even when the app is closed, set Location to "Allow all the time" for Thong Nokbe Gym in the phone settings.', [
+        { text: 'OK', style: 'cancel' },
+        { text: 'Open settings', onPress: () => Linking.openSettings() },
+      ]);
+  };
   const [busy, setBusy] = useState(false);
   const dirty = name.trim() !== me.name || about.trim() !== (me.about ?? '');
 
@@ -56,6 +75,18 @@ export default function Profile() {
         ) : (
           <Text style={{ color: colors.muted }}>None yet</Text>
         )}
+      </Card>
+      <Card>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontWeight: '800', fontSize: 16, color: colors.text }}>📍 Share my live location</Text>
+            <Text style={{ color: colors.muted, marginTop: 4 }}>
+              {sharing ? 'ON — members of your groups see you on the group map.' : 'OFF — nobody can see where you are.'}
+            </Text>
+          </View>
+          <Switch value={sharing} onValueChange={toggleSharing} disabled={sharingBusy} trackColor={{ true: colors.primary }} />
+        </View>
+        <Button title="🔐 Permissions" variant="outline" onPress={() => router.push('/permissions')} style={{ marginTop: 12 }} />
       </Card>
       <Card>
         <Text style={{ fontWeight: '800', fontSize: 16, color: colors.text }}>📲 App version</Text>

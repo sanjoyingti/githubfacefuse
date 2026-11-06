@@ -56,6 +56,11 @@ export default function ChatScreen() {
               <Ionicons name="videocam" size={26} color="#fff" />
             </Pressable>
             {chat.type === 'group' && (
+              <Pressable onPress={() => router.push({ pathname: '/group/map', params: { id } })} hitSlop={10} accessibilityLabel="Live location map">
+                <Ionicons name="location" size={24} color="#fff" />
+              </Pressable>
+            )}
+            {chat.type === 'group' && (
               <Pressable onPress={() => router.push(`/group/${id}`)} hitSlop={10}>
                 <Ionicons name="information-circle-outline" size={24} color="#fff" />
               </Pressable>

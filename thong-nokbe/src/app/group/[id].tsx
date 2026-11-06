@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
-import { approveJoin, cancelInvite, dismissAdmin, getOrCreateDirectChat, isMainAdmin, leaveGroup, makeAdmin, rejectJoin, removeMember, stepDownAdmin, updateGroupInfo } from '../../lib/chats';
+import { approveJoin, cancelInvite, repairPendingPhones, dismissAdmin, getOrCreateDirectChat, isMainAdmin, leaveGroup, makeAdmin, rejectJoin, removeMember, stepDownAdmin, updateGroupInfo } from '../../lib/chats';
 import { hasApp } from '../../lib/calls';
 import { inviteLink, syncInviteName } from '../../lib/invites';
 import { useCaller } from '../../components/useCaller';
@@ -28,6 +28,10 @@ export default function GroupInfo() {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
   const [sheet, setSheet] = useState<{ title: string; options: SheetOption[] } | null>(null);
+  const canRepair = !!chat && chat.type === 'group' && chat.admins.includes(me.uid);
+  useEffect(() => {
+    if (canRepair && chat) repairPendingPhones(chat).catch(() => {});
+  }, [canRepair, chat]);
 
   if (!chat || chat.type !== 'group') return <Empty title="Group not found" subtitle="You may no longer be a member of this group." />;
   const iAmAdmin = chat.admins.includes(me.uid);

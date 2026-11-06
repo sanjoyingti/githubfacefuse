@@ -28,6 +28,7 @@ export function MemberPicker({
   value,
   onChange,
   single,
+  onInviteNonUser,
 }: {
   meUid: string;
   excludeUids?: string[];
@@ -35,6 +36,8 @@ export function MemberPicker({
   value: Selection;
   onChange: (s: Selection) => void;
   single?: boolean; // for starting a 1:1 chat (registered users only)
+  /** When set (adding to an existing group), people not on the app are invited with the group's link instead of being selected. */
+  onInviteNonUser?: (r: { name: string; phone: string }) => void;
 }) {
   const { loading, rows, permissionDenied, error } = useContacts();
   const [search, setSearch] = useState('');
@@ -57,10 +60,17 @@ export function MemberPicker({
       onChange({ ...value, users: has ? value.users.filter((x) => x.uid !== u.uid) : [...value.users, u] });
     } else {
       if (single) return invite(r);
+      if (onInviteNonUser) return askInvite(r);
       const has = value.phones.includes(r.phone);
       onChange({ ...value, phones: has ? value.phones.filter((p) => p !== r.phone) : [...value.phones, r.phone] });
     }
   };
+
+  const askInvite = (r: { name: string; phone: string }) =>
+    Alert.alert(`Not on ${APP_NAME}`, `${r.name} (${formatPhone(r.phone)}) is not on ${APP_NAME} yet, so they can't be added directly.\n\nSend them this group's invite link? They join the group as soon as they install the app.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Invite with link', onPress: () => onInviteNonUser?.(r) },
+    ]);
 
   const invite = (r: { name: string; phone: string }) =>
     Share.share({ message: `Hi ${r.name}! Join me on ${APP_NAME} — our gym app for workouts, chat, attendance and fees: ${APP_INVITE_LINK}` });
@@ -81,8 +91,14 @@ export function MemberPicker({
         ]);
         return;
       }
+      if (!found && onInviteNonUser) {
+        askInvite(row);
+        setManual('');
+        return;
+      }
       if (!isSelected(row)) toggle(row);
-      if (!found) Alert.alert('Invite sent to group list', `${formatPhone(n)} isn't on ${APP_NAME} yet. They'll join the group automatically once they install the app and sign in with this number.`);
+      if (!found)
+        Alert.alert(`Not on ${APP_NAME}`, `${formatPhone(n)} isn't on ${APP_NAME} yet. After you create the group, send them the invite link — they join automatically once they install the app.`);
       setManual('');
     } finally {
       setManualBusy(false);
@@ -90,6 +106,7 @@ export function MemberPicker({
   };
 
   const excludeKey = excludeUids.join() + '|' + excludePhones.join();
+  const inviting = !!onInviteNonUser;
   const sections = useMemo(() => {
     const q = search.trim().toLowerCase();
     const filtered = rows.filter((r) => !excluded(r) && (!q || r.name.toLowerCase().includes(q) || r.phone.includes(q.replace(/\s/g, ''))));
@@ -97,10 +114,13 @@ export function MemberPicker({
     const off = filtered.filter((r) => !r.user);
     return [
       { title: `Contacts on ${APP_NAME}`, data: onApp },
-      { title: single ? 'Invite to ' + APP_NAME : 'Not on the app yet (they will be invited)', data: off },
+      {
+        title: single ? 'Invite to ' + APP_NAME : onInviteNonUser ? `Not on ${APP_NAME} — tap to invite with link` : `Not on ${APP_NAME} — you'll get the invite link after creating`,
+        data: off,
+      },
     ].filter((s) => s.data.length);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, search, excludeKey]);
+  }, [rows, search, excludeKey, inviting]);
 
   const selectedCount = value.users.length + value.phones.length;
   const manualSelected = [
@@ -165,7 +185,7 @@ export function MemberPicker({
                   <Text style={styles.rowName}>{item.name}</Text>
                   <Text style={styles.rowSub}>{item.user ? item.user.about || formatPhone(item.phone) : formatPhone(item.phone)}</Text>
                 </View>
-                {item.user || !single ? (
+                {item.user || (!single && !onInviteNonUser) ? (
                   <Ionicons name={sel ? 'checkmark-circle' : 'ellipse-outline'} size={24} color={sel ? colors.primary : colors.border} />
                 ) : (
                   <Text style={{ color: colors.primary, fontWeight: '700' }}>INVITE</Text>

@@ -234,3 +234,13 @@ test('live location: a member shares only their own point; members see it, outsi
   await assertFails(setDoc(doc(as(OUTSIDER), 'chats/g1/locations/outsider'), point('out'))); // outsider can't write
   await assertSucceeds(deleteDoc(doc(memberDb, 'chats/g1/locations/member'))); // turn off
 });
+
+test('UPI: only the group creator sets the UPI ID; a second admin cannot redirect fees', async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await updateDoc(doc(ctx.firestore(), 'chats/g1'), { admins: [ADMIN.uid, MEMBER.uid] }); // MEMBER becomes second admin
+  });
+  const upi = { vpa: 'thief@ybl', payeeName: 'X', amount: 500 };
+  await assertFails(updateDoc(doc(as(MEMBER), 'chats/g1'), { upi })); // second admin
+  await assertSucceeds(updateDoc(doc(as(MEMBER), 'chats/g1'), { name: 'Gym 2' })); // other edits still fine
+  await assertSucceeds(updateDoc(doc(as(ADMIN), 'chats/g1'), { upi: { vpa: 'owner@okaxis', payeeName: 'Owner', amount: 800 } })); // creator
+});

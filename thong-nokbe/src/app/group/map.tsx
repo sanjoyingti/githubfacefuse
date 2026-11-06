@@ -1,18 +1,29 @@
-import React, { useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { WebView as RNWebView } from 'react-native-webview';
 import { Stack, useLocalSearchParams } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { useMe } from '../../context/AuthProvider';
 import { useChat } from '../../context/ChatsProvider';
-import { startSharing, stopSharing, useGroupLocations, useIsSharing } from '../../lib/liveLocation';
+import { setSharing, useGroupLocations, useSharingOn } from '../../lib/liveLocation';
 import { mapHtml, pointsForMap } from '../../lib/mapHtml';
-import { Empty } from '../../components/ui';
+import { displayName, useUsers } from '../../lib/users';
+import { Avatar, Empty } from '../../components/ui';
 import { useBottomInset } from '../../components/useBottomInset';
 import { colors } from '../../theme';
+import { CALL_SERVER_URL } from '../../config';
+import type { UserProfile } from '../../lib/types';
 
+// react-native-webview's TypeScript types don't match React 19 yet; the component itself works.
 const WebView = RNWebView as unknown as React.ComponentType<any>;
 
+const ago = (ms: number) => {
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return 'now';
+  if (m < 60) return `${m} min ago`;
+  return `${Math.round(m / 60)} h ago`;
+};
+
+/** 📍 Live map of a gym group: everyone who has "Share my live location" ON, moving in real time. */
 export default function GroupMap() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const me = useMe();
@@ -22,73 +33,98 @@ export default function GroupMap() {
   const [busy, setBusy] = useState(false);
   const html = useMemo(() => mapHtml(), []);
   const points = useGroupLocations(id);
-  const sharing = useIsSharing(id);
+  const sharing = useSharingOn();
+  const users = useUsers(chat?.members ?? []);
 
-  const mapPoints = useMemo(() => pointsForMap(points), [points]);
-  const push = () => web.current?.postMessage(JSON.stringify(mapPoints));
-  // Re-send whenever the points change (and once the map says it is ready).
-  React.useEffect(push, [mapPoints]);
+  // Only members of this group are shown (someone removed from the group disappears).
+  const mapPoints = useMemo(() => pointsForMap(points.filter((p) => chat?.members.includes(p.uid)), me.uid), [points, chat?.members, me.uid]);
+  const send = (m: object) => web.current?.postMessage(JSON.stringify(m));
+  useEffect(() => {
+    send({ type: 'points', points: mapPoints });
+  }, [mapPoints]);
 
-  if (!chat || chat.type !== 'group') return <Empty title="Group not found" subtitle="" />;
+  if (!chat || chat.type !== 'group') return <Empty title="Group not found" subtitle="You may no longer be a member of this group." />;
 
-  const sharingCount = points.filter((p) => p.sharing !== false).length;
+  const byUid = Object.fromEntries(mapPoints.map((p) => [p.uid, p]));
+  const members = chat.members
+    .map((uid) => users[uid] ?? ({ uid, name: '…', phone: '' } as UserProfile))
+    .sort((a, b) => Number(!!byUid[b.uid]) - Number(!!byUid[a.uid]) || a.name.localeCompare(b.name));
+  const count = mapPoints.length;
 
-  const turnOn = async () => {
+  const toggle = async (on: boolean) => {
     setBusy(true);
-    const r = await startSharing(id, me.name);
+    const r = await setSharing(on, me.name);
     setBusy(false);
-    if (r === 'denied') Alert.alert('Location is off', 'Allow location for Thong Nokbe Gym to share with your group. Open the app settings and turn Location on.');
-    else if (r === 'denied-background')
-      Alert.alert('Works while the app is open', 'You chose "While using the app", so your location updates only while Thong Nokbe Gym is open. For the group to see you even when the app is closed, set Location to "Allow all the time" in settings.');
+    if (r === 'denied')
+      Alert.alert('Location is not allowed', 'Allow location for Thong Nokbe Gym in the phone settings, then turn sharing on again.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open settings', onPress: () => Linking.openSettings() },
+      ]);
+    else if (r === 'on-while-open')
+      Alert.alert('Sharing while the app is open', 'To be seen even when the app is closed, set Location to "Allow all the time" for Thong Nokbe Gym in the phone settings.', [
+        { text: 'OK', style: 'cancel' },
+        { text: 'Open settings', onPress: () => Linking.openSettings() },
+      ]);
   };
-  const turnOff = () =>
-    Alert.alert('Stop sharing location?', 'Your group will no longer see where you are.', [
-      { text: 'Keep sharing', style: 'cancel' },
-      { text: 'Stop', style: 'destructive', onPress: () => stopSharing(id) },
-    ]);
 
   return (
     <View style={{ flex: 1, backgroundColor: '#0b0f0d' }}>
-      <Stack.Screen options={{ title: `📍 ${chat.name} — live map` }} />
-      <WebView
-        ref={web}
-        source={{ html }}
-        originWhitelist={['*']}
-        style={{ flex: 1, backgroundColor: '#0b0f0d' }}
-        javaScriptEnabled
-        domStorageEnabled
-        onMessage={(e: any) => {
-          try {
-            if (JSON.parse(e.nativeEvent.data)?.ready) push();
-          } catch {}
-        }}
-      />
-      <View style={[styles.bar, { paddingBottom: 14 + bottomInset }]}>
+      <Stack.Screen options={{ title: `📍 ${chat.name}` }} />
+      <View style={{ flex: 1 }}>
+        <WebView
+          ref={web}
+          source={{ html, baseUrl: CALL_SERVER_URL }}
+          originWhitelist={['*']}
+          style={{ flex: 1, backgroundColor: '#0b0f0d' }}
+          javaScriptEnabled
+          domStorageEnabled
+          onMessage={(e: any) => {
+            try {
+              if (JSON.parse(e.nativeEvent.data)?.ready) send({ type: 'points', points: mapPoints });
+            } catch {}
+          }}
+        />
+      </View>
+
+      <View style={[styles.sheet, { paddingBottom: 10 + bottomInset }]}>
+        <View style={styles.switchRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.switchTitle}>Share my live location</Text>
+            <Text style={styles.switchSub}>{sharing ? 'ON — your groups can see you' : 'OFF — nobody can see you'}</Text>
+          </View>
+          <Switch value={sharing} onValueChange={toggle} disabled={busy} trackColor={{ true: colors.primary }} />
+        </View>
+
         <Text style={styles.count}>
-          {sharingCount > 0 ? `📍 ${sharingCount} member${sharingCount > 1 ? 's' : ''} sharing now` : 'No one is sharing their location yet'}
+          {count ? `📍 ${count} of ${chat.members.length} sharing now` : 'Nobody is sharing right now'} · tap a name to find them
         </Text>
-        {sharing ? (
-          <Pressable style={[styles.btn, styles.off]} onPress={turnOff}>
-            <Ionicons name="location" size={20} color="#fff" />
-            <Text style={styles.btnText}>Stop sharing my location</Text>
-          </Pressable>
-        ) : (
-          <Pressable style={[styles.btn, busy && { opacity: 0.6 }]} onPress={turnOn} disabled={busy}>
-            <Ionicons name="location-outline" size={20} color="#fff" />
-            <Text style={styles.btnText}>{busy ? 'Starting…' : 'Share my live location'}</Text>
-          </Pressable>
-        )}
-        <Text style={styles.note}>Only members of this group can see it. You can stop any time, and your phone shows a notice while it is on.</Text>
+        <ScrollView style={{ maxHeight: 200 }}>
+          {members.map((u) => {
+            const p = byUid[u.uid];
+            const isMe = u.uid === me.uid;
+            return (
+              <Pressable key={u.uid} style={styles.member} onPress={() => (p ? send({ type: 'focus', uid: u.uid }) : null)}>
+                <Avatar name={u.name} size={34} color={p ? undefined : '#64748B'} />
+                <Text style={styles.memberName} numberOfLines={1}>
+                  {isMe ? 'You' : displayName(u)}
+                </Text>
+                <Text style={[styles.status, { color: p ? colors.primary : colors.muted }]}>{p ? `📍 ${ago(p.updatedMs)}` : 'Location off'}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  bar: { backgroundColor: colors.card, paddingHorizontal: 16, paddingTop: 14, borderTopLeftRadius: 20, borderTopRightRadius: 20 },
-  count: { color: colors.text, fontWeight: '800', fontSize: 15, textAlign: 'center', marginBottom: 10 },
-  btn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, height: 54, borderRadius: 27, backgroundColor: colors.primary },
-  off: { backgroundColor: colors.unpaid },
-  btnText: { color: '#fff', fontWeight: '900', fontSize: 17 },
-  note: { color: colors.muted, fontSize: 13, textAlign: 'center', marginTop: 10 },
+  sheet: { backgroundColor: colors.card, paddingHorizontal: 16, paddingTop: 12, borderTopLeftRadius: 20, borderTopRightRadius: 20 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingBottom: 10, borderBottomWidth: 1, borderColor: colors.border },
+  switchTitle: { color: colors.text, fontWeight: '900', fontSize: 17 },
+  switchSub: { color: colors.muted, fontSize: 13, marginTop: 2 },
+  count: { color: colors.muted, fontWeight: '700', fontSize: 13, marginVertical: 8 },
+  member: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
+  memberName: { flex: 1, color: colors.text, fontSize: 15, fontWeight: '700' },
+  status: { fontSize: 13, fontWeight: '700' },
 });

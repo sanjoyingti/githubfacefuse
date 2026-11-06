@@ -10,6 +10,7 @@ import { Avatar, Button, Card, Loading } from '../../components/ui';
 import { UpiQr } from '../../components/UpiQr';
 import { clearPayment, recordPayment, sendFeeNoticeToAll, sendFeeReminder, useMonthPayments } from '../../lib/fees';
 import { IOS_UPI_APPS, makeTxnRef, payWithUpi } from '../../lib/upi';
+import { isMainAdmin } from '../../lib/chats';
 import { addMonths, formatMonth, monthKey, parseMonthKey } from '../../lib/dates';
 import { displayName, useUsers } from '../../lib/users';
 import { colors } from '../../theme';
@@ -38,6 +39,7 @@ export default function Fees() {
   if (!group) return <NoGroups />;
 
   const isAdmin = group.admins.includes(me.uid);
+  const isCreator = isMainAdmin(group, me.uid);
   const upi = group.upi;
   const monthDate = parseMonthKey(month);
   const isCurrent = month === monthKey();
@@ -56,7 +58,10 @@ export default function Fees() {
         await recordPayment(group.id, month, me.uid, { amount: upi.amount, method: 'upi', txnId: res.txnId, recordedBy: me.uid, upiResponse: res.raw });
         Alert.alert('Payment successful ✅', `Your ${formatMonth(monthDate)} fee is marked as paid.`);
       } else if (res.outcome === 'failed') {
-        Alert.alert('Payment failed', 'The UPI app reported the payment did not go through. No money should have been deducted. Please try again.');
+        Alert.alert(
+          'Payment did not go through',
+          'Your UPI app stopped this payment. No money should have been deducted.\n\nSome UPI apps block direct payments to a personal UPI ID. Use "Pay by QR from this phone" below — choose your UPI app and it pays by QR, which always works. If money WAS deducted, tap "Already paid?" and enter the UPI reference.',
+        );
       } else {
         Alert.alert('Did the payment go through?', 'Your UPI app did not report the result back. If the money was sent, confirm with the UPI reference (UTR) number.', [
           { text: 'Not paid', style: 'cancel' },
@@ -148,13 +153,13 @@ export default function Fees() {
                 <Text style={styles.payText}>{paying ? 'Opening UPI app…' : `Pay ₹${upi.amount} now`}</Text>
               </Pressable>
             ) : (
-              <Text style={[styles.myDetail, { marginTop: 10 }]}>The admin hasn't added a UPI ID yet.</Text>
+              <Text style={[styles.myDetail, { marginTop: 10 }]}>{isCreator ? 'Add your UPI ID below so members can pay.' : "The group's creator hasn't added a UPI ID yet."}</Text>
             ))}
         </View>
 
         {upi ? (
           <Card>
-            <Text style={styles.cardTitle}>Pay to (group admin)</Text>
+            <Text style={styles.cardTitle}>Pay to · “{group.name}” only</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
               <View>
                 <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>{upi.payeeName}</Text>
@@ -170,14 +175,21 @@ export default function Fees() {
                 <Ionicons name="copy-outline" size={22} color={colors.primary} />
               </Pressable>
             </View>
-            <UpiQr upi={upi} />
-            <Text style={{ color: colors.muted, marginTop: 6, fontSize: 13, textAlign: 'center' }}>Scan with any UPI app from another phone</Text>
+            <UpiQr upi={upi} shareable={!mine} />
+            <Text style={{ color: colors.muted, marginTop: 8, fontSize: 13, textAlign: 'center' }}>
+              {mine ? 'Scan with any UPI app' : 'Scan with another phone, or tap "Pay by QR from this phone" and pick Google Pay, PhonePe, Paytm or BHIM.'}
+            </Text>
+            {!mine && (
+              <Pressable onPress={() => setUtrOpen(true)} style={{ alignSelf: 'center', marginTop: 10 }} hitSlop={8}>
+                <Text style={{ color: colors.primary, fontWeight: '800' }}>Already paid? Enter the UPI reference (UTR)</Text>
+              </Pressable>
+            )}
             <Text style={{ color: colors.muted, marginTop: 8, fontSize: 12 }}>Monthly fee ₹{upi.amount} · due on the 1st of every month</Text>
           </Card>
         ) : null}
-        {isAdmin && (
+        {isCreator && (
           <Button
-            title={upi ? 'Edit fee & UPI settings' : 'Add your UPI ID to collect fees'}
+            title={upi ? `Edit “${group.name}” fee & UPI` : `Add your UPI ID for “${group.name}”`}
             variant={upi ? 'outline' : 'primary'}
             onPress={() => router.push({ pathname: '/group/fee-settings', params: { id: group.id } })}
             style={{ marginBottom: 12 }}

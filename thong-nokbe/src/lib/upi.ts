@@ -18,14 +18,21 @@ export function isValidVpa(vpa: string) {
   return /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z][a-zA-Z0-9.\-]{1,64}$/.test(vpa.trim());
 }
 
-export function buildUpiUrl(upi: UpiSettings, opts: { note: string; ref: string; scheme?: string }) {
+/** UPI apps reject unusual characters in names and notes; keep letters, numbers and spaces. */
+const clean = (t: string, max: number) => t.replace(/[^A-Za-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+
+/**
+ * A person-to-person UPI payment link. Only the standard fields (pa, pn, am, cu, tn): adding a
+ * merchant transaction reference ("tr") to a payment to a personal UPI ID makes Google Pay / PhonePe
+ * decline it "for security reasons", so it is left out.
+ */
+export function buildUpiUrl(upi: UpiSettings, opts: { note: string; ref?: string; scheme?: string }) {
   const params = new URLSearchParams({
     pa: upi.vpa.trim(),
-    pn: upi.payeeName.trim(),
+    pn: clean(upi.payeeName, 40) || 'Gym',
     am: upi.amount.toFixed(2),
     cu: 'INR',
-    tn: opts.note.slice(0, 80),
-    tr: opts.ref,
+    tn: clean(opts.note, 50) || 'Gym fee',
   });
   return `${opts.scheme ?? 'upi://pay'}?${params.toString()}`;
 }

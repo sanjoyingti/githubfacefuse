@@ -4,17 +4,19 @@ import { useLinkingURL } from 'expo-linking';
 import { inviteCodeFromUrl, savePendingInvite, takePendingInvite } from '../lib/pendingInvite';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider, useAuth } from '../context/AuthProvider';
-import { ChatsProvider } from '../context/ChatsProvider';
+import { ChatsProvider, useChats } from '../context/ChatsProvider';
 import { IncomingCall } from '../components/IncomingCall';
 import { NotificationRouter } from '../components/NotificationRouter';
 import { UpdateChecker } from '../components/UpdateChecker';
-import { useShareWhileOpen } from '../lib/liveLocation';
+import { useLiveLocationService } from '../lib/liveLocation';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { PERMS_DONE_KEY } from '../lib/permissions';
+import type { UserProfile } from '../lib/types';
 import { Loading } from '../components/ui';
 import { colors } from '../theme';
 
 function RootNavigator() {
   const { user, profile, initializing } = useAuth();
-  useShareWhileOpen(); // keep my live location updating while the app is open (if I turned it on)
   const signedIn = !!user;
   const ready = !initializing && signedIn && !!profile;
 
@@ -26,7 +28,12 @@ function RootNavigator() {
   }, [url, ready]);
   useEffect(() => {
     if (!ready) return;
-    takePendingInvite().then((code) => code && router.push(`/join/${code}`));
+    (async () => {
+      // First time on this phone: ask for every permission once (notifications, contacts, location, calls).
+      if ((await AsyncStorage.getItem(PERMS_DONE_KEY).catch(() => null)) !== '1') router.push('/permissions');
+      const code = await takePendingInvite();
+      if (code) router.push(`/join/${code}`);
+    })();
   }, [ready]);
 
   if (initializing) return <Loading />;
@@ -59,6 +66,7 @@ function RootNavigator() {
         <Stack.Screen name="new-group" options={{ title: 'New group' }} />
         <Stack.Screen name="new-chat" options={{ title: 'New chat' }} />
         <Stack.Screen name="profile" options={{ title: 'Me' }} />
+        <Stack.Screen name="permissions" options={{ title: 'Permissions', presentation: 'modal' }} />
         <Stack.Screen name="play" options={{ title: 'Exercise', headerStyle: { backgroundColor: '#0b0f0d' } }} />
         <Stack.Screen name="call/[id]" options={{ headerShown: false, presentation: 'fullScreenModal', gestureEnabled: false }} />
       </Stack.Protected>
@@ -71,8 +79,19 @@ function RootNavigator() {
       {stack}
       <IncomingCall me={profile!} />
       <NotificationRouter me={profile!} />
+      <LiveLocationService me={profile!} />
     </ChatsProvider>
   );
+}
+
+/** Keeps my live location going for all my groups while "Share my live location" is ON. */
+function LiveLocationService({ me }: { me: UserProfile }) {
+  const { groups } = useChats();
+  useLiveLocationService(
+    groups.map((g) => g.id),
+    me.name,
+  );
+  return null;
 }
 
 export default function RootLayout() {

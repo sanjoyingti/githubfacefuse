@@ -3,163 +3,174 @@ import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
-import { collection, deleteDoc, doc, onSnapshot, setDoc, serverTimestamp } from '@react-native-firebase/firestore';
+import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc } from '@react-native-firebase/firestore';
 import { auth, db } from './firebase';
 import type { LiveLocation } from './types';
 
 /**
- * Live location for gym groups. A member turns it ON for a group (once, after giving the phone
- * permission). Their phone then keeps their point in chats/{id}/locations/{uid} — updated while the
- * app is open and, through a foreground service, while it is in the background too — so every member
- * of that group sees them move on the map. They can turn it OFF any time; Android also always shows a
- * "using your location" notice while it is on.
+ * Live location for gym groups — ONE switch, "Share my live location".
+ * Asked once when the app is first set up; the person can turn it ON or OFF any time (Me screen or the
+ * group map). While ON, their point is kept in chats/{groupId}/locations/{uid} for every group they are
+ * in, so the members of those groups (and only them) see them move on the map. Turning it OFF stops
+ * the updates and removes their point. Android shows a "sharing location" notice while it runs.
  */
 const TASK = 'thong-nokbe-live-location';
-const GROUPS_KEY = 'liveLocationGroups'; // the groups this phone is sharing with
+const ON_KEY = 'liveShareOn'; // '1' or '0'
+const GROUPS_KEY = 'liveShareGroups'; // ids of the groups I'm in (kept up to date by the app)
 const NAME_KEY = 'liveLocationName';
 
 const locRef = (chatId: string, uid: string) => doc(db, 'chats', chatId, 'locations', uid);
 
-async function sharingGroups(): Promise<string[]> {
+// ---- small stored state + change listeners -------------------------------------------------------
+const listeners = new Set<(on: boolean) => void>();
+let onCache: boolean | null = null;
+
+export async function isSharingOn(): Promise<boolean> {
+  if (onCache === null) onCache = (await AsyncStorage.getItem(ON_KEY).catch(() => null)) === '1';
+  return onCache;
+}
+async function setOnFlag(on: boolean) {
+  onCache = on;
+  await AsyncStorage.setItem(ON_KEY, on ? '1' : '0').catch(() => {});
+  listeners.forEach((l) => l(on));
+}
+async function myGroups(): Promise<string[]> {
   try {
     return JSON.parse((await AsyncStorage.getItem(GROUPS_KEY)) ?? '[]');
   } catch {
     return [];
   }
 }
-async function setSharingGroups(ids: string[]) {
-  await AsyncStorage.setItem(GROUPS_KEY, JSON.stringify([...new Set(ids)])).catch(() => {});
-}
 
-/** Writes my current point to every group I share with. Called by the background task and the app. */
-async function pushPoint(lat: number, lng: number, accuracy?: number) {
+/** Writes my point to every group I'm in (only while sharing is ON). */
+async function pushPoint(lat: number, lng: number, accuracy?: number, only?: string[]) {
   const uid = auth.currentUser?.uid;
-  if (!uid) return;
+  if (!uid || !(await isSharingOn())) return;
   const name = (await AsyncStorage.getItem(NAME_KEY)) || 'Member';
-  const groups = await sharingGroups();
+  const groups = only ?? (await myGroups());
   await Promise.all(
     groups.map((chatId) =>
-      setDoc(locRef(chatId, uid), { uid, lat, lng, accuracy: accuracy ?? 0, name, sharing: true, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {}),
+      setDoc(locRef(chatId, uid), { lat, lng, accuracy: accuracy ?? 0, name, sharing: true, updatedAt: serverTimestamp() }).catch(() => {}),
     ),
   );
 }
 
-// Background/foreground-service task: Android delivers locations here even when the app is not on screen.
+// Background (foreground-service) task: Android delivers locations here even when the app is not on screen.
 TaskManager.defineTask(TASK, async ({ data, error }: any) => {
   if (error || !data?.locations?.length) return;
   const last = data.locations[data.locations.length - 1];
   await pushPoint(last.coords.latitude, last.coords.longitude, last.coords.accuracy);
 });
 
-export type PermissionResult = 'ok' | 'denied' | 'denied-background';
-
-/** Ask for location permission (foreground, then "all the time" for background updates). */
-export async function askLocationPermission(): Promise<PermissionResult> {
-  const fg = await Location.requestForegroundPermissionsAsync();
-  if (!fg.granted) return 'denied';
-  const bg = await Location.requestBackgroundPermissionsAsync().catch(() => ({ granted: false }));
-  return bg.granted ? 'ok' : 'denied-background';
-}
-
-async function ensureUpdatesRunning() {
-  const started = await Location.hasStartedLocationUpdatesAsync(TASK).catch(() => false);
-  if (started) return;
+async function startBackgroundUpdates() {
+  const bg = await Location.getBackgroundPermissionsAsync().catch(() => ({ granted: false }));
+  if (!bg.granted) return; // "while using the app" only: the app-open updater covers it
+  if (await Location.hasStartedLocationUpdatesAsync(TASK).catch(() => false)) return;
   await Location.startLocationUpdatesAsync(TASK, {
     accuracy: Location.Accuracy.Balanced,
-    timeInterval: 30_000, // every ~30s
-    distanceInterval: 25, // or every 25 m
+    timeInterval: 30_000,
+    distanceInterval: 25,
     showsBackgroundLocationIndicator: true,
     foregroundService: {
-      notificationTitle: 'Thong Nokbe Gym — sharing your location',
-      notificationBody: 'Your gym group can see where you are. Tap to stop.',
+      notificationTitle: 'Thong Nokbe Gym — sharing your live location',
+      notificationBody: 'Your gym groups can see where you are. Turn it off in the app any time.',
       notificationColor: '#16A34A',
     },
-  });
+  }).catch(() => {});
+}
+async function stopBackgroundUpdates() {
+  if (await Location.hasStartedLocationUpdatesAsync(TASK).catch(() => false)) await Location.stopLocationUpdatesAsync(TASK).catch(() => {});
 }
 
-async function stopUpdatesIfIdle() {
-  if ((await sharingGroups()).length > 0) return;
-  const started = await Location.hasStartedLocationUpdatesAsync(TASK).catch(() => false);
-  if (started) await Location.stopLocationUpdatesAsync(TASK).catch(() => {});
+export type ShareResult = 'on' | 'on-while-open' | 'denied' | 'off';
+
+/** Ask the phone for location permission ("while using" first, then "all the time" for background). */
+export async function askLocationPermission(background = true): Promise<'all' | 'while-open' | 'denied'> {
+  const fg = await Location.requestForegroundPermissionsAsync().catch(() => ({ granted: false }));
+  if (!fg.granted) return 'denied';
+  if (!background) return 'while-open';
+  const bg = await Location.requestBackgroundPermissionsAsync().catch(() => ({ granted: false }));
+  return bg.granted ? 'all' : 'while-open';
 }
 
-/** Turn live location ON for a group. Returns false if permission was refused. */
-export async function startSharing(chatId: string, myName: string): Promise<PermissionResult> {
-  const perm = await askLocationPermission();
-  if (perm === 'denied') return perm;
-  await AsyncStorage.setItem(NAME_KEY, myName).catch(() => {});
-  await setSharingGroups([...(await sharingGroups()), chatId]);
+/** Turn "Share my live location" ON or OFF for all my groups. */
+export async function setSharing(on: boolean, myName?: string): Promise<ShareResult> {
+  if (!on) {
+    await setOnFlag(false);
+    await stopBackgroundUpdates();
+    const uid = auth.currentUser?.uid;
+    if (uid) await Promise.all((await myGroups()).map((g) => deleteDoc(locRef(g, uid)).catch(() => {})));
+    return 'off';
+  }
+  const perm = await askLocationPermission(true);
+  if (perm === 'denied') return 'denied';
+  if (myName) await AsyncStorage.setItem(NAME_KEY, myName).catch(() => {});
+  await setOnFlag(true);
   try {
     const here = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
     await pushPoint(here.coords.latitude, here.coords.longitude, here.coords.accuracy ?? undefined);
   } catch {}
-  if (perm === 'ok') await ensureUpdatesRunning().catch(() => {});
-  // 'denied-background': still works while the app is open (handled by the in-app updater below).
-  return perm;
+  await startBackgroundUpdates();
+  return perm === 'all' ? 'on' : 'on-while-open';
 }
 
-/** Turn live location OFF for a group: stop updating and remove my point so nobody sees me. */
-export async function stopSharing(chatId: string) {
-  const uid = auth.currentUser?.uid;
-  await setSharingGroups((await sharingGroups()).filter((g) => g !== chatId));
-  if (uid) await deleteDoc(locRef(chatId, uid)).catch(() => {});
-  await stopUpdatesIfIdle();
-}
-
-/** Am I currently sharing with this group? */
-export function useIsSharing(chatId: string | undefined): boolean {
-  const [on, setOn] = useState(false);
+/** Live value of the switch. */
+export function useSharingOn(): boolean {
+  const [on, setOn] = useState(!!onCache);
   useEffect(() => {
-    if (!chatId) return;
     let alive = true;
-    const check = () => sharingGroups().then((g) => alive && setOn(g.includes(chatId)));
-    check();
-    const sub = AppState.addEventListener('change', (s) => s === 'active' && check());
-    const t = setInterval(check, 2000);
+    isSharingOn().then((v) => alive && setOn(v));
+    listeners.add(setOn);
     return () => {
       alive = false;
-      sub.remove();
-      clearInterval(t);
+      listeners.delete(setOn);
     };
-  }, [chatId]);
+  }, []);
   return on;
 }
 
-/** How many groups am I sharing with right now? (kept fresh so the updater starts/stops by itself) */
-function useSharingCount(): number {
-  const [n, setN] = useState(0);
-  useEffect(() => {
-    let alive = true;
-    const check = () => sharingGroups().then((g) => alive && setN(g.length));
-    check();
-    const sub = AppState.addEventListener('change', (s) => s === 'active' && check());
-    const t = setInterval(check, 3000);
-    return () => {
-      alive = false;
-      sub.remove();
-      clearInterval(t);
-    };
-  }, []);
-  return n;
-}
-
 /**
- * Whenever the app is open AND I'm sharing with at least one group, keep pushing my point (to every
- * group I share with). This runs from the app root, so my location updates no matter which screen
- * I'm on — not only the map. Background updates (app closed) are handled by the foreground service.
+ * Runs at the app root: keeps the list of my groups (so a group I join starts seeing me), and while
+ * sharing is ON keeps my point fresh while the app is open — whatever screen I'm on.
  */
-export function useShareWhileOpen() {
-  const count = useSharingCount();
-  const on = count > 0;
+export function useLiveLocationService(groupIds: string[], myName: string | undefined) {
+  const on = useSharingOn();
+  const key = [...groupIds].sort().join(',');
+
+  // Remember my groups + name; when a new group appears, show me there right away.
+  useEffect(() => {
+    (async () => {
+      const before = await myGroups();
+      const ids = key ? key.split(',') : [];
+      await AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(ids)).catch(() => {});
+      if (myName) await AsyncStorage.setItem(NAME_KEY, myName).catch(() => {});
+      const added = ids.filter((g) => !before.includes(g));
+      if (on && added.length) {
+        const last = await Location.getLastKnownPositionAsync().catch(() => null);
+        if (last) await pushPoint(last.coords.latitude, last.coords.longitude, last.coords.accuracy ?? undefined, added);
+      }
+    })();
+  }, [key, myName, on]);
+
+  // While ON: make sure the background service runs (if allowed) and update while the app is open.
   useEffect(() => {
     if (!on) return;
+    startBackgroundUpdates();
     let sub: Location.LocationSubscription | null = null;
+    let stopped = false;
     Location.watchPositionAsync({ accuracy: Location.Accuracy.Balanced, timeInterval: 15_000, distanceInterval: 20 }, (p) =>
       pushPoint(p.coords.latitude, p.coords.longitude, p.coords.accuracy ?? undefined),
     )
-      .then((s) => (sub = s))
+      .then((s) => (stopped ? s.remove() : (sub = s)))
       .catch(() => {});
-    return () => sub?.remove();
+    const app = AppState.addEventListener('change', (s) => {
+      if (s === 'active') startBackgroundUpdates();
+    });
+    return () => {
+      stopped = true;
+      sub?.remove();
+      app.remove();
+    };
   }, [on]);
 }
 
@@ -170,7 +181,7 @@ export function useGroupLocations(chatId: string | undefined): LiveLocation[] {
     if (!chatId) return;
     return onSnapshot(
       collection(db, 'chats', chatId, 'locations'),
-      (snap) => setPoints(snap.docs.map((d) => d.data() as LiveLocation)),
+      (snap) => setPoints(snap.docs.map((d) => ({ ...(d.data() as LiveLocation), uid: d.id }))),
       () => {},
     );
   }, [chatId]);

@@ -178,3 +178,14 @@ export async function rejectJoin(chat: Chat, person: UserProfile) {
 export function toChat(id: string, data: any): Chat {
   return { id, members: [], admins: [], pendingPhones: [], joinRequests: [], ...data } as Chat;
 }
+
+/**
+ * Older versions stored some invited numbers with the country code twice (e.g. +91917002397371),
+ * so those people never auto-joined. Admins repair the list when they open the group.
+ */
+export async function repairPendingPhones(chat: Chat) {
+  const bad = chat.pendingPhones.filter((p) => /^\+9191\d{10}$/.test(p));
+  if (!bad.length) return;
+  const fixed = [...new Set(chat.pendingPhones.map((p) => (/^\+9191\d{10}$/.test(p) ? '+91' + p.slice(5) : p)))];
+  await updateDoc(chatRef(chat.id), { pendingPhones: fixed });
+}

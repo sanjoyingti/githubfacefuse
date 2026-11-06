@@ -2,6 +2,8 @@ import { arrayUnion, deleteDoc, doc, getDoc, serverTimestamp, setDoc, updateDoc,
 import { db } from './firebase';
 import { chatRef, sendMessage } from './chats';
 import { CALL_SERVER_URL } from '../config';
+import { Linking, Share } from 'react-native';
+import { APP_NAME } from '../theme';
 import type { Chat, UserProfile } from './types';
 
 /**
@@ -56,4 +58,22 @@ export async function joinWithCode(code: string, me: UserProfile): Promise<strin
 /** Keeps the name shown on the join screen up to date after the group is renamed. */
 export async function syncInviteName(chat: Chat) {
   if (chat.inviteCode) await setDoc(inviteRef(chat.inviteCode), { name: chat.name ?? 'Gym group' }, { merge: true }).catch(() => {});
+}
+
+/** The message sent to someone who isn't on the app yet: installs the app and joins this group. */
+export function groupInviteMessage(groupName: string, code: string, toName?: string) {
+  return `${toName ? `Hi ${toName}! ` : ''}Join our gym group "${groupName}" on ${APP_NAME} 💪 Tap to install the app and join: ${inviteLink(code)}`;
+}
+
+/** Open WhatsApp / SMS straight to this number with the invite, or the share sheet for any other app. */
+export async function sendInvite(via: 'whatsapp' | 'sms' | 'other', phone: string, message: string): Promise<void> {
+  if (via === 'whatsapp') await Linking.openURL(`https://wa.me/${phone.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`);
+  else if (via === 'sms') await Linking.openURL(`sms:${phone}?body=${encodeURIComponent(message)}`);
+  else await Share.share({ message });
+}
+
+/** Remember an invited number on the group so the person joins by themselves once they register with it. */
+export async function rememberInvitedNumber(chat: Chat, phone: string) {
+  if (chat.pendingPhones.includes(phone)) return;
+  await updateDoc(chatRef(chat.id), { pendingPhones: arrayUnion(phone), updatedAt: serverTimestamp() });
 }
