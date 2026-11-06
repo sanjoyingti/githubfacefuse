@@ -852,6 +852,7 @@ class MainActivity : ComponentActivity() {
                             else -> VPick(forFace, people = people, found = found)
                         }
                     }
+                    else -> Unit
                 }
             } catch (t: Throwable) {
                 appendLog("photos from video: $t")
@@ -2110,6 +2111,7 @@ class MainActivity : ComponentActivity() {
                                 "gpen" -> applyOpts(opts.copy(faceEnhance = true))
                                 "edtalk" -> applyOpts(opts.copy(lipSync = true))
                                 ModelPaths.LIVEPORTRAIT -> applyOpts(opts.copy(faceEdit = true))
+                                else -> Unit
                             }
                         }
                         enableAfterDownload = null

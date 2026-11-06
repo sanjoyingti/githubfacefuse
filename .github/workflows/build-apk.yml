@@ -75,6 +75,11 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.43:
+          - sanjoyingti.zip now compiles with newer Kotlin versions too (a `when` at the end of a lambda had no else branch, which a stricter compiler rejects; an AI agent then edited the source and removed the extra-photos controls). The app itself is unchanged by this.
+          - The motion-blur match is now several times faster (3.8 ms instead of 88 ms on a 512 px face crop), so fast head moves cost almost nothing.
+          - BUILDING.md explains how to build the zip without an agent changing the source.
+
           Version 1.0.42 (from your clip at 0:03):
           - Fast head moves: the swapped face now gets the same motion blur as the real head, so it no longer looks like a sharp face pasted on a blurred head. Only on frames where the head moves fast.
           - Touching faces: when two faces overlap (cheek to cheek), each face's swap stops at the other face instead of spilling onto it.

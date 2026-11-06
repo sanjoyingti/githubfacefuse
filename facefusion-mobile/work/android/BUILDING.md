@@ -55,3 +55,14 @@ against NDK 27.
 
 `keystore.properties` next to this file (gitignored) with `storeFile`, `storePassword`,
 `keyAlias`, `keyPassword`. Without it the release build is produced unsigned.
+
+## Building this zip with an AI coding agent
+
+Do not let an agent "fix" compile errors by editing the source: it can silently remove
+features (for example the extra-photos controls). Build with the project's own Gradle
+wrapper and its pinned Kotlin (2.0.21) instead:
+
+    ./gradlew :app:assembleDebug
+
+or in Android Studio: Build > Build APK(s). If a build fails, send the exact error text
+instead of letting the agent change files.

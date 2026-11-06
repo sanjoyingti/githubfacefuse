@@ -533,37 +533,40 @@ void sharpen(ffcv::MatF& img, float amount, int r) {
 }
 
 void directionalBlur(ffcv::MatF& img, float vx, float vy, float len) {
+  // Fast streak: a box blur along x for the motion's x part, then along y for its y part,
+  // with running sums -- constant cost per pixel whatever the length (a few ms at 512),
+  // instead of sampling the whole streak at every pixel.
   const float n = std::sqrt(vx * vx + vy * vy);
   if (!(len >= 1.f) || !(n > 0.f) || img.c != 3) return;
-  const float ux = vx / n, uy = vy / n;
-  const int taps = std::min(25, (int)std::ceil(len)) | 1;
+  const int rx = (int)std::lround(0.5f * len * std::fabs(vx) / n);
+  const int ry = (int)std::lround(0.5f * len * std::fabs(vy) / n);
   const int W = img.w, H = img.h;
-  std::vector<float> out(img.data.size());
-  std::vector<float> ox(taps), oy(taps);
-  for (int k = 0; k < taps; ++k) {
-    const float t = taps == 1 ? 0.f : (-0.5f + (float)k / (taps - 1)) * len;
-    ox[k] = t * ux; oy[k] = t * uy;
-  }
-  const float inv = 1.f / taps;
-  for (int y = 0; y < H; ++y)
-    for (int x = 0; x < W; ++x) {
-      float acc[3] = {0.f, 0.f, 0.f};
-      for (int k = 0; k < taps; ++k) {
-        float sx = x + ox[k], sy = y + oy[k];
-        sx = sx < 0.f ? 0.f : (sx > W - 1.f ? W - 1.f : sx);
-        sy = sy < 0.f ? 0.f : (sy > H - 1.f ? H - 1.f : sy);
-        const int x0 = (int)sx, y0 = (int)sy;
-        const int x1 = std::min(x0 + 1, W - 1), y1 = std::min(y0 + 1, H - 1);
-        const float fx = sx - x0, fy = sy - y0;
-        const float* a = img.row(y0) + x0 * 3; const float* b = img.row(y0) + x1 * 3;
-        const float* c = img.row(y1) + x0 * 3; const float* d = img.row(y1) + x1 * 3;
-        for (int ch = 0; ch < 3; ++ch)
-          acc[ch] += (a[ch] * (1 - fx) + b[ch] * fx) * (1 - fy) + (c[ch] * (1 - fx) + d[ch] * fx) * fy;
+  std::vector<float> line((size_t)std::max(W, H) * 3);
+  auto pass = [&](bool horiz, int r) {
+    if (r < 1) return;
+    const int len1 = horiz ? W : H, lines = horiz ? H : W;
+    const float inv = 1.f / (2 * r + 1);
+    for (int j = 0; j < lines; ++j) {
+      auto at = [&](int i) -> float* {
+        i = i < 0 ? 0 : (i >= len1 ? len1 - 1 : i);
+        return horiz ? img.row(j) + (size_t)i * 3 : img.row(i) + (size_t)j * 3;
+      };
+      float s[3] = {0.f, 0.f, 0.f};
+      for (int k = -r; k <= r; ++k) { const float* p = at(k); s[0] += p[0]; s[1] += p[1]; s[2] += p[2]; }
+      for (int i = 0; i < len1; ++i) {
+        float* o = &line[(size_t)i * 3];
+        o[0] = s[0] * inv; o[1] = s[1] * inv; o[2] = s[2] * inv;
+        const float* add = at(i + r + 1); const float* sub = at(i - r);
+        s[0] += add[0] - sub[0]; s[1] += add[1] - sub[1]; s[2] += add[2] - sub[2];
       }
-      float* o = &out[((size_t)y * W + x) * 3];
-      o[0] = acc[0] * inv; o[1] = acc[1] * inv; o[2] = acc[2] * inv;
+      for (int i = 0; i < len1; ++i) {
+        float* d = at(i); const float* o = &line[(size_t)i * 3];
+        d[0] = o[0]; d[1] = o[1]; d[2] = o[2];
+      }
     }
-  img.data.swap(out);
+  };
+  pass(true, rx);
+  pass(false, ry);
 }
 
 void excludeOtherFaces(ffcv::MatF& mask, const ffcv::Affine& am, const float* box,

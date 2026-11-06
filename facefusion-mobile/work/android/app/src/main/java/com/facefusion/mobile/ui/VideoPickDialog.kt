@@ -143,6 +143,7 @@ fun VideoPickDialog(
                         }
                     }
                     message != null -> Text(message)
+                    else -> Unit
                 }
             }
         },
