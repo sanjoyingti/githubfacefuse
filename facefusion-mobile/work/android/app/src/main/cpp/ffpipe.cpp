@@ -1013,7 +1013,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   const bool videoLook = cfg.secondLook && p_->seq.on && !noTrack && !boxesOnly;
   const bool harder = videoLook && (streak % lookPeriod) == 0;
   const bool autoRot = !cfg.detectRotated && harder && streak <= 15;
-  const int nAngles = (cfg.detectRotated || autoRot) ? 4 : 1;
+  int nAngles = (cfg.detectRotated || autoRot) ? 4 : 1;
   const bool recover = cfg.lowScoreRecovery && p_->seq.on && !noTrack && !boxesOnly &&
                        !p_->seq.faces.empty();
   const float detThr = recover ? std::min(cfg.detectorScore,
@@ -1147,15 +1147,64 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   msGeom += nowMs() - t0;
   return true;
   };
+  // UPSIDE-DOWN FACES: the upright detector also "finds" a head that is upside down or on
+  // its side, but with its five points labelled by image side instead of by anatomy, so the
+  // mouth lies ABOVE the eyes (estimatePose says pitch 90). Aligned from those the swap is
+  // distorted, or faded out altogether, and the hit used to end the search so the rotated
+  // passes never ran. Such a face now triggers the rotated passes (even with "detect
+  // rotated faces" off), and its upright detection is dropped where a properly oriented
+  // one overlaps it. Costs nothing on frames without such a face.
+  auto upsideDown = [&](size_t idx) {
+    const ffmotion::Pose po = ffmotion::estimatePose(lms[idx].data());
+    return !po.ok || po.pitch >= 85.f;
+  };
+  bool sawUpsideDown = false;
+  std::vector<char> penalized;   // per box: its score was lowered as an upside-down looking face
+  auto penalizeBad = [&]() {
+    penalized.resize(boxes.size(), 0);
+    for (int idx : keep)
+      if (!penalized[(size_t)idx] && upsideDown((size_t)idx)) {
+        penalized[(size_t)idx] = 1;
+        // Lowered so that a properly oriented detection of the same head wins the NMS.
+        scores[(size_t)idx] *= 0.5f;
+      }
+  };
   for (int ai = 0; ai < nAngles; ++ai) {
   const int angle = kAngles[ai];
   ffcv::Image rotated;
   if (angle != 0) rotated = ffmotion::rotateImage(frame, angle);
   const ffcv::Image& dimg = angle != 0 ? rotated : frame;
-  boxes.clear(); scores.clear(); lms.clear(); keep.clear();
+  if (!sawUpsideDown) { boxes.clear(); scores.clear(); lms.clear(); keep.clear(); }
   if (!passOn(dimg, angle, 0.f, 0.f)) return faces;
-  if (!keep.empty()) break;
+  if (!keep.empty() && !noTrack && !boxesOnly) {
+    bool any = false;
+    for (int idx : keep) any = any || upsideDown((size_t)idx);
+    if (any || sawUpsideDown) {
+      sawUpsideDown = true;
+      penalizeBad();
+      // The rotated passes run even when only the upright one was planned.
+      if (nAngles < 4) nAngles = 4;
+      continue;
+    }
+  }
+  if (!sawUpsideDown && !keep.empty()) break;
   }  // angles
+  if (sawUpsideDown) {
+    // Keep a bad face only when no properly oriented face overlaps it.
+    std::vector<int> kept;
+    for (int idx : keep) {
+      const bool bad = upsideDown((size_t)idx);
+      bool covered = false;
+      if (bad)
+        for (int o : keep)
+          if (o != idx && !upsideDown((size_t)o) &&
+              ffmotion::iou(boxes[(size_t)idx].data(), boxes[(size_t)o].data()) >= 0.2f) {
+            covered = true; break;
+          }
+      if (!covered) kept.push_back(idx);
+    }
+    keep.swap(kept);
+  }
   // SECOND LOOK (video only): the whole frame is squeezed into the detector's 640 px, so a
   // small or distant face can fall below what it sees and the frame then goes out as
   // filmed. A frame with NO face is looked at again in overlapping tiles of ~3/4 of the
@@ -3327,7 +3376,13 @@ bool Pipeline::restoreExpression(ffcv::Image& frame, const std::vector<Face>& fa
     // moment the eyes start closing until 8 frames after they are open again (the hold
     // stops it flickering on and off around the threshold).
     if (Impl::SeqFace* sf = p_->seqFaceFor(f, fi)) {
-      if (ffmotion::eyeOpenness(f.landmark68) < 0.22f) sf->restoreHold = 8;
+      // Closed (either eye under 0.22), or a WINK: one eye clearly more closed than the other
+      // while still narrowed. Both the restorer's job -- the swapped face would otherwise
+      // keep the source photo's two open eyes.
+      float eyeL = 1.f, eyeR = 1.f;
+      ffmotion::eyeOpenness2(f.landmark68, &eyeL, &eyeR);
+      const float eyeMin = std::min(eyeL, eyeR), eyeMax = std::max(eyeL, eyeR);
+      if (eyeMin < 0.22f || (eyeMax - eyeMin > 0.09f && eyeMin < 0.30f)) sf->restoreHold = 8;
       else if (sf->restoreHold > 0) --sf->restoreHold;
       else continue;
     }

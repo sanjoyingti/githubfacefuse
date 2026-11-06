@@ -1,5 +1,6 @@
 // Host checks for 1.0.41: the shared YUV/rotate cores reproduce the old converters
 // byte for byte (so the one-call decode path gives the same frames), and sharpen behaves.
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -114,6 +115,32 @@ int main() {
     if (!(mine == 1.f && theirs == 0.f && seam > 0.f && seam < 1.f)) { printf("FAIL exclude\n"); ++fails; }
     ffcv::MatF b = m; ffmotion::excludeOtherFaces(b, id, self, {});
     if (b.data != m.data) { printf("FAIL exclude empty\n"); ++fails; }
+  }
+  // eye openness: 68-point layout with both eyes open, the left shut, a wink at half
+  {
+    float lm[136] = {};
+    auto eye = [&](int i0, float cx, float h) {   // points i0..i0+5: corners and lids
+      lm[2 * i0] = cx - 20;     lm[2 * i0 + 1] = 0;
+      lm[2 * (i0 + 1)] = cx - 10; lm[2 * (i0 + 1) + 1] = -h;
+      lm[2 * (i0 + 2)] = cx + 10; lm[2 * (i0 + 2) + 1] = -h;
+      lm[2 * (i0 + 3)] = cx + 20; lm[2 * (i0 + 3) + 1] = 0;
+      lm[2 * (i0 + 4)] = cx + 10; lm[2 * (i0 + 4) + 1] = h;
+      lm[2 * (i0 + 5)] = cx - 10; lm[2 * (i0 + 5) + 1] = h;
+    };
+    float l = 0, r = 0;
+    eye(36, 0, 6.f); eye(42, 80, 6.f);
+    ffmotion::eyeOpenness2(lm, &l, &r);
+    if (!(l > 0.28f && r > 0.28f && std::abs(l - r) < 0.01f)) { printf("FAIL eyes open %f %f\n", l, r); ++fails; }
+    eye(36, 0, 0.5f);
+    ffmotion::eyeOpenness2(lm, &l, &r);
+    if (!(l < 0.05f && r > 0.28f)) { printf("FAIL wink %f %f\n", l, r); ++fails; }
+    if (!(ffmotion::eyeOpenness(lm) < 0.05f)) { printf("FAIL min\n"); ++fails; }
+    eye(36, 0, 3.2f);
+    ffmotion::eyeOpenness2(lm, &l, &r);
+    printf("EYES half=%.2f open=%.2f\n", l, r);
+    // the trigger the restorer uses
+    const float mn = std::min(l, r), mx = std::max(l, r);
+    printf("wink trigger fires for half-shut vs open: %d\n", (mn < 0.22f || (mx - mn > 0.09f && mn < 0.30f)) ? 1 : 0);
   }
   printf(fails ? "test_new41: %d FAILED\n" : "test_new41: all passed\n", fails);
   return fails ? 1 : 0;

@@ -107,6 +107,8 @@ bool thumbSame(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b);
 // Eye openness from the 68 landmarks (eye aspect ratio, the smaller of the two eyes):
 // about 0.25-0.35 open, under ~0.2 closing or closed.
 float eyeOpenness(const float* landmark68);
+// The two eyes' openness separately (eye height / width, each about 0.3 open, 0 closed).
+void eyeOpenness2(const float* landmark68, float* left, float* right);
 
 // Mouth openness from the 68 landmarks: the gap between the inner lips (62-66) over the
 // mouth width (48-54). About 0-0.03 closed, over ~0.05 opening. Returns 1 (open) when the

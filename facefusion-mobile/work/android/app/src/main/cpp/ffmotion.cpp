@@ -306,6 +306,16 @@ float eyeOpenness(const float* l) {
   return std::min(el, er);
 }
 
+void eyeOpenness2(const float* l, float* left, float* right) {
+  auto d = [&](int i, int j) {
+    const float dx = l[2 * i] - l[2 * j], dy = l[2 * i + 1] - l[2 * j + 1];
+    return std::sqrt(dx * dx + dy * dy);
+  };
+  const float wl = d(36, 39), wr = d(42, 45);
+  *left = wl > 1e-3f ? (d(37, 41) + d(38, 40)) / (2.f * wl) : 1.f;
+  *right = wr > 1e-3f ? (d(43, 47) + d(44, 46)) / (2.f * wr) : 1.f;
+}
+
 float mouthOpenness(const float* l) {
   auto d = [&](int i, int j) {
     const float dx = l[2 * i] - l[2 * j], dy = l[2 * i + 1] - l[2 * j + 1];

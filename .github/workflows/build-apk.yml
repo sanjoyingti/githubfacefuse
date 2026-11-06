@@ -75,6 +75,10 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.47 (upside-down faces, winks):
+          - Upside-down or sideways faces: the normal face finder also "finds" such a head, but with its points in the wrong order, so the swap was distorted or faded out, and the search for rotated faces never ran. A face like that now triggers the rotated search (even with "detect rotated faces" off) and is replaced by the properly oriented one. Tested: a 180-degree and a 90-degree turned copy of a frame now swap exactly like the upright one. Frames without such a face cost nothing extra.
+          - Winks: the expression restorer now also runs when one eye is clearly more closed than the other (before: only when an eye was almost shut), so the swapped face follows a wink instead of keeping two open eyes. It needs the face editor models (Settings > Models).
+
           Version 1.0.46 (frames where a face was lost):
           - A face that was seen a moment ago and is lost for a few frames (blur, a hand, a quick turn) is now looked for where it was for up to 4 frames (was 1), and kept for up to 12 frames in a row, as long as the face finder still finds a confident face of the same size there that is not another person's.
           - Checked on your whole clip (322 frames, both girls): both faces are found in 290 frames; in the other 32 there is no face to find: the front girl turned almost fully sideways with hair across (frames 91-100), the girl behind hidden behind her (227-245), and the front girl facing away (292-294).
