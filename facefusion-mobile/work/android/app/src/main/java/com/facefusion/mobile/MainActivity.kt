@@ -835,7 +835,7 @@ class MainActivity : ComponentActivity() {
         vpickCancel = false
         vpick = VPick(forFace, progress = 0f)
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("faces", 4000)) {
+            if (!PipeGuard.await("faces", 4000)) {
                 vpick = VPick(forFace, message = pipeBusyMessage()); return@launch
             }
             var ownPipe = false
@@ -1495,10 +1495,12 @@ class MainActivity : ComponentActivity() {
         return o.toString()
     }
 
-    /** Put back what [assignSnapshot] saved, when nothing is assigned in memory. */
-    private fun restoreAssignSnapshot(json: String) {
-        if (swapPersonAssignments.isNotEmpty() || videoPeopleChoice.isNotEmpty()) return
-        runCatching {
+    /** What [assignSnapshot] saved, parsed (off the main thread: it can be megabytes). */
+    private class AssignSnapshot(val mode: Boolean, val unknownKeep: Boolean,
+                                 val tapA: Map<Int, Int>, val tapI: Map<Int, FloatArray>,
+                                 val people: List<VideoPerson>, val choice: Map<Int, Int>)
+
+    private fun parseAssignSnapshot(json: String): AssignSnapshot? = runCatching {
             val o = org.json.JSONObject(json)
             fun floats(a: org.json.JSONArray) = FloatArray(a.length()) { a.getDouble(it).toFloat() }
             val taps = o.getJSONArray("taps")
@@ -1516,14 +1518,20 @@ class MainActivity : ComponentActivity() {
                                    (0 until ids.length()).map { floats(ids.getJSONArray(it)) })
                 ch[p.getInt("id")] = p.getInt("slot")
             }
-            if (tapA.isEmpty() && vps.isEmpty()) return
-            swapAssignMode = o.getBoolean("mode")
-            assignUnknownKeep = o.optBoolean("unknownKeep", true)
-            swapPersonAssignments = tapA; swapPersonIdentity = tapI
-            videoPeople = vps; videoPeopleChoice = ch; videoPeopleScanned = vps.isNotEmpty()
-            NativePipe.setFaceAssignEnabled(swapAssignMode)
-            appendLog("continue: restored ${tapA.size + vps.size} assigned people")
-        }.onFailure { appendLog("continue: could not restore the assigned people: $it") }
+            if (tapA.isEmpty() && vps.isEmpty()) null
+            else AssignSnapshot(o.getBoolean("mode"), o.optBoolean("unknownKeep", true),
+                                tapA, tapI, vps, ch)
+        }.onFailure { appendLog("continue: could not read the assigned people: $it") }.getOrNull()
+
+    /** Put back a saved assignment, when nothing is assigned in memory. Main thread. */
+    private fun restoreAssignSnapshot(a: AssignSnapshot) {
+        if (swapPersonAssignments.isNotEmpty() || videoPeopleChoice.isNotEmpty()) return
+        swapAssignMode = a.mode
+        assignUnknownKeep = a.unknownKeep
+        swapPersonAssignments = a.tapA; swapPersonIdentity = a.tapI
+        videoPeople = a.people; videoPeopleChoice = a.choice; videoPeopleScanned = a.people.isNotEmpty()
+        runCatching { NativePipe.setFaceAssignEnabled(swapAssignMode) }
+        appendLog("continue: restored ${a.tapA.size + a.people.size} assigned people")
     }
 
     /** Push the assignments again from Kotlin state, exactly (after a change in the list). */
@@ -1602,7 +1610,7 @@ class MainActivity : ComponentActivity() {
         // (and stop the scan) half way.
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("people", 4000)) {
+            if (!PipeGuard.await("people", 4000)) {
                 videoPeopleScan = null; status = pipeBusyMessage(); return@launch
             }
             var ownPipe = false
@@ -3764,7 +3772,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             // The API server may be mid-request. Wait briefly rather than bounce: a preview
             // that quietly does not appear is the bug this whole pass has been about.
-            if (!PipeGuard.acquire("preview", 4000)) {
+            if (!PipeGuard.await("preview", 4000)) {
                 previewNote = pipeBusyMessage()
                 return@launch
             }
@@ -4059,7 +4067,9 @@ class MainActivity : ComponentActivity() {
                 status = getString(R.string.status_target_ready_video,
                                    l.width, l.height, fmt(l.durationMs.toFloat()))
                 // Open it for scrubbing and show the first frame straight away.
-                previews.openTarget(l.file.absolutePath, l.fps)
+                // Off the main thread: it waits for the frame reader's lock, which a frame
+                // being decoded can hold for a while on a big video.
+                withContext(Dispatchers.IO) { previews.openTarget(l.file.absolutePath, l.fps) }
                 targetVersion++
                 // `preview` too, which this path used to leave set -- see clearPreviewFrames.
                 clearPreviewFrames()
@@ -4067,6 +4077,7 @@ class MainActivity : ComponentActivity() {
                 onLoaded?.invoke()
             }.onFailure {
                 status = getString(R.string.status_cannot_read_video, it.message ?: "")
+                resumeStarting = false   // a Continue waiting for this video may be tapped again
             }
             preparing = false
         }
@@ -4964,7 +4975,7 @@ class MainActivity : ComponentActivity() {
         // Read at bind time by the engine, so it must be set before start() and not after.
         live.frontCamera = liveFrontCamera
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("live", 5000)) {
+            if (!PipeGuard.await("live", 5000)) {
                 liveNote = pipeBusyMessage(); return@launch
             }
             // The preview holds a warm pipeline configured for the Swap screen. Live needs
@@ -5214,7 +5225,7 @@ class MainActivity : ComponentActivity() {
         if (sources.isEmpty()) return
         val tgt = targetFile ?: return
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("player", 5000)) {
+            if (!PipeGuard.await("player", 5000)) {
                 status = pipeBusyMessage(); return@launch
             }
             // The preview holds a warm pipeline configured for the Swap screen. The player
@@ -5422,8 +5433,11 @@ class MainActivity : ComponentActivity() {
         ) { runSwap() }
     }
 
+    /** A Continue is on its way to starting the run (one tap, one run). */
+    private var resumeStarting = false
+
     private fun resumeSwap(job: ResumeJob) {
-        if (busy) return
+        if (busy || resumeStarting) return
         // Re-read: the record on disk is the truth (pieces may have been checked away).
         val fresh = runCatching { ResumeStore.load(this) }.getOrNull() ?: run {
             refreshResume()
@@ -5431,17 +5445,24 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (fresh.targetPath != job.targetPath) { refreshResume(); return }
-        fun go() {
+        resumeStarting = true
+        fun go() = lifecycleScope.launch {
+          try {
             // The people assigned when this swap started, so the rest of the video swaps
-            // each of them the same way (also after the app was closed).
-            runCatching { ResumeStore.assignFile(this).readText() }.getOrNull()
-                ?.let { restoreAssignSnapshot(it) }
+            // each of them the same way (also after the app was closed). Read and parsed
+            // in the background: on the main thread a big list stalled the screen.
+            val saved = withContext(Dispatchers.IO) {
+                runCatching { ResumeStore.assignFile(this@MainActivity).takeIf { it.isFile }?.readText() }
+                    .getOrNull()?.let { parseAssignSnapshot(it) }
+            }
+            saved?.let { restoreAssignSnapshot(it) }
             trimStartMs = job.startUs / 1000f
             trimEndMs = if (job.toEnd) durationMs.toFloat() else job.endUs / 1000f
             if (opts.outputFps != job.outputFps || opts.outputMaxShortEdge != job.outputMaxShortEdge)
                 applyOpts(opts.copy(outputFps = job.outputFps,
                                     outputMaxShortEdge = job.outputMaxShortEdge))
             runSwap(resume = job)
+          } finally { resumeStarting = false }
         }
         // The same video is already on screen (the app restored it, or it never left):
         // carry on at once. Reloading it would restart the preview, which holds the
@@ -5578,8 +5599,11 @@ class MainActivity : ComponentActivity() {
             status = getString(R.string.status_run_no_voice); return
         }
         // The preview holds a loaded pipeline and `g_pipe` is a single global, so the run
-        // cannot start until it lets go.
-        invalidatePreview()
+        // cannot start until it lets go. Released once the run holds the pipeline (below),
+        // in the background: on the main thread the release could wait on a preview frame
+        // still being made and freeze the screen.
+        previewWarm = false
+        clearPreviewFrames()
         cancelRequested = false
         busy = true; progress = 0f; log = ""
         val testRun = testFromMs != null
@@ -5594,12 +5618,12 @@ class MainActivity : ComponentActivity() {
             // API server gets 503 for the duration, which is the honest answer.
             // The models may still be loading for the preview (a minute on a cold start):
             // wait for them instead of giving up after 5 s, and say so. Cancel ends the wait.
-            if (!PipeGuard.acquire("swap", 2000)) {
+            if (!PipeGuard.await("swap", 2000)) {
                 status = getString(R.string.status_waiting_models)
                 var waited = 0
                 var got = false
                 while (waited < 120_000 && !cancelRequested && !SwapStatus.cancelRequested) {
-                    if (PipeGuard.acquire("swap", 500)) { got = true; break }
+                    if (PipeGuard.await("swap", 500)) { got = true; break }
                     waited += 500
                 }
                 if (!got) {
@@ -5609,6 +5633,8 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
             }
+            withContext(Dispatchers.Default) { previews.invalidate() }
+            previewWarm = false
             // Only now is the previous result replaced: a run that could not start must not
             // have thrown away the swapped video that was already there. A TEST keeps a real
             // result on disk (it comes back on the next start) and replaces only a test.
@@ -5920,7 +5946,7 @@ class MainActivity : ComponentActivity() {
         preview = null; framesDone = 0; framesTotal = 0; elapsedS = 0.0
 
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("swap", 5000)) {
+            if (!PipeGuard.await("swap", 5000)) {
                 status = pipeBusyMessage(); busy = false; return@launch
             }
             val result = withContext(Dispatchers.Default) {
@@ -6078,7 +6104,7 @@ class MainActivity : ComponentActivity() {
         BatchService.start(this)
 
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("batch", 5000)) {
+            if (!PipeGuard.await("batch", 5000)) {
                 status = pipeBusyMessage(); busy = false
                 BatchStatus.end(); BatchService.stop(this@MainActivity)
                 return@launch

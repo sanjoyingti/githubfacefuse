@@ -66,6 +66,25 @@ object PipeGuard {
         return got
     }
 
+    /**
+     * [acquire] for COROUTINES on the main thread: waits up to [timeoutMs] WITHOUT blocking
+     * the thread (short tries with a coroutine delay in between).
+     *
+     * ⚠ The blocking [acquire] with a timeout must never be called on the main thread: the
+     * swap's wait for the preview's models (up to two minutes on a cold start) froze the
+     * screen there, Android declared the app not responding and closed it -- "Continue
+     * hangs and the app closes". Every UI caller uses this instead.
+     */
+    suspend fun await(who: String, timeoutMs: Long = 0): Boolean {
+        if (acquire(who)) return true
+        val end = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < end) {
+            kotlinx.coroutines.delay(25)
+            if (acquire(who)) return true
+        }
+        return false
+    }
+
     fun release() {
         holder = null
         permit.release()
