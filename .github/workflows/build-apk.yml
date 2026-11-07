@@ -75,7 +75,14 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
-          Version 1.0.51 (swap only on faces, closer likeness):
+          Version 1.0.52 (assign per person for the whole video):
+          - Find everyone in the video: in Assign per person, one tap scans the whole target video and lists each person once, in the order they appear, with when they are first seen (also people who only come in at minute 5). Give each their own source photo or Own face, or remove them with the X. Each assigned person is swapped wherever they appear, from the beginning of the video to the end.
+          - Quick scan for any length: frames between two looks are skipped when a key frame is near, a long video is read in 3 parts at once, and the decoder runs at full speed. A 64 s phone recording decodes 739 frames instead of 2289. Works for a film of any length (up to 120 people); the progress bar says how long is left, and the screen stays on.
+          - Scan only part of the video: a From/To slider to search just one part (quicker for a long film). Whoever you assign is still swapped in the whole video.
+          - No more same picture on two people: each person goes to one face per frame, and anyone you did not assign keeps their own face (switch under the list). On a two-person dance clip: 0 frames with both faces given one person's picture.
+          - Continue after closing the app keeps the assigned people, so the rest of the film swaps each person the same way.
+          - A note shows when the trim does not cover the whole video, with "Swap the whole video".
+
           - No more faces pasted where there is no face: the detector sometimes fires on face-like patterns (a plaid shirt in a test clip, at knee height), and the swap then pasted a face there. Such boxes are now dropped: the face landmarker scored them 0.07-0.11, while every real face in the clip (turned, blurred, looking down) scored 0.36 or more. On that clip all 25 false faces are gone and both people are still found in every frame.
           - Closer likeness to the source photo: the face swapper weight is now 0.65 by default (was 0.5), which keeps more of the source face. If you never moved that slider it moves to 0.65 once; a value you set is kept.
           - Includes 1.0.50: sideways faces keep the swap with side photos, natural closed eyes, sticky face selection.
