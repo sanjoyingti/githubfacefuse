@@ -75,7 +75,12 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
-          Version 1.0.54 (more models; same speed, memory and battery with the default settings):
+          Version 1.0.55 (Continue no longer closes the app):
+          - Pressing Continue while the app was still loading its models froze the screen while it waited (up to two minutes), and Android closed the app as "not responding". The wait now happens in the background; the screen stays usable and says it is waiting for the models.
+          - The same fix everywhere the app waits for the models: preview, Live, player, Find everyone, batch.
+          - Releasing the preview, reading the assigned people and reopening the video no longer run on the screen thread. A double tap on Continue starts one swap.
+          - Speed, memory, battery and settings unchanged.
+
           - Second face detector (SCRFD, on): when a face that was on screen a moment ago is lost (turned, half hidden, blurred), or no face is found at all, a second detector looks too. Only a face where the lost one was is added, so posters and pictures stay out. Frames where every face is found cost nothing extra.
           - Second face-point model for turned faces (PEPPA-Wutz, on): for a face the normal face-point model is unsure of, a second one places the eyes, nose and mouth too, and the more confident one is used. On the NPU; about 1 face in 12 on a dance clip, a few milliseconds each.
           - Larger face parser (BiSeNet ResNet-34, off): a more exact outline of skin, hair and ears. Gear > Face Masker.
