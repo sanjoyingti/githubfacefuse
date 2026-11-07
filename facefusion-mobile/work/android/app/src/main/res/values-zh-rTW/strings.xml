@@ -435,7 +435,7 @@
     <string name="live_assign_kept">此人保留本人面孔</string>
     <string name="swap_assign_on">點選某人之前不會有任何變化</string>
     <string name="swap_assign_off">每張臉都使用所選來源</string>
-    <string name="swap_assign_hint">先選一個來源（或「保留本人」），再點下方的某個人。未點選的人使用開啟此模式時所選的來源。</string>
+    <string name="swap_assign_hint">先選一個來源（或「保留本人」），再點下方的某個人。未點選的人保留本人的臉。影片後面才出現的人，請用「找出影片裡的所有人」。</string>
     <string name="swap_assign_no_people">目前影格未偵測到人臉。請拖動裁剪滑桿到有目標人物的影格。</string>
     <string name="swap_assign_person">人物 %1$d</string>
     <string name="swap_assign_badge">源%1$d</string>

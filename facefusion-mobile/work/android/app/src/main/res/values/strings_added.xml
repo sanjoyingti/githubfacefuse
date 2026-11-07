@@ -232,4 +232,20 @@
     <string name="opt_closed_eyes_hint">While an eye is shut, its own lids and lashes stay as filmed, so they do not smear. Each eye on its own (winks too).</string>
     <string name="opt_side_hold">Swap turned faces with side photos</string>
     <string name="opt_side_hold_hint">If this person has a photo turned the same way (Faces tab), a face turned sideways keeps the swap 15 degrees further round before fading.</string>
+    <!-- 1.0.52: find everyone in the video (Assign per person) -->
+    <string name="vpeople_find">Find everyone in the video</string>
+    <string name="vpeople_rescan">Scan the video again</string>
+    <string name="vpeople_scanning">Looking through the whole video… %1$d%%</string>
+    <string name="vpeople_scanning_hint">Every person who appears, from the first second to the last, is listed once. You can keep using the app.</string>
+    <string name="vpeople_cancel">Stop</string>
+    <string name="vpeople_found">%1$d people in this video. Pick a photo for each one; it is used for that person from the start of the video to the end. Tap ✕ to drop someone you do not want.</string>
+    <string name="vpeople_none">Nobody was found in this video.</string>
+    <string name="vpeople_person">Person %1$d</string>
+    <string name="vpeople_info">First seen %1$s · seen %2$d times</string>
+    <string name="vpeople_keep">Own face</string>
+    <string name="vpeople_not_set">Not set: keeps own face</string>
+    <string name="vpeople_remove">Remove this person</string>
+    <string name="vpeople_unknown_keep">Anyone not assigned keeps their own face</string>
+    <string name="vpeople_unknown_keep_off">Anyone not assigned gets the source picked when you turned this on</string>
+    <string name="vpeople_done">Found %1$d people in the video.</string>
 </resources>

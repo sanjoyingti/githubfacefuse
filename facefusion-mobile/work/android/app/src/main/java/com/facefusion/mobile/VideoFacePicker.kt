@@ -51,12 +51,21 @@ object VideoFacePicker {
     class Person {
         val sum = FloatArray(512)
         var count = 0
+        /** When the person was first seen, in microseconds from the start. */
+        var firstUs = Long.MAX_VALUE
         val best = LinkedHashMap<Angle, Seen>()
 
         fun meanNorm(): FloatArray = normalised(sum)
 
         /** The person's picture for the list: the front view if there is one. */
         val thumb: Bitmap? get() = (best[Angle.FRONT] ?: best.values.maxByOrNull { it.quality })?.crop
+
+        /**
+         * Who this is, for per-person assignment: the person's average face, then the
+         * best picture at each angle (so a turned head still matches).
+         */
+        fun identities(): List<FloatArray> =
+            listOf(meanNorm()) + best.values.map { normalised(it.emb) }
     }
 
     const val SAME_PERSON = 0.45f        // grouping faces of one clip into people
@@ -83,7 +92,8 @@ object VideoFacePicker {
      * only when [s] becomes the best picture at its angle. Pure apart from [makeCrop], so
      * it is unit-tested.
      */
-    fun add(people: MutableList<Person>, s: Seen, target: FloatArray?, makeCrop: () -> Bitmap?) {
+    fun add(people: MutableList<Person>, s: Seen, target: FloatArray?,
+            maxPeople: Int = MAX_PEOPLE, makeCrop: () -> Bitmap?) {
         if (s.side < MIN_SIDE) return
         val angle = s.angle ?: return
         val p: Person = if (target != null) {
@@ -95,10 +105,11 @@ object VideoFacePicker {
                 val c = cos(s.emb, q.meanNorm())
                 if (c >= bestC) { bestC = c; bestP = q }
             }
-            bestP ?: (if (people.size < MAX_PEOPLE) Person().also { people += it } else return)
+            bestP ?: (if (people.size < maxPeople) Person().also { people += it } else return)
         }
         for (i in 0 until 512) p.sum[i] += s.emb[i]
         p.count++
+        if (s.timeUs < p.firstUs) p.firstUs = s.timeUs
         val old = p.best[angle]
         if (old == null || s.quality > old.quality) {
             val crop = makeCrop() ?: return
@@ -117,6 +128,44 @@ object VideoFacePicker {
         return order.filter { it !in have }.mapNotNull { p.best[it] }.take(free.coerceAtLeast(0))
     }
 
+    const val MERGE_SAME = 0.40f         // two groups that are really one person (other angle)
+
+    /**
+     * Join groups that are the same person seen from different sides: the grouping in
+     * [add] is against each group's average, so a person who first shows a profile and
+     * later the front can start a second group. Pure; unit-tested.
+     */
+    fun merge(found: MutableList<Person>) {
+        var joined = true
+        while (joined) {
+            joined = false
+            loop@ for (a in found.indices) for (b in a + 1 until found.size) {
+                val pa = found[a]; val pb = found[b]
+                if (cos(pa.meanNorm(), pb.meanNorm()) < MERGE_SAME) continue
+                for (i in 0 until 512) pa.sum[i] += pb.sum[i]
+                pa.count += pb.count
+                pa.firstUs = minOf(pa.firstUs, pb.firstUs)
+                for ((ang, sb) in pb.best) {
+                    val sa = pa.best[ang]
+                    if (sa == null || sb.quality > sa.quality) { sa?.crop?.recycle(); pa.best[ang] = sb }
+                    else sb.crop?.recycle()
+                }
+                found.removeAt(b)
+                joined = true
+                break@loop
+            }
+        }
+    }
+
+    /**
+     * EVERYONE in the video, for "Assign per person": each person once, in the order they
+     * first appear, with small pictures only (the list needs thumbnails, not photos).
+     */
+    fun everyone(found: MutableList<Person>): List<Person> {
+        merge(found)
+        return found.filter { it.count >= 2 && it.best.isNotEmpty() }.sortedBy { it.firstUs }
+    }
+
     /** People seen at least twice, most seen first. */
     fun people(found: List<Person>): List<Person> =
         found.filter { it.count >= 2 && it.best.isNotEmpty() }.sortedByDescending { it.count }
@@ -129,6 +178,7 @@ object VideoFacePicker {
     fun scan(
         ctx: Context, uri: Uri, target: FloatArray?,
         onProgress: (Float) -> Unit, cancelled: () -> Boolean,
+        maxLooks: Int = 240, cropMax: Int = 1024, maxPeople: Int = MAX_PEOPLE,
     ): List<Person> {
         val people = mutableListOf<Person>()
         val extractor = MediaExtractor()
@@ -158,8 +208,8 @@ object VideoFacePicker {
                 }.getOrDefault(0)
             val durUs = if (vf.containsKey(MediaFormat.KEY_DURATION))
                 vf.getLong(MediaFormat.KEY_DURATION) else 0L
-            // About two a second; a long clip is spread over at most 240 looks.
-            val stepUs = maxOf(500_000L, if (durUs > 0) durUs / 240 else 500_000L)
+            // About two a second; a long clip is spread over at most [maxLooks] looks.
+            val stepUs = maxOf(500_000L, if (durUs > 0) durUs / maxLooks else 500_000L)
             val upW = if (rotation % 180 != 0) h else w
             val upH = if (rotation % 180 != 0) w else h
             val scale = minOf(1f, 1920f / maxOf(upW, upH))
@@ -200,7 +250,7 @@ object VideoFacePicker {
                                 NativePipe.imageToUprightBgr(img, w, h, rotation, outW, outH)
                             } finally { img.close() }
                         }
-                        if (bgr != null) look(people, bgr, outW, outH, pts, target)
+                        if (bgr != null) look(people, bgr, outW, outH, pts, target, cropMax, maxPeople)
                         if (durUs > 0) onProgress((pts.toFloat() / durUs).coerceIn(0f, 1f))
                     }
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outEos = true
@@ -217,7 +267,7 @@ object VideoFacePicker {
     }
 
     private fun look(people: MutableList<Person>, bgr: ByteArray, w: Int, h: Int, pts: Long,
-                     target: FloatArray?) {
+                     target: FloatArray?, cropMax: Int, maxPeople: Int) {
         val r = NativePipe.scanFaces(bgr, w, h)
         val st = NativePipe.SCAN_STRIDE
         for (i in 0 until r.size / st) {
@@ -225,7 +275,7 @@ object VideoFacePicker {
             val x1 = r[o]; val y1 = r[o + 1]; val x2 = r[o + 2]; val y2 = r[o + 3]
             val s = Seen(pts, minOf(x2 - x1, y2 - y1), r[o + 4], r[o + 5], r[o + 6],
                          r[o + 7], r[o + 8], r.copyOfRange(o + 9, o + 9 + 512))
-            add(people, s, target) { cropFace(bgr, w, h, x1, y1, x2, y2) }
+            add(people, s, target, maxPeople) { cropFace(bgr, w, h, x1, y1, x2, y2, cropMax) }
         }
     }
 
@@ -233,7 +283,8 @@ object VideoFacePicker {
      * The face with room around it (2.2x the box, like a portrait), at most 1024 px, as a
      * bitmap. Enough for the detector and recogniser to find it again as a source photo.
      */
-    fun cropFace(bgr: ByteArray, w: Int, h: Int, x1: Float, y1: Float, x2: Float, y2: Float): Bitmap? {
+    fun cropFace(bgr: ByteArray, w: Int, h: Int, x1: Float, y1: Float, x2: Float, y2: Float,
+                 maxSide: Int = 1024): Bitmap? {
         val cx = (x1 + x2) / 2f; val cy = (y1 + y2) / 2f
         val half = maxOf(x2 - x1, y2 - y1) * 1.1f
         val l = (cx - half).toInt().coerceIn(0, w - 1)
@@ -242,7 +293,7 @@ object VideoFacePicker {
         val b = (cy + half).toInt().coerceIn(t + 1, h)
         val cw = r - l; val ch = b - t
         if (cw < 16 || ch < 16) return null
-        val step = maxOf(1, (maxOf(cw, ch) + 1023) / 1024)
+        val step = maxOf(1, (maxOf(cw, ch) + maxSide - 1) / maxSide)
         val ow = cw / step; val oh = ch / step
         val px = IntArray(ow * oh)
         for (y in 0 until oh) {

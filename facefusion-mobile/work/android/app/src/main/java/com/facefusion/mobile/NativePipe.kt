@@ -505,6 +505,17 @@ object NativePipe {
                                                   keepOriginal: Boolean): Boolean
 
     /**
+     * One picture of one PERSON from "Find everyone in the video". Call once per picture
+     * (front, left, right ...) with the same [person] id: all of them carry one choice,
+     * and a person goes to one face per frame only.
+     */
+    @JvmStatic external fun restorePersonAssignment(embedding: FloatArray, source: Int,
+                                                    keepOriginal: Boolean, person: Int): Boolean
+
+    /** Assign per person: faces matching nobody assigned keep their own face. */
+    @JvmStatic external fun setAssignUnknownKeep(keep: Boolean)
+
+    /**
      * Queue a tap (DISPLAY bitmap coordinates -- the frame [LiveScreen] draws) for the
      * next [liveFrame] to resolve against the PRE-SWAP detections: the embedding stored
      * is the real person's, not the swapped frame on the display. The source chip

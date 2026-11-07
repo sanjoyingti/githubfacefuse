@@ -87,4 +87,30 @@ class PhotoCheckTest {
         assertEquals(setOf(Angle.FRONT, Angle.RIGHT), only[0].best.keys)
         println("PICKER people=${people.size} crops=$crops target=${only[0].count}")
     }
+
+    @Test fun everyoneMergesSidesAndOrdersByFirstSeen() {
+        val bmp = { Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888) }
+        val a = unit(11); val b = unit(12)
+        // a2: the same person as a, but far enough to start a group of its own (other side)
+        val u = unit(13); val ua = VideoFacePicker.cos(u, a)
+        val orth = VideoFacePicker.normalised(FloatArray(512) { u[it] - ua * a[it] })
+        val k = Math.sqrt(1.0 / (0.42 * 0.42) - 1.0).toFloat()   // cos(a, a2) = 0.42
+        val a2 = VideoFacePicker.normalised(FloatArray(512) { a[it] + k * orth[it] })
+        val cAA2 = VideoFacePicker.cos(a, a2)
+        val found = mutableListOf<VideoFacePicker.Person>()
+        fun seen(t: Long, e: FloatArray, yaw: Float) =
+            VideoFacePicker.Seen(t, 200f, 0.9f, yaw, 0f, 150f, 120f, e)
+        for (s in listOf(seen(5_000_000, b, 0f), seen(6_000_000, b, 0f),
+                         seen(60_000_000, a2, -35f), seen(61_000_000, a2, -35f),
+                         seen(1_000_000, a, 0f), seen(2_000_000, a, 0f)))
+            VideoFacePicker.add(found, s, null, 24) { bmp() }
+        assertEquals(3, found.size)
+        println("EVERYONE groups before merge=${found.size} cos(a,a2)=$cAA2")
+        val everyone = VideoFacePicker.everyone(found)
+        assertEquals(3, found.size + 1)          // merged in place: a and a2 became one
+        assertEquals(2, everyone.size)
+        assertEquals(1_000_000L, everyone[0].firstUs)
+        assertTrue(everyone.zipWithNext().all { (x, y) -> x.firstUs <= y.firstUs })
+        assertTrue(everyone[0].identities().size >= 2)
+    }
 }

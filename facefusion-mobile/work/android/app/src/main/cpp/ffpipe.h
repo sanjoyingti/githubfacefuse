@@ -387,6 +387,21 @@ class Pipeline {
   /** Put a remembered identity's assignment back on a pipeline that was just built. */
   bool restoreFaceAssignment(const float* embedding, int sourceIndex, bool keepOriginal);
 
+  /**
+   * One picture of one PERSON found by the "find everyone in the video" scan. Call it once
+   * per picture (front, left, right ...) with the same [person] id (0..999999): every
+   * picture of the person carries the same choice, and on any frame a person is given to
+   * one face only. [embedding] need not be normalised.
+   */
+  bool restorePersonAssignment(const float* embedding, int sourceIndex, bool keepOriginal,
+                               int person);
+
+  /**
+   * Assign per person: whether a face that matches nobody assigned keeps its own face
+   * (true, the default) or takes the source that was active when the mode turned on.
+   */
+  void setAssignUnknownKeep(bool keep);
+
   void clearFaceSourceAssignments();
 
   /**
@@ -668,6 +683,9 @@ class Pipeline {
   int skipRefFrames = 0, skipFadeFrames = 0, skipKeepFrames = 0, skipLargestFrames = 0;
   int framesWithFaces = 0;
   std::string swapReport(bool reset);
+  // Which source face [fi] of [faces] gets on this frame (-1 = keeps its own face).
+  // What swapAll would use; for tests and logs.
+  int sourceFor(const std::vector<Face>& faces, size_t fi);
   // Zero every counter above.  A run has to call this itself: the accumulators are
   // cumulative across frames by design, and setSource clears only SOME of them --
   // msSwap and msLipSync survive it, so a second run without this reports the first

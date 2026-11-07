@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -139,6 +140,7 @@ int main(int argc, char** argv) {
   std::vector<std::string> frames, extras;
   bool detectOnly = false;
   bool likeness = false;
+  bool assignTest = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto v = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -171,6 +173,7 @@ int main(int argc, char** argv) {
     else if (a == "--sidehold") cfg.sideHold = v() == "1";
     else if (a == "--weight") cfg.swapperWeight = (float)atof(v().c_str());
     else if (a == "--likeness") likeness = v() == "1";
+    else if (a == "--assign-test") assignTest = v() == "1";
     else if (a == "--eyes") cfg.keepClosedEyes = v() == "1";   // another photo of the source person
     else frames.push_back(a);
   }
@@ -207,12 +210,60 @@ int main(int argc, char** argv) {
     }
   }
   double likeSum = 0; int likeN = 0;
+  // ASSIGN TEST: find everyone first (like the app's whole-video scan), give the most
+  // seen person source 0 and every other person their own face, then check each frame.
+  struct Ppl { std::vector<float> sum; int n = 0; std::vector<std::vector<float>> pics; };
+  std::vector<Ppl> ppl;
+  auto cosv = [](const float* a, const float* b) { double c = 0; for (int i = 0; i < 512; ++i) c += a[i] * b[i]; return (float)c; };
+  auto meanOf = [](const Ppl& p) { std::vector<float> m(p.sum); double n = 0; for (float x : m) n += x * x; n = n > 0 ? 1 / std::sqrt(n) : 0; for (float& x : m) x *= (float)n; return m; };
+  int assignBad2 = 0, assignMissA = 0, assignWrongB = 0, assignA = 0, assignOther = 0;
+  if (assignTest) {
+    for (size_t k = 0; k < frames.size(); k += 15) {
+      ffcv::Image fr; if (!readPpm(frames[k], fr)) continue;
+      for (const auto& f : pipe.analyse(fr, false, true)) {
+        if (std::min(f.box[2] - f.box[0], f.box[3] - f.box[1]) < 64) continue;
+        int best = -1; float bc = 0.45f;
+        for (size_t q = 0; q < ppl.size(); ++q) { float c = cosv(f.embeddingNorm, meanOf(ppl[q]).data()); if (c >= bc) { bc = c; best = (int)q; } }
+        if (best < 0) { ppl.push_back({}); ppl.back().sum.assign(512, 0.f); best = (int)ppl.size() - 1; }
+        for (int i = 0; i < 512; ++i) ppl[(size_t)best].sum[(size_t)i] += f.embeddingNorm[i];
+        ppl[(size_t)best].n++;
+        if (ppl[(size_t)best].pics.size() < 4) ppl[(size_t)best].pics.emplace_back(f.embeddingNorm, f.embeddingNorm + 512);
+      }
+    }
+    std::sort(ppl.begin(), ppl.end(), [](const Ppl& a, const Ppl& b) { return a.n > b.n; });
+    while (!ppl.empty() && ppl.back().n < 2) ppl.pop_back();
+    printf("assign-test: %zu people:", ppl.size());
+    for (auto& p : ppl) printf(" %d", p.n);
+    printf("\n");
+    pipe.setFaceAssignEnabled(true);
+    const bool onlyFirst = getenv("ASSIGN_ONLY_FIRST") != nullptr;
+    for (size_t q = 0; q < (onlyFirst ? std::min<size_t>(1, ppl.size()) : ppl.size()); ++q) {
+      auto m = meanOf(ppl[q]);
+      pipe.restorePersonAssignment(m.data(), 0, q != 0, (int)q);
+      for (auto& e : ppl[q].pics) pipe.restorePersonAssignment(e.data(), 0, q != 0, (int)q);
+    }
+  }
   int idx = 0;
   for (const std::string& fp : frames) {
     ffcv::Image fr;
     if (!readPpm(fp, fr)) { fprintf(stderr, "cannot read %s\n", fp.c_str()); return 4; }
     pipe.resetStats();
     auto faces = pipe.analyse(fr);
+    if (assignTest && !ppl.empty()) {
+      int got0 = 0;
+      printf("assign");
+      for (size_t i = 0; i < faces.size(); ++i) {
+        const int src = pipe.sourceFor(faces, i);
+        int who = -1; float bc = 0.f;
+        for (size_t q = 0; q < ppl.size(); ++q) { float c = cosv(faces[i].embeddingNorm, meanOf(ppl[q]).data()); if (c > bc) { bc = c; who = (int)q; } }
+        printf(" [who %d cos %.2f src %d]", who, bc, src);
+        if (src == 0) ++got0;
+        if (who == 0 && bc > 0.5f) { ++assignA; if (src != 0) ++assignMissA; }
+        if (who > 0 && bc > 0.5f) { ++assignOther; if (src == 0) ++assignWrongB; }
+      }
+      if (got0 > 1) ++assignBad2;
+      printf("\n");
+    }
     if (!detectOnly && !pipe.swapAll(fr, faces)) { fprintf(stderr, "swap: %s\n", pipe.error().c_str()); return 5; }
     char name[64];
     snprintf(name, sizeof(name), "/out_%03d.ppm", idx++);
@@ -240,6 +291,7 @@ int main(int argc, char** argv) {
     printf("  mask %.0f ms  swap %.0f ms  occ=%d parse=%d\n", pipe.msGeomMask, pipe.msSwap,
            pipe.hasOcclusionModel(), pipe.hasParserModel());
   }
+  if (assignTest) printf("ASSIGN two-faces-same-person frames %d; person1 clear faces %d missed %d; others clear %d wrongly swapped %d\n", assignBad2, assignA, assignMissA, assignOther, assignWrongB);
   if (likeN) printf("LIKENESS mean %.3f over %d faces\n", likeSum / likeN, likeN);
   printf("%s\n", ffpipe::Pipeline::maskStatus().c_str());
   {

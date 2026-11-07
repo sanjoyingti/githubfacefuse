@@ -553,6 +553,36 @@ Java_com_facefusion_mobile_NativePipe_restoreFaceAssignment(JNIEnv* env, jclass,
   return JNI_TRUE;
 }
 
+// One picture of one person from the "find everyone in the video" scan.
+JNIEXPORT jboolean JNICALL
+Java_com_facefusion_mobile_NativePipe_restorePersonAssignment(JNIEnv* env, jclass,
+                                                              jfloatArray jEmbedding,
+                                                              jint source,
+                                                              jboolean keepOriginal,
+                                                              jint person) {
+  FF_PIPE_LOCK;
+  if (!g_pipe) { g_err = "pipeline not initialised"; return JNI_FALSE; }
+  if (!jEmbedding || env->GetArrayLength(jEmbedding) != 512) {
+    g_err = "restorePersonAssignment: embedding is not 512 floats";
+    return JNI_FALSE;
+  }
+  float embedding[512] = {0};
+  env->GetFloatArrayRegion(jEmbedding, 0, 512, embedding);
+  if (!g_pipe->restorePersonAssignment(embedding, (int)source, keepOriginal == JNI_TRUE,
+                                       (int)person)) {
+    g_err = g_pipe->error();
+    return JNI_FALSE;
+  }
+  return JNI_TRUE;
+}
+
+// Assign per person: a face matching nobody assigned keeps its own face (default on).
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setAssignUnknownKeep(JNIEnv*, jclass, jboolean keep) {
+  FF_PIPE_LOCK;
+  if (g_pipe) g_pipe->setAssignUnknownKeep(keep == JNI_TRUE);
+}
+
 // The result of the last CONSUMED request, exactly once: FIVE floats (x0, y0, x1, y1,
 // source index -- the box in DISPLAY bitmap coordinates, so the overlay can draw it
 // as-is), ONE float [-1] for "consumed but the tap was on no face", or an EMPTY array

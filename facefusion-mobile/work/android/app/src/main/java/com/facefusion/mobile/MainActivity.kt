@@ -119,6 +119,23 @@ class MainActivity : ComponentActivity() {
      * preview and do nothing at all in the output -- the worst shape a bug can take.
      */
     private var swapPersonIdentity by mutableStateOf<Map<Int, FloatArray>>(emptyMap())
+
+    /**
+     * FIND EVERYONE IN THE VIDEO (Assign per person): each person the whole-video scan
+     * found, in the order they first appear. [ids] are the person's identities (average
+     * face plus the best picture per angle), all pushed under the same native person id,
+     * so a person turned sideways at minute 7 is still the person assigned at minute 1.
+     */
+    private class VideoPerson(val id: Int, val thumb: Bitmap?, val firstUs: Long,
+                              val seen: Int, val ids: List<FloatArray>)
+    private var videoPeople by mutableStateOf<List<VideoPerson>>(emptyList())
+    private var videoPeopleScanned by mutableStateOf(false)
+    /** person id -> source slot, or [KEEP_ORIGINAL]. Missing = not set (keeps own face). */
+    private var videoPeopleChoice by mutableStateOf<Map<Int, Int>>(emptyMap())
+    private var videoPeopleScan by mutableStateOf<Float?>(null)
+    @Volatile private var videoPeopleCancel = false
+    /** Faces matching nobody assigned keep their own face (native assignUnknownKeep). */
+    private var assignUnknownKeep by mutableStateOf(true)
     private var liveLargestOnly by mutableStateOf(false)
     private var targetFile by mutableStateOf<File?>(null)
     private var targetName by mutableStateOf<String?>(null)
@@ -1263,7 +1280,14 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Forget the target-specific people without changing whether the mode is enabled. */
-    private fun resetSwapPersonState() {
+    private fun resetSwapPersonState(keepVideoPeople: Boolean = false) {
+        if (!keepVideoPeople) {
+            // Thumbnails are NOT recycled: the screen may still be drawing them this frame.
+            videoPeopleCancel = true
+            videoPeople = emptyList()
+            videoPeopleChoice = emptyMap()
+            videoPeopleScanned = false
+        }
         swapSelectedPerson = -1
         swapPersonSnapshot = null
         swapPersonBoxes = null
@@ -1362,9 +1386,12 @@ class MainActivity : ComponentActivity() {
 
     private fun toggleSwapAssign() {
         swapAssignMode = !swapAssignMode
-        resetSwapPersonState()
+        // A whole-video scan is kept across the switch: it is the same video, and a scan
+        // of a long clip is worth not repeating.
+        resetSwapPersonState(keepVideoPeople = true)
         swapBrushKeepOriginal = false
         NativePipe.setFaceAssignEnabled(swapAssignMode)
+        if (swapAssignMode && previewWarm) restoreSwapAssignments()
         if (swapAssignMode) {
             // Keep the native swap selector clean: a stale reference would win
             // inside swapAll and silently cut assign mode down to one face.
@@ -1380,6 +1407,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun clearSwapAssignments() {
+        videoPeopleChoice = emptyMap()
         swapPersonAssignments = emptyMap()
         swapPersonIdentity = emptyMap()
         swapSelectedPerson = -1
@@ -1396,6 +1424,7 @@ class MainActivity : ComponentActivity() {
      * assignments do not survive one. Returns how many landed.
      */
     private fun restoreSwapAssignments(): Int {
+        NativePipe.setAssignUnknownKeep(assignUnknownKeep)
         if (!swapAssignMode) return 0
         var n = 0
         for ((person, slot) in swapPersonAssignments) {
@@ -1404,7 +1433,129 @@ class MainActivity : ComponentActivity() {
             if (NativePipe.restoreFaceAssignment(identity, if (keep) 0 else slot, keep)) n++
             else appendLog("could not restore the choice for person ${person + 1}")
         }
+        // The whole-video people go in AFTER the taps: a person who is in both gets the
+        // whole-video choice for all their pictures (native groups them by person id).
+        for ((k, vp) in videoPeople.withIndex()) {
+            val slot = videoPeopleChoice[vp.id] ?: continue
+            val keep = slot == KEEP_ORIGINAL
+            if (!keep && slot !in sources.indices) continue
+            var ok = 0
+            for (e in vp.ids)
+                if (NativePipe.restorePersonAssignment(e, if (keep) 0 else slot, keep, vp.id)) ok++
+            if (ok > 0) n++ else appendLog("could not restore the choice for video person ${k + 1}")
+        }
         return n
+    }
+
+    /** Push the assignments again from Kotlin state, exactly (after a change in the list). */
+    private fun repushSwapAssignments() {
+        if (!previewWarm) return
+        NativePipe.clearFaceSourceAssignments()
+        restoreSwapAssignments()
+        previewOptionsChanged(reloads = false)
+    }
+
+    private fun chooseVideoPerson(index: Int, choice: Int) {
+        val vp = videoPeople.getOrNull(index) ?: return
+        if (choice != KEEP_ORIGINAL && choice !in sources.indices) return
+        videoPeopleChoice = videoPeopleChoice + (vp.id to choice)
+        status = if (choice == KEEP_ORIGINAL) getString(R.string.swap_assign_kept, index + 1)
+                 else getString(R.string.swap_assign_set, index + 1, choice + 1)
+        repushSwapAssignments()
+    }
+
+    private fun removeVideoPerson(index: Int) {
+        val vp = videoPeople.getOrNull(index) ?: return
+        videoPeople = videoPeople.filterIndexed { i, _ -> i != index }
+        videoPeopleChoice = videoPeopleChoice - vp.id
+        repushSwapAssignments()
+    }
+
+    private fun setAssignUnknownKeepUi(keep: Boolean) {
+        assignUnknownKeep = keep
+        if (previewWarm) NativePipe.setAssignUnknownKeep(keep)
+        previewOptionsChanged(reloads = false)
+    }
+
+    /**
+     * FIND EVERYONE IN THE VIDEO: go through the whole target clip (about once a second
+     * for a long one) and list each person once, with when they first appear. Uses the
+     * preview's pipeline when it is loaded, else loads one just for this.
+     */
+    private fun findEveryoneInVideo() {
+        val file = targetFile ?: return
+        if (videoPeopleScan != null) return
+        videoPeopleCancel = false
+        videoPeopleScan = 0f
+        val forTarget = targetVersion
+        lifecycleScope.launch {
+            if (!PipeGuard.acquire("people", 4000)) {
+                videoPeopleScan = null; status = pipeBusyMessage(); return@launch
+            }
+            var ownPipe = false
+            try {
+                if (!PipeGuard.uninterrupted(lastPipeSeq)) { previews.invalidate(); previewWarm = false }
+                val result: Any = withContext(Dispatchers.Default) {
+                    if (!previews.isWarm) {
+                        previews.invalidate()
+                        previewWarm = false
+                        val models = modelDir()
+                        val missing = listOf("yoloface", "fan2d", "arcface", opts.swapper)
+                            .filterNot { ModelPaths.present(models, tier, it) }
+                        if (missing.isNotEmpty()) return@withContext "Missing ${missing.joinToString()}"
+                        val lib = applicationInfo.nativeLibraryDir
+                        if (!NativePipe.init(lib, lib, models.absolutePath, opts))
+                            return@withContext "Could not load the models: " + NativePipe.lastError()
+                        ownPipe = true
+                        NativePipe.trimModels(false, false, false)
+                    }
+                    var last = 0L
+                    val found = VideoFacePicker.scan(this@MainActivity, Uri.fromFile(file), null, { p ->
+                        val now = System.currentTimeMillis()
+                        if (now - last > 250 || p >= 1f) {
+                            last = now
+                            runOnUiThread { if (videoPeopleScan != null) videoPeopleScan = p }
+                        }
+                    }, { videoPeopleCancel }, maxLooks = 900, cropMax = 160, maxPeople = 24)
+                    found.toMutableList()
+                }
+                if (videoPeopleCancel || forTarget != targetVersion) {
+                    (result as? List<*>)?.forEach { p ->
+                        (p as VideoFacePicker.Person).best.values.forEach { it.crop?.recycle() }
+                    }
+                    return@launch
+                }
+                when (result) {
+                    is String -> status = result
+                    is MutableList<*> -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val found = result as MutableList<VideoFacePicker.Person>
+                        val everyone = VideoFacePicker.everyone(found)
+                        val keep = everyone.map { it.thumb }.toSet()
+                        found.forEach { p -> p.best.values.forEach { s ->
+                            if (s.crop !in keep) { s.crop?.recycle(); s.crop = null } } }
+                        videoPeople = everyone.mapIndexed { i, p ->
+                            VideoPerson(i, p.thumb, p.firstUs, p.count, p.identities())
+                        }
+                        videoPeopleChoice = emptyMap()
+                        videoPeopleScanned = true
+                        status = getString(R.string.vpeople_done, everyone.size)
+                        appendLog("find everyone: ${everyone.size} people (" +
+                            everyone.joinToString { "${it.count}x from ${it.firstUs / 1000} ms" } + ")")
+                        repushSwapAssignments()
+                    }
+                    else -> Unit
+                }
+            } catch (t: Throwable) {
+                appendLog("find everyone: $t")
+                status = t.message ?: t.toString()
+            } finally {
+                videoPeopleScan = null
+                if (ownPipe) { NativePipe.release(); previewWarm = false }
+                lastPipeSeq = PipeGuard.sequence
+                PipeGuard.release()
+            }
+        }
     }
 
     /**
@@ -2257,6 +2408,27 @@ class MainActivity : ComponentActivity() {
                                 onToggleAssignMode = ::toggleSwapAssign,
                                 onSelectPerson = ::selectSwapPerson,
                                 onClearAssignments = ::clearSwapAssignments,
+                                videoPeopleFound = videoPeople.isNotEmpty(),
+                                videoPeoplePanel = {
+                                    com.facefusion.mobile.ui.VideoPeoplePanel(
+                                        isVideo = targetFile != null && targetImage == null,
+                                        scanning = videoPeopleScan,
+                                        scanned = videoPeopleScanned,
+                                        people = videoPeople.map { vp ->
+                                            com.facefusion.mobile.ui.VideoPersonRow(
+                                                vp.thumb, vp.firstUs / 1000, vp.seen,
+                                                videoPeopleChoice[vp.id])
+                                        },
+                                        sourceThumbs = sources.map { it.thumb },
+                                        unknownKeep = assignUnknownKeep,
+                                        enabled = !busy,
+                                        onFind = ::findEveryoneInVideo,
+                                        onCancelScan = { videoPeopleCancel = true },
+                                        onChoose = ::chooseVideoPerson,
+                                        onRemove = ::removeVideoPerson,
+                                        onUnknownKeep = ::setAssignUnknownKeepUi,
+                                    )
+                                },
                                 hasSource = sourceUri != null,
                                 hasTarget = targetFile != null || targetImage != null,
                                 imageTarget = targetImage != null,

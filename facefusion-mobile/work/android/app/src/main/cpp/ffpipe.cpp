@@ -243,8 +243,24 @@ struct Pipeline::Impl {
     std::array<float, 512> embedding;
     int source = kNoSource;
     bool keepOriginal = false;
+    // WHO this is. Several entries may share one person (the same face seen front, left,
+    // right ... in a "find everyone" scan); a frame gives each person to at most ONE face,
+    // which is what stops two people getting the same picture.
+    int person = 0;
   };
   std::vector<FaceAssignment> faceAssignments;
+  int nextPersonId = 1;
+  // Bumped whenever the assignments or their switches change: the per-frame decision
+  // cache below is only valid for the version it was made with.
+  unsigned assignVersion = 1;
+  // ON: a face that matches nobody the user assigned keeps its own face, instead of
+  // taking the frozen default source (which gave a person who appears later in the video
+  // the same picture as someone else).
+  bool assignUnknownKeep = true;
+  // Per-frame decision cache (see resolveAssignments).
+  std::vector<int> frameAssign;
+  std::vector<float> frameAssignKey;
+  void resolveAssignments(const std::vector<Face>& faces, float refDistance);
   // One person currently in the live frame, matched frame to frame by box overlap
   // (embedding as a fallback). `pinned` means a tap decided this person's source ONCE;
   // the source is then STICKY -- swapAll never re-scores it against the per-frame
@@ -287,7 +303,8 @@ struct Pipeline::Impl {
   //
   // ⚠ Members, not file-static helpers, because Pipeline::Impl is a private name and
   // nothing outside the class may spell it.
-  void rememberAssignment(const float* embeddingNorm, int sourceIndex, bool keepOriginal);
+  void rememberAssignment(const float* embeddingNorm, int sourceIndex, bool keepOriginal,
+                          int person = -1);
 
   // ---- temporal state for Pipeline::setSequence
   // Consecutive analysed frames in which no face was found (second look throttle).
@@ -327,6 +344,11 @@ struct Pipeline::Impl {
     // this frame's verdict, so every later pass of the frame gives the same answer.
     int refHold = 0;
     bool refPass = false;
+    // STICKY PERSON (assign per person): which assigned person this face was last
+    // recognised as, and for how many more frames that holds while the match is weak
+    // (blink, turned head, looking down). -1 = nobody.
+    int assignPerson = -1;
+    int assignHold = 0;
   };
   // The sequence state of faces[fi] on this frame (any options), or null.
   SeqFace* seqFaceAny(const Face& f, size_t fi) {
@@ -468,7 +490,7 @@ struct Pipeline::Impl {
     return nullptr;
   }
   void applyToSelected(int sourceIndex, bool keepOriginal);
-  int sourceForFace(const Face& f, size_t fi, size_t faceCount, float refDistance) const;
+  int sourceForFace(const std::vector<Face>& faces, size_t fi, float refDistance);
   // The source every UNPINNED face keeps while assign mode is on. Captured when the
   // mode is turned on, so flipping the chip afterwards changes nothing on the feed --
   // in assign mode the chip is a BRUSH: only tapping a face applies it. Without the
@@ -1796,18 +1818,130 @@ static constexpr float kSamePerson = 0.15f;
  * repeated taps on one person simply piled up.
  */
 void Pipeline::Impl::rememberAssignment(const float* embeddingNorm, int sourceIndex,
-                                       bool keepOriginal) {
-  faceAssignments.erase(
-      std::remove_if(faceAssignments.begin(), faceAssignments.end(),
-          [&](const FaceAssignment& a) {
-            return faceDistance(embeddingNorm, a.embedding.data()) < kSamePerson;
-          }),
-      faceAssignments.end());
+                                       bool keepOriginal, int person) {
+  const int src = keepOriginal ? kNoSource : sourceIndex;
+  ++assignVersion;
+  if (person < 0) {
+    // A TAP. If it lands on a person who is already known (several pictures, from a
+    // scan), the new choice applies to ALL of that person's pictures -- replacing only
+    // the nearest one would leave the person half on the old picture.
+    int known = -1;
+    for (const auto& a : faceAssignments)
+      if (faceDistance(embeddingNorm, a.embedding.data()) < kSamePerson) { known = a.person; break; }
+    if (known >= 0) {
+      bool grouped = false;
+      for (const auto& a : faceAssignments) if (a.person == known &&
+          faceDistance(embeddingNorm, a.embedding.data()) >= kSamePerson) { grouped = true; break; }
+      if (grouped) {
+        for (auto& a : faceAssignments)
+          if (a.person == known) { a.source = src; a.keepOriginal = keepOriginal; }
+        person = known;
+      }
+    }
+    if (person < 0) {
+      faceAssignments.erase(
+          std::remove_if(faceAssignments.begin(), faceAssignments.end(),
+              [&](const FaceAssignment& a) {
+                return faceDistance(embeddingNorm, a.embedding.data()) < kSamePerson;
+              }),
+          faceAssignments.end());
+      person = 1000000 + nextPersonId++;
+    }
+  } else {
+    // A RESTORED person picture: one person, one choice -- every picture of them agrees.
+    for (auto& a : faceAssignments)
+      if (a.person == person) { a.source = src; a.keepOriginal = keepOriginal; }
+  }
   FaceAssignment a{};
   std::memcpy(a.embedding.data(), embeddingNorm, sizeof(float) * 512);
-  a.source = keepOriginal ? kNoSource : sourceIndex;
+  a.source = src;
   a.keepOriginal = keepOriginal;
+  a.person = person;
   faceAssignments.push_back(a);
+  // Cap the memory: a person needs a handful of pictures, not hundreds.
+  if (faceAssignments.size() > 256) faceAssignments.erase(faceAssignments.begin());
+}
+
+/**
+ * WHO IS WHO on this frame, decided once for all faces together and cached, so the
+ * swapper, the enhancer, the expression restorer and the face editor all get the same
+ * answer.
+ *
+ *  - Each face is scored against every assigned person (nearest of their pictures).
+ *  - Pairs are taken best first, and a PERSON goes to ONE face only: two people can no
+ *    longer both get the same person's picture because one of them looks a bit alike.
+ *  - A clear match (distance < refDistance) decides and is held for 60 frames; a weaker
+ *    match (< 0.42) is enough for the person the face already was (eyes shut, head
+ *    turned); a held face with no match at all stays that person for the hold.
+ *  - A face nobody claims keeps its own face (assignUnknownKeep) or the frozen default.
+ */
+void Pipeline::Impl::resolveAssignments(const std::vector<Face>& faces, float refDistance) {
+  const size_t n = faces.size();
+  frameAssign.assign(n, assignUnknownKeep ? kNoSource : assignDefaultSource);
+  // The people, and each one's nearest picture per face.
+  std::vector<int> people;
+  for (const auto& a : faceAssignments) {
+    if (!a.keepOriginal && (a.source < 0 || a.source >= (int)sourceSlots.size())) continue;
+    if (std::find(people.begin(), people.end(), a.person) == people.end()) people.push_back(a.person);
+  }
+  // With nothing to swap assigned, "unknown keeps its face" would leave the whole video
+  // untouched -- in that case unknown faces take the default source as before.
+  bool anySwap = false;
+  for (const auto& a : faceAssignments)
+    if (!a.keepOriginal && a.source >= 0 && a.source < (int)sourceSlots.size()) anySwap = true;
+  if (!anySwap) frameAssign.assign(n, assignDefaultSource);
+  if (n == 0 || people.empty()) return;
+  const size_t P = people.size();
+  std::vector<float> d(n * P, 9.f);
+  std::vector<int> srcOf(P, kNoSource);
+  for (size_t pi = 0; pi < P; ++pi)
+    for (const auto& a : faceAssignments) {
+      if (a.person != people[pi]) continue;
+      if (!a.keepOriginal && (a.source < 0 || a.source >= (int)sourceSlots.size())) continue;
+      srcOf[pi] = a.keepOriginal ? kNoSource : a.source;
+      for (size_t i = 0; i < n; ++i) {
+        const float v = faceDistance(faces[i].embeddingNorm, a.embedding.data());
+        if (v < d[i * P + pi]) d[i * P + pi] = v;
+      }
+    }
+  std::vector<SeqFace*> sq(n, nullptr);
+  for (size_t i = 0; i < n; ++i) sq[i] = seqFaceAny(faces[i], i);
+  constexpr float kWeak = 0.42f;
+  struct Cand { float key; size_t i; size_t pi; };
+  std::vector<Cand> cands;
+  for (size_t i = 0; i < n; ++i)
+    for (size_t pi = 0; pi < P; ++pi) {
+      const float v = d[i * P + pi];
+      const bool held = sq[i] && sq[i]->assignHold > 0 && sq[i]->assignPerson == people[pi];
+      if (v < refDistance) cands.push_back({held ? v - 0.05f : v, i, pi});
+      else if (held && v < kWeak) cands.push_back({v, i, pi});
+    }
+  std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.key < b.key; });
+  std::vector<int> faceP(n, -1);
+  std::vector<char> personUsed(P, 0);
+  for (const auto& c : cands) {
+    if (faceP[c.i] >= 0 || personUsed[c.pi]) continue;
+    faceP[c.i] = (int)c.pi; personUsed[c.pi] = 1;
+  }
+  // Held faces nobody else claimed stay who they were, for the rest of the hold.
+  for (size_t i = 0; i < n; ++i) {
+    if (faceP[i] >= 0 || !sq[i] || sq[i]->assignHold <= 0) continue;
+    for (size_t pi = 0; pi < P; ++pi)
+      if (!personUsed[pi] && people[pi] == sq[i]->assignPerson) {
+        faceP[i] = (int)pi; personUsed[pi] = 1; break;
+      }
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (faceP[i] >= 0) frameAssign[i] = srcOf[(size_t)faceP[i]];
+    if (!sq[i]) continue;
+    if (faceP[i] >= 0) {
+      const size_t pi = (size_t)faceP[i];
+      if (d[i * P + pi] < refDistance) { sq[i]->assignPerson = people[pi]; sq[i]->assignHold = 60; }
+      else sq[i]->assignHold = std::max(0, sq[i]->assignHold - 1);
+    } else {
+      sq[i]->assignHold = 0; sq[i]->assignPerson = -1;
+    }
+  }
 }
 
 /**
@@ -1830,22 +1964,26 @@ void Pipeline::Impl::rememberAssignment(const float* embeddingNorm, int sourceIn
  * Unassigned faces take the FROZEN default slot in both, so the source row behaves as a
  * brush on both screens: changing it changes nothing until a person is tapped.
  */
-int Pipeline::Impl::sourceForFace(const Face& f, size_t fi, size_t faceCount,
-                                  float refDistance) const {
+int Pipeline::Impl::sourceForFace(const std::vector<Face>& faces, size_t fi,
+                                  float refDistance) {
   if (!assignEnabled) return activeSource;
-  if (frameSourcesValid && frameSources.size() == faceCount) return frameSources[fi];
-  const FaceAssignment* best = nullptr;
-  float bestD = refDistance;
-  for (const auto& a : faceAssignments) {
-    // A slot the user has since deleted. keepOriginal entries index nothing and so
-    // survive it -- the person was excluded, which is still true with fewer sources.
-    if (!a.keepOriginal &&
-        (a.source < 0 || a.source >= (int)sourceSlots.size())) continue;
-    const float d = faceDistance(f.embeddingNorm, a.embedding.data());
-    if (d < bestD) { bestD = d; best = &a; }
+  if (frameSourcesValid && frameSources.size() == faces.size()) return frameSources[fi];
+  if (fi >= faces.size()) return assignDefaultSource;
+  // SWAP screen: by identity, decided for the whole frame at once (resolveAssignments)
+  // and cached under this frame's boxes, so every pass asks once and agrees.
+  // (A slot the user has since deleted is skipped there; keepOriginal entries index
+  // nothing and so survive it.)
+  std::vector<float> key;
+  key.reserve(faces.size() * 4 + 3);
+  key.push_back((float)assignVersion);
+  key.push_back((float)sourceSlots.size());
+  key.push_back((float)faces.size());
+  for (const auto& f : faces) key.insert(key.end(), f.box, f.box + 4);
+  if (key != frameAssignKey || frameAssign.size() != faces.size()) {
+    resolveAssignments(faces, refDistance);
+    frameAssignKey.swap(key);
   }
-  if (!best) return assignDefaultSource;
-  return best->keepOriginal ? kNoSource : best->source;
+  return frameAssign[fi];
 }
 
 /** Apply a brush to the SELECTED live person, if there is one. Shared by both brushes. */
@@ -1915,7 +2053,36 @@ bool Pipeline::restoreFaceAssignment(const float* embedding, int sourceIndex,
   return true;
 }
 
+bool Pipeline::restorePersonAssignment(const float* embedding, int sourceIndex,
+                                       bool keepOriginal, int person) {
+  err_.clear();
+  if (!p_ || !embedding) { err_ = "no pipeline"; return false; }
+  if (person < 0 || person >= 1000000) { err_ = "person id out of range"; return false; }
+  if (keepOriginal) sourceIndex = kNoSource;
+  else if (sourceIndex < 0 || sourceIndex >= (int)p_->sourceSlots.size()) {
+    err_ = "source index out of range"; return false;
+  }
+  float norm[512];
+  double s2 = 0;
+  for (int i = 0; i < 512; ++i) s2 += (double)embedding[i] * embedding[i];
+  const float inv = s2 > 0 ? (float)(1.0 / std::sqrt(s2)) : 0.f;
+  for (int i = 0; i < 512; ++i) norm[i] = embedding[i] * inv;
+  p_->rememberAssignment(norm, sourceIndex, keepOriginal, person);
+  return true;
+}
+
+int Pipeline::sourceFor(const std::vector<Face>& faces, size_t fi) {
+  return p_ ? p_->sourceForFace(faces, fi, p_->cfg.referenceDistance) : -1;
+}
+
+void Pipeline::setAssignUnknownKeep(bool keep) {
+  if (!p_) return;
+  p_->assignUnknownKeep = keep;
+  ++p_->assignVersion;
+}
+
 void Pipeline::clearFaceSourceAssignments() {
+  ++p_->assignVersion;
   p_->faceAssignments.clear();
   // The people being tracked are only "who has which source" because of the
   // assignments; clearing the memory clears the presence table too, and the selection
@@ -1926,6 +2093,7 @@ void Pipeline::clearFaceSourceAssignments() {
 
 void Pipeline::setFaceAssignEnabled(bool enabled) {
   p_->assignEnabled = enabled;
+  ++p_->assignVersion;
   // ⚠ The per-frame table belongs to the mode that built it. Leaving it standing across a
   // toggle would let a Swap run inherit a table the Live pump filled -- the same-length
   // coincidence that made the length test an unreliable way to tell the two modes apart.
@@ -2469,7 +2637,7 @@ bool Pipeline::syncLip(ffcv::Image& frame, const std::vector<Face>& faces,
       // Same answer as swapAll for this face: Keep face (kNoSource) is honoured
       // here, otherwise an excluded person would be synced but not swapped.
       // With assign mode off this returns the active slot and changes nothing.
-      const int six = p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance);
+      const int six = p_->sourceForFace(faces, fi, cfg.referenceDistance);
       if (six == kNoSource) continue;
     }
     double t0 = nowMs();
@@ -2936,7 +3104,7 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // it.
     // PER-PERSON ASSIGNMENT, on either screen. With the mode off this returns the
     // active slot and the rest of this loop is byte-for-byte what it always was.
-    const int six = p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance);
+    const int six = p_->sourceForFace(faces, fi, cfg.referenceDistance);
     // ⚠ The ONE assignment that is an instruction NOT to swap. It has to be honoured
     // here, before any pixel is read, rather than by pointing the face at some harmless
     // slot: "keep this person's own face" is not a swap with a different source.
@@ -3213,7 +3381,7 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
     // A person the swapper left alone must be left alone here too -- gpen would otherwise
     // redraw the face this mode exists to preserve, and the result would be neither the
     // original nor a swap.
-    if (p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance) == kNoSource)
+    if (p_->sourceForFace(faces, fi, cfg.referenceDistance) == kNoSource)
       continue;
     if (f.poseFade < 0.02f) continue;   // the swap left this face alone; so does gpen
 
@@ -3449,7 +3617,7 @@ bool Pipeline::restoreExpression(ffcv::Image& frame, const std::vector<Face>& fa
     // The faces swapAll changed, and only those.
     if (only && &f != only) continue;
     if (p_->haveReference && !p_->refAllows(f, fi, cfg.referenceDistance)) continue;
-    if (p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance) == kNoSource) continue;
+    if (p_->sourceForFace(faces, fi, cfg.referenceDistance) == kNoSource) continue;
     if (f.poseFade < 0.02f) continue;
     // SMART SPEED: the restorer's job the swap cannot do is the EYES -- a blink or closed
     // eyes, where the swapped face keeps the source photo's open ones. With the eyes open
@@ -3541,7 +3709,7 @@ bool Pipeline::editFaces(ffcv::Image& frame, const std::vector<Face>& faces) {
   for (size_t fi = 0; fi < faces.size(); ++fi) {
     const Face& f = faces[fi];
     if (only && &f != only) continue;
-    if (p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance) == kNoSource) continue;
+    if (p_->sourceForFace(faces, fi, cfg.referenceDistance) == kNoSource) continue;
 
     double t0 = nowMs();
     ffcv::Affine am;

@@ -154,6 +154,13 @@ fun SwapScreen(
     onToggleAssignMode: () -> Unit = {},
     onSelectPerson: (Int) -> Unit = {},
     onClearAssignments: () -> Unit = {},
+    /**
+     * "Find everyone in the video" ([VideoPeoplePanel]), drawn under the person row while
+     * assign mode is on. When it has found people, the one-frame row is not shown: the
+     * whole-video list replaces it.
+     */
+    videoPeoplePanel: (@Composable () -> Unit)? = null,
+    videoPeopleFound: Boolean = false,
     hasSource: Boolean,
     hasTarget: Boolean,
     /**
@@ -902,7 +909,7 @@ fun SwapScreen(
                        onCheckedChange = { onToggleAssignMode() },
                        enabled = idle)
             }
-            if (assignMode) {
+            if (assignMode && !videoPeopleFound) {
                 Text(stringResource(if (personThumbs.isEmpty())
                                         R.string.swap_assign_no_people
                                     else R.string.swap_assign_hint),
@@ -962,6 +969,7 @@ fun SwapScreen(
                     }
                 }
             }
+            if (assignMode) videoPeoplePanel?.invoke()
         }
         // ---------------------------------------------------------------- previews
         //
