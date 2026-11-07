@@ -134,6 +134,27 @@ class MainActivity : ComponentActivity() {
     private var videoPeopleChoice by mutableStateOf<Map<Int, Int>>(emptyMap())
     private var videoPeopleScan by mutableStateOf<Float?>(null)
     @Volatile private var videoPeopleCancel = false
+    private var videoPeopleStart = 0L
+
+    /**
+     * Time between looks, by length: every second up to 10 minutes, then a little wider so
+     * a 2-hour film is still a few minutes -- someone on screen for a few seconds is found
+     * at any length.
+     */
+    private fun stepFor(durationMs: Long): Long = when {
+        durationMs <= 10 * 60_000L -> 1_000_000L
+        durationMs <= 40 * 60_000L -> 1_500_000L
+        else -> 2_000_000L
+    }
+
+    /** "About 3 min left" while scanning, from how fast it has gone so far. */
+    private fun scanTimeLeft(p: Float): String? {
+        if (p < 0.03f || videoPeopleStart == 0L) return null
+        val spent = System.currentTimeMillis() - videoPeopleStart
+        val left = (spent * (1f - p) / p / 1000f).toLong()
+        return if (left >= 90) getString(R.string.vpeople_left_min, (left + 30) / 60)
+               else getString(R.string.vpeople_left_sec, maxOf(5L, (left + 4) / 5 * 5))
+    }
     /** Faces matching nobody assigned keep their own face (native assignUnknownKeep). */
     private var assignUnknownKeep by mutableStateOf(true)
     private var liveLargestOnly by mutableStateOf(false)
@@ -1487,7 +1508,11 @@ class MainActivity : ComponentActivity() {
         if (videoPeopleScan != null) return
         videoPeopleCancel = false
         videoPeopleScan = 0f
+        videoPeopleStart = System.currentTimeMillis()
         val forTarget = targetVersion
+        // A long film takes minutes: the screen stays on so the phone does not sleep
+        // (and stop the scan) half way.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         lifecycleScope.launch {
             if (!PipeGuard.acquire("people", 4000)) {
                 videoPeopleScan = null; status = pipeBusyMessage(); return@launch
@@ -1516,8 +1541,8 @@ class MainActivity : ComponentActivity() {
                             last = now
                             runOnUiThread { if (videoPeopleScan != null) videoPeopleScan = p }
                         }
-                    }, { videoPeopleCancel }, maxLooks = 400, cropMax = 160, maxPeople = 24,
-                       parts = 3, minStepUs = 1_000_000L, maxGapUs = 2_500_000L)
+                    }, { videoPeopleCancel }, maxLooks = 0, cropMax = 128, maxPeople = 120,
+                       parts = 3, minStepUs = stepFor(durationMs), maxGapUs = 2_500_000L)
                     found.toMutableList()
                 }
                 if (videoPeopleCancel || forTarget != targetVersion) {
@@ -1552,6 +1577,7 @@ class MainActivity : ComponentActivity() {
                 status = t.message ?: t.toString()
             } finally {
                 videoPeopleScan = null
+                if (!busy) window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 if (ownPipe) { NativePipe.release(); previewWarm = false }
                 lastPipeSeq = PipeGuard.sequence
                 PipeGuard.release()
@@ -2414,6 +2440,7 @@ class MainActivity : ComponentActivity() {
                                     com.facefusion.mobile.ui.VideoPeoplePanel(
                                         isVideo = targetFile != null && targetImage == null,
                                         scanning = videoPeopleScan,
+                                        timeLeft = videoPeopleScan?.let { scanTimeLeft(it) },
                                         scanned = videoPeopleScanned,
                                         people = videoPeople.map { vp ->
                                             com.facefusion.mobile.ui.VideoPersonRow(

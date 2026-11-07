@@ -75,6 +75,8 @@ fun VideoPeoplePanel(
     onChoose: (person: Int, choice: Int) -> Unit,
     onRemove: (person: Int) -> Unit,
     onUnknownKeep: (Boolean) -> Unit,
+    /** "About 3 min left", or null while it cannot tell yet. */
+    timeLeft: String? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (isVideo) {
@@ -87,6 +89,10 @@ fun VideoPeoplePanel(
                     TextButton(onCancelScan, Modifier.testTag("vpeople_cancel")) {
                         Text(stringResource(R.string.vpeople_cancel))
                     }
+                }
+                timeLeft?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall,
+                         modifier = Modifier.testTag("vpeople_time_left"))
                 }
                 Text(stringResource(R.string.vpeople_scanning_hint),
                      style = MaterialTheme.typography.bodySmall,

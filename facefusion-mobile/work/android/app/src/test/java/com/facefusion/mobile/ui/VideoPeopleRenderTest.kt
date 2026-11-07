@@ -65,6 +65,7 @@ class VideoPeopleRenderTest {
     @Test fun scanningShowsProgress() {
         rule.setContent {
             VideoPeoplePanel(
+                timeLeft = "About 3 min left",
                 isVideo = true, scanning = 0.42f, scanned = false, people = emptyList(),
                 sourceThumbs = emptyList(), unknownKeep = true, enabled = true,
                 onFind = {}, onCancelScan = {}, onChoose = { _, _ -> }, onRemove = {},
@@ -73,6 +74,7 @@ class VideoPeopleRenderTest {
         }
         rule.onNode(hasText("Looking through the whole video… 42%")).assertExists()
         rule.onNodeWithTag("vpeople_cancel").assertExists()
+        rule.onNode(hasText("About 3 min left")).assertExists()
         assertEquals("1:01:05", clockOf(3_665_000)); assertEquals("0:07", clockOf(7_900))
     }
 }

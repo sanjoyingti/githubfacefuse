@@ -105,7 +105,17 @@ object VideoFacePicker {
                 val c = cos(s.emb, q.meanNorm())
                 if (c >= bestC) { bestC = c; bestP = q }
             }
-            bestP ?: (if (people.size < maxPeople) Person().also { people += it } else return)
+            bestP ?: when {
+                people.size < maxPeople -> Person().also { people += it }
+                else -> {
+                    // FULL (a long film): a passer-by seen only once makes room, so a
+                    // real person who comes in late is never turned away.
+                    val k = people.indexOfFirst { it.count <= 1 }
+                    if (k < 0) return
+                    people[k].best.values.forEach { it.crop?.recycle() }
+                    Person().also { people[k] = it }
+                }
+            }
         }
         for (i in 0 until 512) p.sum[i] += s.emb[i]
         p.count++
@@ -202,7 +212,9 @@ object VideoFacePicker {
         val info = probe(ctx, uri) ?: return emptyList()
         val durUs = info.durUs
         // About two a second; a long clip is spread over at most [maxLooks] looks.
-        val stepUs = maxOf(minStepUs, if (durUs > 0) durUs / maxLooks else minStepUs)
+        // maxLooks <= 0: no cap -- one look every [minStepUs] whatever the length.
+        val stepUs = if (maxLooks <= 0) minStepUs
+                     else maxOf(minStepUs, if (durUs > 0) durUs / maxLooks else minStepUs)
         // Pieces of at least 20 s: below that a second decoder costs more than it saves.
         val n = if (durUs <= 0) 1 else parts.coerceIn(1, maxOf(1, (durUs / 20_000_000L).toInt()))
         val done = FloatArray(n)

@@ -88,6 +88,23 @@ class PhotoCheckTest {
         println("PICKER people=${people.size} crops=$crops target=${only[0].count}")
     }
 
+    @Test fun longFilmLatePersonIsNotTurnedAway() {
+        val bmp = { Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888) }
+        val found = mutableListOf<VideoFacePicker.Person>()
+        fun seen(t: Long, e: FloatArray) = VideoFacePicker.Seen(t, 200f, 0.9f, 0f, 0f, 150f, 120f, e)
+        // 4 regulars seen twice each, then passers-by seen once fill the list (max 6)
+        for (k in 0 until 4) repeat(2) { VideoFacePicker.add(found, seen(k * 1_000_000L, unit(100 + k)), null, 6) { bmp() } }
+        for (k in 0 until 2) VideoFacePicker.add(found, seen(10_000_000L, unit(200 + k)), null, 6) { bmp() }
+        assertEquals(6, found.size)
+        // the main actor comes in at 1 h 40 min: a passer-by makes room
+        val late = unit(300)
+        repeat(3) { VideoFacePicker.add(found, seen(6_000_000_000L + it, late), null, 6) { bmp() } }
+        val everyone = VideoFacePicker.everyone(found)
+        assertEquals(5, everyone.size)
+        assertEquals(6_000_000_000L, everyone.last().firstUs)
+        assertEquals(3, everyone.last().count)
+    }
+
     @Test fun quickScanJumpsOnlyToNearKeyFrames() {
         val J = VideoFacePicker.Next.JUMP; val D = VideoFacePicker.Next.DECODE
         // phone video, key frame every second: skip straight to it

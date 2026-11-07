@@ -236,7 +236,9 @@
     <string name="vpeople_find">Find everyone in the video</string>
     <string name="vpeople_rescan">Scan the video again</string>
     <string name="vpeople_scanning">Looking through the whole video… %1$d%%</string>
-    <string name="vpeople_scanning_hint">Every person who appears, from the first second to the last, is listed once. You can keep using the app.</string>
+    <string name="vpeople_scanning_hint">Every person who appears, from the first second to the last, is listed once. Works for any length of video; a long film takes a few minutes. Keep the app open.</string>
+    <string name="vpeople_left_min">About %1$d min left</string>
+    <string name="vpeople_left_sec">About %1$d s left</string>
     <string name="vpeople_cancel">Stop</string>
     <string name="vpeople_found">%1$d people in this video. Pick a photo for each one; it is used for that person from the start of the video to the end. Tap ✕ to drop someone you do not want.</string>
     <string name="vpeople_none">Nobody was found in this video.</string>

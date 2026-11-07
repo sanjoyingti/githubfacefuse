@@ -1858,8 +1858,9 @@ void Pipeline::Impl::rememberAssignment(const float* embeddingNorm, int sourceIn
   a.keepOriginal = keepOriginal;
   a.person = person;
   faceAssignments.push_back(a);
-  // Cap the memory: a person needs a handful of pictures, not hundreds.
-  if (faceAssignments.size() > 256) faceAssignments.erase(faceAssignments.begin());
+  // Cap the memory: a person needs a handful of pictures, and a long film may list a
+  // hundred people (6 pictures each). 2 KB per picture.
+  if (faceAssignments.size() > 1024) faceAssignments.erase(faceAssignments.begin());
 }
 
 /**
