@@ -30,6 +30,7 @@ class VideoPeopleRenderTest {
             VideoPersonRow(bmp, 300_500, 25, null)))
         var unknownKeep by mutableStateOf(true)
         var found = false
+        var joined: Pair<Int, Int>? = null
         rule.setContent {
             androidx.compose.foundation.layout.Column(
                 androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
@@ -41,6 +42,7 @@ class VideoPeopleRenderTest {
                         if (k == i) VideoPersonRow(p.thumb, p.firstMs, p.seen, c) else p } },
                     onRemove = { i -> people = people.filterIndexed { k, _ -> k != i } },
                     onUnknownKeep = { unknownKeep = it },
+                    onJoin = { from, into -> joined = from to into },
                 )
             }
         }
@@ -48,6 +50,10 @@ class VideoPeopleRenderTest {
         rule.onNode(hasText("First seen 5:00 · seen 25 times")).performScrollTo().assertExists()
         rule.onNode(hasText("First seen 1:01", substring = true)).assertExists()
         // person 1 gets source 2, person 2 keeps their face, person 3 is removed
+        rule.onNodeWithTag("vpeople_join_2").performScrollTo().performClick()
+        rule.onNodeWithTag("vpeople_join_2_0").performClick()
+        rule.waitForIdle()
+        assertEquals(2 to 0, joined)
         rule.onNodeWithTag("vpeople_choose_0_1").performScrollTo().performClick()
         rule.onNodeWithTag("vpeople_keep_1").performScrollTo().performClick()
         rule.onNodeWithTag("vpeople_remove_2").performScrollTo().performClick()

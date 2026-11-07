@@ -64,8 +64,9 @@ class PhotoCheckTest {
         val a = unit(1); val b = unit(2)
         val people = mutableListOf<VideoFacePicker.Person>()
         var crops = 0
+        var clock = 0L   // each face at its own moment: one person, one face per look
         fun seen(e: FloatArray, yaw: Float, sharp: Float, side: Float = 200f, seed: Int = 0) =
-            VideoFacePicker.Seen(0L, side, 0.9f, yaw, 0f, sharp, 120f,
+            VideoFacePicker.Seen(1_000_000L * clock++, side, 0.9f, yaw, 0f, sharp, 120f,
                                  VideoFacePicker.normalised(FloatArray(512) { e[it] + 0.3f * (if (seed % 2 == 0) 0.01f else -0.01f) }))
         // person A: front twice (second sharper), left once; person B: front; a tiny face is ignored
         for (s in listOf(seen(a, 0f, 50f), seen(a, 2f, 200f, seed = 1), seen(a, -30f, 120f),
@@ -93,7 +94,7 @@ class PhotoCheckTest {
         val found = mutableListOf<VideoFacePicker.Person>()
         fun seen(t: Long, e: FloatArray) = VideoFacePicker.Seen(t, 200f, 0.9f, 0f, 0f, 150f, 120f, e)
         // 4 regulars seen twice each, then passers-by seen once fill the list (max 6)
-        for (k in 0 until 4) repeat(2) { VideoFacePicker.add(found, seen(k * 1_000_000L, unit(100 + k)), null, 6) { bmp() } }
+        for (k in 0 until 4) repeat(3) { VideoFacePicker.add(found, seen(k * 1_000_000L + it * 100_000_000L, unit(100 + k)), null, 6) { bmp() } }
         for (k in 0 until 2) VideoFacePicker.add(found, seen(10_000_000L, unit(200 + k)), null, 6) { bmp() }
         assertEquals(6, found.size)
         // the main actor comes in at 1 h 40 min: a passer-by makes room
@@ -103,6 +104,55 @@ class PhotoCheckTest {
         assertEquals(5, everyone.size)
         assertEquals(6_000_000_000L, everyone.last().firstUs)
         assertEquals(3, everyone.last().count)
+    }
+
+    /**
+     * Real faces from two clips (dumped by native/test_quality --dump-emb): a dance clip
+     * with 3 people and a TikTok clip with 2. One picture per person, at any scan speed,
+     * and also as a "film" where both clips play twice (people come back later).
+     */
+    private fun realFaces(name: String, offsetUs: Long, every: Int): List<VideoFacePicker.Seen> {
+        val b = javaClass.classLoader!!.getResourceAsStream("people/$name")!!.readBytes()
+        val buf = java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val out = mutableListOf<VideoFacePicker.Seen>()
+        while (buf.remaining() >= 544) {
+            val frame = buf.int
+            val h = FloatArray(7) { buf.float }
+            val e = FloatArray(512) { buf.get().toFloat() }
+            if (frame % every != 0) continue
+            out += VideoFacePicker.Seen(offsetUs + frame * 33_333L,
+                minOf(h[2] - h[0], h[3] - h[1]), h[4], h[5], h[6], 150f, 120f,
+                VideoFacePicker.normalised(e))
+        }
+        return out
+    }
+
+    private fun groups(vararg clips: List<VideoFacePicker.Seen>): List<Int> {
+        val bmp = { Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888) }
+        val found = mutableListOf<VideoFacePicker.Person>()
+        for (clip in clips)
+            for ((_, look) in clip.groupBy { it.timeUs }.toSortedMap())
+                for (s in look.sortedByDescending { it.side })
+                    VideoFacePicker.add(found, s, null, 120) { bmp() }
+        return VideoFacePicker.everyone(found).map { it.count }
+    }
+
+    @Test fun onePicturePerPersonOnRealClips() {
+        // Faces were taken at 30 (dance) and 10 (TikTok) frames a second; the app looks
+        // about once a second. The dance clip's second and third girls look almost alike
+        // to the recogniser (0.84), so it is 2 or 3 there; the others must be exact.
+        for (every in listOf(2, 5, 10, 15)) {
+            val dance = groups(realFaces("dance3.emb", 0, every))
+            val tik = groups(realFaces("tiktok2.emb", 0, every))
+            val film = groups(realFaces("dance3.emb", 0, every), realFaces("tiktok2.emb", 100_000_000, every),
+                              realFaces("dance3.emb", 200_000_000, every), realFaces("tiktok2.emb", 300_000_000, every))
+            println("PEOPLE every=$every dance=$dance tiktok=$tik film=$film")
+            assertTrue(dance.size in 2..3); assertEquals(2, tik.size)
+            // People who come back later are the same entry, never a second one: at most
+            // the 5 people there are (a girl seen too little in one clip may count once
+            // the clip plays twice).
+            assertTrue(film.size in (dance.size + tik.size)..5)
+        }
     }
 
     @Test fun quickScanJumpsOnlyToNearKeyFrames() {
@@ -125,15 +175,15 @@ class PhotoCheckTest {
         // a2: the same person as a, but far enough to start a group of its own (other side)
         val u = unit(13); val ua = VideoFacePicker.cos(u, a)
         val orth = VideoFacePicker.normalised(FloatArray(512) { u[it] - ua * a[it] })
-        val k = Math.sqrt(1.0 / (0.42 * 0.42) - 1.0).toFloat()   // cos(a, a2) = 0.42
+        val k = Math.sqrt(1.0 / (0.36 * 0.36) - 1.0).toFloat()   // cos(a, a2) = 0.36
         val a2 = VideoFacePicker.normalised(FloatArray(512) { a[it] + k * orth[it] })
         val cAA2 = VideoFacePicker.cos(a, a2)
         val found = mutableListOf<VideoFacePicker.Person>()
         fun seen(t: Long, e: FloatArray, yaw: Float) =
             VideoFacePicker.Seen(t, 200f, 0.9f, yaw, 0f, 150f, 120f, e)
-        for (s in listOf(seen(5_000_000, b, 0f), seen(6_000_000, b, 0f),
-                         seen(60_000_000, a2, -35f), seen(61_000_000, a2, -35f),
-                         seen(1_000_000, a, 0f), seen(2_000_000, a, 0f)))
+        for (s in listOf(seen(5_000_000, b, 0f), seen(6_000_000, b, 0f), seen(7_000_000, b, 0f),
+                         seen(60_000_000, a2, -35f), seen(61_000_000, a2, -35f), seen(62_000_000, a2, -35f),
+                         seen(1_000_000, a, 0f), seen(2_000_000, a, 0f), seen(3_000_000, a, 0f)))
             VideoFacePicker.add(found, s, null, 24) { bmp() }
         assertEquals(3, found.size)
         println("EVERYONE groups before merge=${found.size} cos(a,a2)=$cAA2")

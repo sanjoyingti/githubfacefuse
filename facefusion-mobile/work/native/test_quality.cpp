@@ -8,6 +8,7 @@
 // line per frame: faces found, their pose fade and the stage timings. Built by
 // work/native/build_host_test.sh. Not part of the APK.
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
@@ -141,6 +142,7 @@ int main(int argc, char** argv) {
   bool detectOnly = false;
   bool likeness = false;
   bool assignTest = false;
+  std::string dumpEmb;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto v = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -173,6 +175,7 @@ int main(int argc, char** argv) {
     else if (a == "--sidehold") cfg.sideHold = v() == "1";
     else if (a == "--weight") cfg.swapperWeight = (float)atof(v().c_str());
     else if (a == "--likeness") likeness = v() == "1";
+    else if (a == "--dump-emb") dumpEmb = v();
     else if (a == "--assign-test") assignTest = v() == "1";
     else if (a == "--eyes") cfg.keepClosedEyes = v() == "1";   // another photo of the source person
     else frames.push_back(a);
@@ -248,6 +251,23 @@ int main(int argc, char** argv) {
     ffcv::Image fr;
     if (!readPpm(fp, fr)) { fprintf(stderr, "cannot read %s\n", fp.c_str()); return 4; }
     pipe.resetStats();
+    if (!dumpEmb.empty()) {
+      // Faces for the people-grouping test: what scanFaces sees (no tracking), one record
+      // per face: frame, box, detector score, yaw, pitch, then the embedding as int8.
+      static FILE* df = fopen(dumpEmb.c_str(), "wb");
+      for (const auto& f : pipe.analyse(fr, false, true)) {
+        const ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
+        int32_t fi = idx;
+        float hdr[7] = {f.box[0], f.box[1], f.box[2], f.box[3], f.detScore,
+                        p.ok ? p.yaw : NAN, p.ok ? p.pitch : NAN};
+        int8_t q[512];
+        for (int i = 0; i < 512; ++i) q[i] = (int8_t)std::lround(std::max(-1.f, std::min(1.f, f.embeddingNorm[i] * 5.f)) * 127.f);
+        fwrite(&fi, 4, 1, df); fwrite(hdr, 4, 7, df); fwrite(q, 1, 512, df);
+      }
+      fflush(df);
+      ++idx;
+      continue;
+    }
     auto faces = pipe.analyse(fr);
     if (assignTest && !ppl.empty()) {
       int got0 = 0;

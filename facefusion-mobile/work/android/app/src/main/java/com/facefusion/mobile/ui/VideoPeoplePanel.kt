@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -31,6 +33,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -88,6 +94,8 @@ fun VideoPeoplePanel(
     /** Set when the swap's trim does not cover the whole video: what it covers. */
     trimNote: String? = null,
     onWholeVideo: () -> Unit = {},
+    /** "Same person as ...": join [from] into [into] (both list positions). */
+    onJoin: ((from: Int, into: Int) -> Unit)? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (isVideo) {
@@ -194,6 +202,25 @@ fun VideoPeoplePanel(
                              fontSize = 12.sp,
                              color = if (p.choice != null && p.choice >= 0) FfRed
                                      else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (onJoin != null && people.size > 1) {
+                        var open by remember { mutableStateOf(false) }
+                        Box {
+                            TextButton({ open = true }, enabled = enabled,
+                                       modifier = Modifier.testTag("vpeople_join_$i")) {
+                                Text(stringResource(R.string.vpeople_same_as), fontSize = 12.sp)
+                            }
+                            DropdownMenu(open, { open = false }) {
+                                people.forEachIndexed { k, q ->
+                                    if (k != i) DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.vpeople_person, k + 1) +
+                                                      " · " + clockOf(q.firstMs)) },
+                                        onClick = { open = false; onJoin(i, k) },
+                                        modifier = Modifier.testTag("vpeople_join_${i}_$k"),
+                                    )
+                                }
+                            }
+                        }
                     }
                     IconButton({ onRemove(i) }, enabled = enabled,
                                modifier = Modifier.testTag("vpeople_remove_$i")) {

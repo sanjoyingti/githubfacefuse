@@ -75,7 +75,13 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
-          Version 1.0.52 (assign per person for the whole video):
+          Version 1.0.53 (one picture per person):
+          - Find everyone in the video now lists each person ONCE: 3 people in the video, 3 pictures; 10 people, 10 pictures. Before, the same person seen from another side, in other light or with another expression could be listed several times.
+          - How: full side views (head turned past 50 degrees) are no longer used to decide who is who; each person is compared through several different-looking pictures of them, not only their average; one person cannot be two faces at the same moment; and at the end, groups that are clearly one person (and never on screen together) are joined.
+          - Tested on real faces from two clips (a dance clip with 3 girls, a TikTok clip with 2 people) and on a "film" where both clips play twice: every person once, also when they come back later. The old way listed the same 5 people as 5 to 11 entries.
+          - Same person as...: if one person is still listed twice, join the two entries with one tap.
+          - Each assigned person is swapped wherever they appear, from the beginning of the video to the end.
+
           - Find everyone in the video: in Assign per person, one tap scans the whole target video and lists each person once, in the order they appear, with when they are first seen (also people who only come in at minute 5). Give each their own source photo or Own face, or remove them with the X. Each assigned person is swapped wherever they appear, from the beginning of the video to the end.
           - Quick scan for any length: frames between two looks are skipped when a key frame is near, a long video is read in 3 parts at once, and the decoder runs at full speed. A 64 s phone recording decodes 739 frames instead of 2289. Works for a film of any length (up to 120 people); the progress bar says how long is left, and the screen stays on.
           - Scan only part of the video: a From/To slider to search just one part (quicker for a long film). Whoever you assign is still swapped in the whole video.

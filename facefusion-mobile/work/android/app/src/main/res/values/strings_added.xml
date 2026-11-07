@@ -243,10 +243,12 @@
     <string name="vpeople_find_range">Find everyone in this part</string>
     <string name="vpeople_trim_note">The swap covers only %1$s to %2$s (the trim above). Assigned people are swapped from the beginning to the end of that part.</string>
     <string name="vpeople_whole_video">Swap the whole video</string>
+    <string name="vpeople_same_as">Same person as…</string>
+    <string name="vpeople_joined">Person %1$d and person %2$d are now one person.</string>
     <string name="vpeople_left_min">About %1$d min left</string>
     <string name="vpeople_left_sec">About %1$d s left</string>
     <string name="vpeople_cancel">Stop</string>
-    <string name="vpeople_found">%1$d people in this video. Pick a photo for each one; it is used for that person from the start of the video to the end. Tap ✕ to drop someone you do not want.</string>
+    <string name="vpeople_found">%1$d people in this video. One picture per person. Pick a photo for each one; it is used for that person from the start of the video to the end. Tap ✕ to drop someone you do not want, or Same person as… if one person is listed twice.</string>
     <string name="vpeople_none">Nobody was found in this video.</string>
     <string name="vpeople_person">Person %1$d</string>
     <string name="vpeople_info">First seen %1$s · seen %2$d times</string>

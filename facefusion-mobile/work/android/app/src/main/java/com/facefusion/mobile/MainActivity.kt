@@ -1543,6 +1543,27 @@ class MainActivity : ComponentActivity() {
         repushSwapAssignments()
     }
 
+    /** "Same person as ...": one entry for both, with all their pictures. */
+    private fun joinVideoPeople(from: Int, into: Int) {
+        val a = videoPeople.getOrNull(from) ?: return
+        val b = videoPeople.getOrNull(into) ?: return
+        if (from == into) return
+        val keep = if (a.firstUs <= b.firstUs) a else b      // the earlier one keeps its place
+        val gone = if (keep === a) b else a
+        val joined = VideoPerson(keep.id,
+            (if (a.seen >= b.seen) a.thumb else b.thumb) ?: keep.thumb ?: gone.thumb,
+            minOf(a.firstUs, b.firstUs), a.seen + b.seen, keep.ids + gone.ids)
+        val choice = videoPeopleChoice[b.id] ?: videoPeopleChoice[a.id]
+        videoPeople = videoPeople.mapNotNull { when {
+            it === keep -> joined
+            it === gone -> null
+            else -> it } }
+        videoPeopleChoice = (videoPeopleChoice - a.id - b.id).let {
+            if (choice != null) it + (keep.id to choice) else it }
+        status = getString(R.string.vpeople_joined, from + 1, into + 1)
+        repushSwapAssignments()
+    }
+
     private fun removeVideoPerson(index: Int) {
         val vp = videoPeople.getOrNull(index) ?: return
         videoPeople = videoPeople.filterIndexed { i, _ -> i != index }
@@ -2540,6 +2561,7 @@ class MainActivity : ComponentActivity() {
                                         onCancelScan = { videoPeopleCancel = true },
                                         onChoose = ::chooseVideoPerson,
                                         onRemove = ::removeVideoPerson,
+                                        onJoin = ::joinVideoPeople,
                                         onUnknownKeep = ::setAssignUnknownKeepUi,
                                     )
                                 },

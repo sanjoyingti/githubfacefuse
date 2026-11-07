@@ -54,8 +54,32 @@ object VideoFacePicker {
         /** When the person was first seen, in microseconds from the start. */
         var firstUs = Long.MAX_VALUE
         val best = LinkedHashMap<Angle, Seen>()
+        /** The looks (frame times) this person was seen in: one person, one face per look. */
+        val at = HashSet<Long>()
+        /** A few different-looking pictures of the person (angle, light, expression). */
+        val examples = ArrayList<FloatArray>()
 
         fun meanNorm(): FloatArray = normalised(sum)
+
+        /** How much [e] looks like this person: the average face or the closest example. */
+        fun likeness(e: FloatArray): Float {
+            var c = cos(e, meanNorm())
+            for (x in examples) c = maxOf(c, cos(e, x))
+            return c
+        }
+
+        internal fun takeIn(o: Person) {
+            for (i in 0 until 512) sum[i] += o.sum[i]
+            count += o.count
+            firstUs = minOf(firstUs, o.firstUs)
+            at += o.at
+            for (x in o.examples) if (examples.size < MAX_EXAMPLES) examples += x
+            for ((ang, sb) in o.best) {
+                val sa = best[ang]
+                if (sa == null || sb.quality > sa.quality) { sa?.crop?.recycle(); best[ang] = sb }
+                else sb.crop?.recycle()
+            }
+        }
 
         /** The person's picture for the list: the front view if there is one. */
         val thumb: Bitmap? get() = (best[Angle.FRONT] ?: best.values.maxByOrNull { it.quality })?.crop
@@ -68,7 +92,16 @@ object VideoFacePicker {
             listOf(meanNorm()) + best.values.map { normalised(it.emb) }
     }
 
-    const val SAME_PERSON = 0.45f        // grouping faces of one clip into people
+    // Measured on real clips (5 people, faces from every angle): the same person seen
+    // differently scores 0.40-0.85 between groups, different people 0.08 at most.
+    const val SAME_PERSON = 0.40f        // a face joins a person (average or an example)
+    const val MERGE_PEOPLE = 0.33f       // two groups are one person (never on screen together)
+    const val ABSORB = 0.25f             // a group seen once or twice joins the closest person
+    const val MAX_EXAMPLES = 8
+    // A head turned further than this gives the recogniser too little to go on: such a
+    // face is not used to decide WHO is who (it made extra "people" out of side views).
+    const val GROUP_MAX_YAW = 50f
+    const val GROUP_MAX_PITCH = 40f
     const val MATCH_SOURCE = 0.40f       // "this is the face I already have" (native needs 0.30)
     const val MAX_PEOPLE = 12
     const val MIN_SIDE = 64f             // smaller faces are not worth a source photo
@@ -100,9 +133,13 @@ object VideoFacePicker {
             if (cos(s.emb, target) < MATCH_SOURCE) return
             people.firstOrNull() ?: Person().also { people += it }
         } else {
+            if (kotlin.math.abs(s.yaw) > GROUP_MAX_YAW || kotlin.math.abs(s.pitch) > GROUP_MAX_PITCH) return
             var bestP: Person? = null; var bestC = SAME_PERSON
             for (q in people) {
-                val c = cos(s.emb, q.meanNorm())
+                // Already has a face in this look: a second face at the same moment is
+                // somebody else.
+                if (s.timeUs in q.at) continue
+                val c = q.likeness(s.emb)
                 if (c >= bestC) { bestC = c; bestP = q }
             }
             bestP ?: when {
@@ -120,6 +157,9 @@ object VideoFacePicker {
         for (i in 0 until 512) p.sum[i] += s.emb[i]
         p.count++
         if (s.timeUs < p.firstUs) p.firstUs = s.timeUs
+        p.at += s.timeUs
+        if (p.examples.size < MAX_EXAMPLES && p.examples.all { cos(it, s.emb) < 0.8f })
+            p.examples += normalised(s.emb)
         val old = p.best[angle]
         if (old == null || s.quality > old.quality) {
             val crop = makeCrop() ?: return
@@ -138,32 +178,33 @@ object VideoFacePicker {
         return order.filter { it !in have }.mapNotNull { p.best[it] }.take(free.coerceAtLeast(0))
     }
 
-    const val MERGE_SAME = 0.40f         // two groups that are really one person (other angle)
-
     /**
-     * Join groups that are the same person seen from different sides: the grouping in
-     * [add] is against each group's average, so a person who first shows a profile and
-     * later the front can start a second group. Pure; unit-tested.
+     * Join groups that are the same person: the closest pair first, while they look alike
+     * (average faces >= [MERGE_PEOPLE]) and were never on screen together (a person cannot
+     * be two faces at once; one shared look is allowed for a stray double detection).
+     * Then a group seen only once or twice joins the person it looks most like. Pure;
+     * unit-tested on real faces.
      */
-    fun merge(found: MutableList<Person>) {
-        var joined = true
-        while (joined) {
-            joined = false
-            loop@ for (a in found.indices) for (b in a + 1 until found.size) {
-                val pa = found[a]; val pb = found[b]
-                if (cos(pa.meanNorm(), pb.meanNorm()) < MERGE_SAME) continue
-                for (i in 0 until 512) pa.sum[i] += pb.sum[i]
-                pa.count += pb.count
-                pa.firstUs = minOf(pa.firstUs, pb.firstUs)
-                for ((ang, sb) in pb.best) {
-                    val sa = pa.best[ang]
-                    if (sa == null || sb.quality > sa.quality) { sa?.crop?.recycle(); pa.best[ang] = sb }
-                    else sb.crop?.recycle()
-                }
-                found.removeAt(b)
-                joined = true
-                break@loop
+    fun merge(found: MutableList<Person>, minCount: Int = 3) {
+        while (true) {
+            var ba = -1; var bb = -1; var bc = MERGE_PEOPLE
+            val means = found.map { it.meanNorm() }
+            for (a in found.indices) for (b in a + 1 until found.size) {
+                val c = cos(means[a], means[b])
+                if (c < bc) continue
+                if (found[a].at.count { it in found[b].at } > 1) continue
+                bc = c; ba = a; bb = b
             }
+            if (ba < 0) break
+            found[ba].takeIn(found[bb])
+            found.removeAt(bb)
+        }
+        val small = found.filter { it.count < minCount }
+        for (sm in small) {
+            val m = sm.meanNorm()
+            val home = found.filter { it.count >= minCount && it.at.none { t -> t in sm.at } }
+                .maxByOrNull { cos(m, it.meanNorm()) } ?: continue
+            if (cos(m, home.meanNorm()) >= ABSORB) { home.takeIn(sm); found.remove(sm) }
         }
     }
 
@@ -172,8 +213,12 @@ object VideoFacePicker {
      * first appear, with small pictures only (the list needs thumbnails, not photos).
      */
     fun everyone(found: MutableList<Person>): List<Person> {
-        merge(found)
-        return found.filter { it.count >= 2 && it.best.isNotEmpty() }.sortedBy { it.firstUs }
+        // A short clip has few looks: twice is enough there; in a long video a person must
+        // be seen three times (a face glimpsed once or twice is a passer-by).
+        val looks = HashSet<Long>().also { s -> found.forEach { s += it.at } }.size
+        merge(found, if (looks < 60) 2 else 3)
+        val min = if (looks < 60) 2 else 3
+        return found.filter { it.count >= min && it.best.isNotEmpty() }.sortedBy { it.firstUs }
     }
 
     /** People seen at least twice, most seen first. */
@@ -268,30 +313,10 @@ object VideoFacePicker {
                         else sb.crop?.recycle()
                     }
                 }
-            } else joinParts(people)
+            } else merge(people)
         }
         onProgress(1f)
         return people
-    }
-
-    /** People found in different pieces who are the same person become one (as in [add]). */
-    private fun joinParts(people: MutableList<Person>) {
-        var joined = true
-        while (joined) {
-            joined = false
-            loop@ for (a in people.indices) for (b in a + 1 until people.size) {
-                if (cos(people[a].meanNorm(), people[b].meanNorm()) < SAME_PERSON) continue
-                val pa = people[a]; val pb = people[b]
-                for (i in 0 until 512) pa.sum[i] += pb.sum[i]
-                pa.count += pb.count; pa.firstUs = minOf(pa.firstUs, pb.firstUs)
-                for ((ang, sb) in pb.best) {
-                    val sa = pa.best[ang]
-                    if (sa == null || sb.quality > sa.quality) { sa?.crop?.recycle(); pa.best[ang] = sb }
-                    else sb.crop?.recycle()
-                }
-                people.removeAt(b); joined = true; break@loop
-            }
-        }
     }
 
     /** What the scan needs to know about the video track. */
@@ -434,7 +459,10 @@ object VideoFacePicker {
                      target: FloatArray?, cropMax: Int, maxPeople: Int) {
         val r = NativePipe.scanFaces(bgr, w, h)
         val st = NativePipe.SCAN_STRIDE
-        for (i in 0 until r.size / st) {
+        // Biggest faces first: when two faces could be one person, the clearer one gets them.
+        val order = (0 until r.size / st).sortedByDescending { i ->
+            minOf(r[i * st + 2] - r[i * st], r[i * st + 3] - r[i * st + 1]) }
+        for (i in order) {
             val o = i * st
             val x1 = r[o]; val y1 = r[o + 1]; val x2 = r[o + 2]; val y2 = r[o + 3]
             val s = Seen(pts, minOf(x2 - x1, y2 - y1), r[o + 4], r[o + 5], r[o + 6],
