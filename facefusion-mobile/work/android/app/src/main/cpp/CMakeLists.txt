@@ -20,6 +20,13 @@ target_include_directories(ffnative PRIVATE
 # setPixels. See liveFrame in ffjni.cpp.
 target_link_libraries(ffnative android log dl jnigraphics)
 target_compile_options(ffnative PRIVATE -O3 -fvisibility=hidden -Wall)
+# Export only the JNI functions and bind every internal reference inside this library:
+# the static libomp/ncnn/glslang symbols must not be visible to, or replaced by, any
+# other library in the app process (see ffnative.map).
+target_link_options(ffnative PRIVATE
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/ffnative.map"
+    -Wl,--exclude-libs,ALL -Wl,-Bsymbolic)
+set_property(TARGET ffnative APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ffnative.map")
 
 # ---------------------------------------------------------------------------
 # Optional ncnn backend (roadmap 6): CPU (NEON) or GPU (Vulkan), for parts with no Hexagon.
@@ -57,6 +64,11 @@ if(FF_NCNN)
     #
     # NCNN_SIMPLEVK=ON, so ncnn dlopen's the Vulkan loader itself: no -lvulkan, and a device
     # with no Vulkan fails at get_gpu_count() rather than at load.
-    target_link_options(ffnative PRIVATE -fopenmp -static-openmp)
+    # ncnn is built with NCNN_SIMPLEOMP=ON (see ../../../../ncnn/STAGED.txt): its archive
+    # carries ncnn's own small thread pool for the `#pragma omp` loops, so LLVM's libomp is
+    # NOT linked at all. libomp's CPU-affinity start-up aborted the app on Android 17 / Galaxy
+    # S25 Ultra (__kmp_affinity_initialize asserts, CPU cores going offline in power save),
+    # and no environment setting avoided it. No -fopenmp / -static-openmp here: they would
+    # link libomp back in beside simpleomp.
     target_link_libraries(ffnative android)
 endif()

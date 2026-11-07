@@ -153,6 +153,14 @@ Handle openAux(const std::string& logicalName, Placement p = Placement::Default)
 void setAuxAssets(void* assetManager);
 void setAuxDir(const std::string& dir);
 const char* auxLastError();
+// Whether a handle runs on the GPU (ncnn Vulkan). False for CPU and for QNN handles.
+bool onGpu(Handle h);
+
+// The mask models' NPU builds (<name>_<tier>.bin, copied out of the APK by the app).
+// openAuxNpu returns null unless the QNN backend is active and that file exists.
+void setAuxQnnDir(const std::string& dir);
+Handle openAuxNpu(const std::string& logicalName);
+bool onNpu(Handle h);
 
 // ---------------------------------------------------------------------------
 // What this device can run, asked before any model is opened.

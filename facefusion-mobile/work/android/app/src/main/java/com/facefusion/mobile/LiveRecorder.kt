@@ -212,7 +212,7 @@ class LiveRecorder(
     private var muxingEverStarted = false
 
     private fun cleanupFailed() {
-        runCatching { out.delete() }
+        runCatching { out.safeDelete() }
     }
 
     /** Move whatever the encoder has produced into the muxer. */

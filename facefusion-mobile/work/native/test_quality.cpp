@@ -8,8 +8,11 @@
 // line per frame: faces found, their pose fade and the stage timings. Built by
 // work/native/build_host_test.sh. Not part of the APK.
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -103,6 +106,29 @@ static int selfTests() {
     if (t > 5) lag = std::max(lag, std::abs(want - pts[0]) / 60.f);
   }
   printf("[self] one-euro lag at 6 px/frame: %.3f eye spans\n", lag);
+  // remapMask: a picture warped into crop A and re-mapped into crop B must match the same
+  // picture warped into crop B directly (the expression restorer reuses the swap's mask).
+  {
+    ffcv::MatF img(400, 300, 1);
+    for (int y = 0; y < img.h; ++y)
+      for (int x = 0; x < img.w; ++x)
+        img.row(y)[x] = 0.5f + 0.5f * std::sin(x * 0.05f) * std::cos(y * 0.04f);
+    const float lm[10] = {170, 140, 230, 138, 200, 175, 178, 205, 224, 204};
+    float ta[10], tb[10];
+    const float* A = ffcv::warpTemplate(1);   // arcface_128, as the swap
+    const float* B = ffcv::warpTemplate(2);   // ffhq_512, a different crop
+    for (int i = 0; i < 10; ++i) { ta[i] = A[i] * 256; tb[i] = B[i] * 512; }
+    const ffcv::Affine amA = ffcv::umeyama(lm, ta, 5), amB = ffcv::umeyama(lm, tb, 5);
+    const ffcv::MatF inA = ffcv::warpAffineF(img, amA, 256, 256, ffcv::BORDER_CONSTANT);
+    const ffcv::MatF direct = ffcv::warpAffineF(img, amB, 512, 512, ffcv::BORDER_CONSTANT);
+    const ffcv::MatF moved = ffmotion::remapMask(inA, amA, amB, 512, 512);
+    double err = 0; int n = 0;
+    for (size_t i = 0; i < direct.data.size(); ++i)
+      if (moved.data[i] > 0.f) { err += std::fabs(moved.data[i] - direct.data[i]); ++n; }
+    err = n ? err / n : 1.0;
+    printf("[self] remapMask mean error %.4f over %d px\n", err, n);
+    if (!(n > 10000 && err < 0.02)) { puts("FAIL remapMask"); ++fails; }
+  }
   if (!(lag < 0.03f)) { puts("FAIL smoothing lag"); ++fails; }
   return fails;
 }
@@ -112,7 +138,11 @@ int main(int argc, char** argv) {
   ffpipe::Config cfg;
   bool sequence = false;
   int track = 0;
-  std::vector<std::string> frames;
+  std::vector<std::string> frames, extras;
+  bool detectOnly = false;
+  bool likeness = false;
+  bool assignTest = false;
+  std::string dumpEmb;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto v = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -124,10 +154,35 @@ int main(int argc, char** argv) {
     else if (a == "--occlusion") cfg.occlusionMask = v() == "1";
     else if (a == "--region") cfg.regionMask = v() == "1";
     else if (a == "--mouth") cfg.keepMouth = v() == "1";
+    else if (a == "--lips") cfg.keepLips = v() == "1";
+    else if (a == "--smart") cfg.smartSpeed = v() == "1";
+    else if (a == "--parallel") cfg.parallelMasks = v() == "1";
+    else if (a == "--color") cfg.colorMatch = (float)atof(v().c_str());
     else if (a == "--fade") cfg.poseFadeStart = (float)atof(v().c_str());
     else if (a == "--sequence") sequence = v() == "1";
     else if (a == "--rotated") cfg.detectRotated = v() == "1";
     else if (a == "--track") track = atoi(v().c_str());
+    else if (a == "--extra") extras.push_back(v());
+    else if (a == "--boost") cfg.pixelBoost = atoi(v().c_str());
+    else if (a == "--autoboost") cfg.autoBoost = v() == "1";
+    else if (a == "--seamless") cfg.seamless = v() == "1";
+    else if (a == "--hair") cfg.hairAware = v() == "1";
+    else if (a == "--tsmooth") cfg.temporalSmooth = v() == "1";
+    else if (a == "--blurmatch") cfg.motionBlurMatch = v() == "1";
+    else if (a == "--overlap") cfg.overlapGuard = v() == "1";
+    else if (a == "--second") cfg.secondLook = v() == "1";
+    else if (a == "--detect-only") detectOnly = v() == "1";
+    else if (a == "--sidehold") cfg.sideHold = v() == "1";
+    else if (a == "--weight") cfg.swapperWeight = (float)atof(v().c_str());
+    else if (a == "--likeness") likeness = v() == "1";
+    else if (a == "--enhance") { cfg.faceEnhance = true; cfg.faceEnhancerBlend = (float)atof(v().c_str()); }
+    else if (a == "--enh512") cfg.enhancer512 = v() == "1";
+    else if (a == "--peppa") cfg.turnedLandmarker = v() == "1";
+    else if (a == "--large-parser") cfg.largeParser = v() == "1";
+    else if (a == "--second-det") cfg.secondDetector = v() == "1";
+    else if (a == "--dump-emb") dumpEmb = v();
+    else if (a == "--assign-test") assignTest = v() == "1";
+    else if (a == "--eyes") cfg.keepClosedEyes = v() == "1";   // another photo of the source person
     else frames.push_back(a);
   }
   setenv("FFBACKEND", "ncnn", 1);
@@ -146,26 +201,133 @@ int main(int argc, char** argv) {
     fprintf(stderr, "source: %s\n", pipe.error().c_str());
     return 3;
   }
+  for (const std::string& ep : extras) {
+    ffcv::Image e;
+    if (!readPpm(ep, e)) { fprintf(stderr, "cannot read %s\n", ep.c_str()); return 4; }
+    const int r = pipe.addSourcePhoto(0, e);
+    printf("extra %s -> %d %s\n", ep.c_str(), r, r < 0 ? pipe.error().c_str() : "");
+  }
+  // LIKENESS: the source photo's identity, to score each swapped face against it.
+  std::vector<float> srcId;
+  if (likeness) {
+    auto sf = pipe.analyse(s, false, true);
+    float area = -1;
+    for (const auto& f : sf) {
+      const float a = (f.box[2] - f.box[0]) * (f.box[3] - f.box[1]);
+      if (a > area) { area = a; srcId.assign(f.embeddingNorm, f.embeddingNorm + 512); }
+    }
+  }
+  double likeSum = 0; int likeN = 0;
+  // ASSIGN TEST: find everyone first (like the app's whole-video scan), give the most
+  // seen person source 0 and every other person their own face, then check each frame.
+  struct Ppl { std::vector<float> sum; int n = 0; std::vector<std::vector<float>> pics; };
+  std::vector<Ppl> ppl;
+  auto cosv = [](const float* a, const float* b) { double c = 0; for (int i = 0; i < 512; ++i) c += a[i] * b[i]; return (float)c; };
+  auto meanOf = [](const Ppl& p) { std::vector<float> m(p.sum); double n = 0; for (float x : m) n += x * x; n = n > 0 ? 1 / std::sqrt(n) : 0; for (float& x : m) x *= (float)n; return m; };
+  int assignBad2 = 0, assignMissA = 0, assignWrongB = 0, assignA = 0, assignOther = 0;
+  if (assignTest) {
+    for (size_t k = 0; k < frames.size(); k += 15) {
+      ffcv::Image fr; if (!readPpm(frames[k], fr)) continue;
+      for (const auto& f : pipe.analyse(fr, false, true)) {
+        if (std::min(f.box[2] - f.box[0], f.box[3] - f.box[1]) < 64) continue;
+        int best = -1; float bc = 0.45f;
+        for (size_t q = 0; q < ppl.size(); ++q) { float c = cosv(f.embeddingNorm, meanOf(ppl[q]).data()); if (c >= bc) { bc = c; best = (int)q; } }
+        if (best < 0) { ppl.push_back({}); ppl.back().sum.assign(512, 0.f); best = (int)ppl.size() - 1; }
+        for (int i = 0; i < 512; ++i) ppl[(size_t)best].sum[(size_t)i] += f.embeddingNorm[i];
+        ppl[(size_t)best].n++;
+        if (ppl[(size_t)best].pics.size() < 4) ppl[(size_t)best].pics.emplace_back(f.embeddingNorm, f.embeddingNorm + 512);
+      }
+    }
+    std::sort(ppl.begin(), ppl.end(), [](const Ppl& a, const Ppl& b) { return a.n > b.n; });
+    while (!ppl.empty() && ppl.back().n < 2) ppl.pop_back();
+    printf("assign-test: %zu people:", ppl.size());
+    for (auto& p : ppl) printf(" %d", p.n);
+    printf("\n");
+    pipe.setFaceAssignEnabled(true);
+    const bool onlyFirst = getenv("ASSIGN_ONLY_FIRST") != nullptr;
+    for (size_t q = 0; q < (onlyFirst ? std::min<size_t>(1, ppl.size()) : ppl.size()); ++q) {
+      auto m = meanOf(ppl[q]);
+      pipe.restorePersonAssignment(m.data(), 0, q != 0, (int)q);
+      for (auto& e : ppl[q].pics) pipe.restorePersonAssignment(e.data(), 0, q != 0, (int)q);
+    }
+  }
   int idx = 0;
   for (const std::string& fp : frames) {
     ffcv::Image fr;
     if (!readPpm(fp, fr)) { fprintf(stderr, "cannot read %s\n", fp.c_str()); return 4; }
     pipe.resetStats();
+    if (!dumpEmb.empty()) {
+      // Faces for the people-grouping test: what scanFaces sees (no tracking), one record
+      // per face: frame, box, detector score, yaw, pitch, then the embedding as int8.
+      static FILE* df = fopen(dumpEmb.c_str(), "wb");
+      for (const auto& f : pipe.analyse(fr, false, true)) {
+        const ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
+        int32_t fi = idx;
+        float hdr[7] = {f.box[0], f.box[1], f.box[2], f.box[3], f.detScore,
+                        p.ok ? p.yaw : NAN, p.ok ? p.pitch : NAN};
+        int8_t q[512];
+        for (int i = 0; i < 512; ++i) q[i] = (int8_t)std::lround(std::max(-1.f, std::min(1.f, f.embeddingNorm[i] * 5.f)) * 127.f);
+        fwrite(&fi, 4, 1, df); fwrite(hdr, 4, 7, df); fwrite(q, 1, 512, df);
+      }
+      fflush(df);
+      ++idx;
+      continue;
+    }
     auto faces = pipe.analyse(fr);
-    if (!pipe.swapAll(fr, faces)) { fprintf(stderr, "swap: %s\n", pipe.error().c_str()); return 5; }
+    if (assignTest && !ppl.empty()) {
+      int got0 = 0;
+      printf("assign");
+      for (size_t i = 0; i < faces.size(); ++i) {
+        const int src = pipe.sourceFor(faces, i);
+        int who = -1; float bc = 0.f;
+        for (size_t q = 0; q < ppl.size(); ++q) { float c = cosv(faces[i].embeddingNorm, meanOf(ppl[q]).data()); if (c > bc) { bc = c; who = (int)q; } }
+        printf(" [who %d cos %.2f src %d]", who, bc, src);
+        if (src == 0) ++got0;
+        if (who == 0 && bc > 0.5f) { ++assignA; if (src != 0) ++assignMissA; }
+        if (who > 0 && bc > 0.5f) { ++assignOther; if (src == 0) ++assignWrongB; }
+      }
+      if (got0 > 1) ++assignBad2;
+      printf("\n");
+    }
+    if (!detectOnly && !pipe.swapAll(fr, faces)) { fprintf(stderr, "swap: %s\n", pipe.error().c_str()); return 5; }
+    if (!detectOnly && cfg.faceEnhance && !pipe.enhance(fr, faces)) { fprintf(stderr, "enhance: %s\n", pipe.error().c_str()); return 6; }
     char name[64];
     snprintf(name, sizeof(name), "/out_%03d.ppm", idx++);
-    writePpm(out + name, fr);
+    if (!detectOnly) writePpm(out + name, fr);
+    if (likeness && !srcId.empty()) {
+      auto of = pipe.analyse(fr, false, true);
+      printf("like");
+      for (const auto& f : of) {
+        double c = 0;
+        for (int i = 0; i < 512; ++i) c += f.embeddingNorm[i] * srcId[(size_t)i];
+        printf(" %.3f", c);
+        likeSum += c; ++likeN;
+      }
+      printf("\n");
+    }
     printf("frame %d faces %zu", idx - 1, faces.size());
     for (const auto& f : faces) {
       ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
-      printf(" [det %.2f yaw %.0f pitch %.0f fade %.2f box %.0f,%.0f,%.0f,%.0f mouth %.0f,%.0f]",
-             f.detScore, p.yaw, p.pitch, f.poseFade, f.box[0], f.box[1], f.box[2], f.box[3],
+      float eL = 1, eR = 1; ffmotion::eyeOpenness2(f.landmark68, &eL, &eR);
+      printf(" [lm %.2f eyes %.2f/%.2f det %.2f yaw %.0f pitch %.0f fade %.2f box %.0f,%.0f,%.0f,%.0f mouth %.0f,%.0f]",
+             f.lmScore, eL, eR, f.detScore, p.yaw, p.pitch, f.poseFade, f.box[0], f.box[1], f.box[2], f.box[3],
              (f.landmark5_68[6] + f.landmark5_68[8]) * 0.5f,
              (f.landmark5_68[7] + f.landmark5_68[9]) * 0.5f);
     }
     printf("  mask %.0f ms  swap %.0f ms  occ=%d parse=%d\n", pipe.msGeomMask, pipe.msSwap,
            pipe.hasOcclusionModel(), pipe.hasParserModel());
+  }
+  if (assignTest) printf("ASSIGN two-faces-same-person frames %d; person1 clear faces %d missed %d; others clear %d wrongly swapped %d\n", assignBad2, assignA, assignMissA, assignOther, assignWrongB);
+  if (likeN) printf("LIKENESS mean %.3f over %d faces\n", likeSum / likeN, likeN);
+  printf("SECOND DETECTOR added %d faces; SECOND LANDMARKER used for %d faces\n", pipe.secondDetectorHits(), pipe.turnedLandmarkerUsed());
+  printf("%s\n", ffpipe::Pipeline::maskStatus().c_str());
+  {
+    // Thread count at the end: a leak per frame shows here.
+    FILE* st = fopen("/proc/self/status", "r");
+    char line[256];
+    while (st && fgets(line, sizeof(line), st))
+      if (strncmp(line, "Threads:", 8) == 0) printf("%s", line);
+    if (st) fclose(st);
   }
   return 0;
 }

@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import com.facefusion.mobile.FaceDetectorCard
 import com.facefusion.mobile.FaceMaskerCard
 import com.facefusion.mobile.FaceSwapperCard
+import com.facefusion.mobile.RealismCard
 import com.facefusion.mobile.BatchItem
 import com.facefusion.mobile.BatchState
 import com.facefusion.mobile.ModelDownload
@@ -125,6 +126,10 @@ fun SwapScreen(
     sourceThumbs: List<Bitmap> = emptyList(),
     activeSource: Int = 0,
     onSelectSource: (Int) -> Unit = {},
+    /** Photos per source face, main photo included (SourcePhotos). */
+    sourcePhotoCounts: List<Int> = emptyList(),
+    /** Opens the photos panel for one source face; null hides the control. */
+    onOpenSourcePhotos: ((Int) -> Unit)? = null,
     /**
      * ASSIGN PER PERSON, the Swap screen's own. Live decides by tracking a person through
      * a sequence of frames; there is no sequence here, so a tap stores the person's
@@ -149,6 +154,13 @@ fun SwapScreen(
     onToggleAssignMode: () -> Unit = {},
     onSelectPerson: (Int) -> Unit = {},
     onClearAssignments: () -> Unit = {},
+    /**
+     * "Find everyone in the video" ([VideoPeoplePanel]), drawn under the person row while
+     * assign mode is on. When it has found people, the one-frame row is not shown: the
+     * whole-video list replaces it.
+     */
+    videoPeoplePanel: (@Composable () -> Unit)? = null,
+    videoPeopleFound: Boolean = false,
     hasSource: Boolean,
     hasTarget: Boolean,
     /**
@@ -322,6 +334,19 @@ fun SwapScreen(
     onDeleteOutput: () -> Unit,
     onSwap: () -> Unit,
     onCancel: () -> Unit,
+    /** An unfinished swap can be continued: the button's text, or null for no button. */
+    resumeLabel: String? = null,
+    onResume: () -> Unit = {},
+    /** Make the part that is done into a video now; null hides the button. */
+    onSaveDonePart: (() -> Unit)? = null,
+    /** Throw the unfinished swap away; null hides the button. */
+    onDiscardResume: (() -> Unit)? = null,
+    /** Start again from nothing (no video, no result, no unfinished swap); null hides it. */
+    onNewProject: (() -> Unit)? = null,
+    /** Swap 3 seconds from the preview position into a short test clip; null hides it. */
+    onTest3s: (() -> Unit)? = null,
+    /** "About 4 min · phone gets warm", or null when there is nothing to estimate. */
+    estimate: String? = null,
     modelsMissing: Boolean,
     /** Why the models are missing when it is not simply "never downloaded". */
     modelsMissingNote: String? = null,
@@ -332,6 +357,14 @@ fun SwapScreen(
     modifier: Modifier = Modifier,
 ) {
     val idle = !run.busy && !run.preparing
+    // The photos panel: from the parameter or, failing that, straight from SourcePhotos.
+    // Never null: with no callback it opens the panel through SourcePhotos.openFor, which
+    // MainActivity draws from. The controls therefore show whenever there is a face.
+    val openPhotos: (Int) -> Unit = onOpenSourcePhotos
+        ?: com.facefusion.mobile.SourcePhotos.opener
+        ?: { i -> com.facefusion.mobile.SourcePhotos.openFor = i }
+    val photoCounts: List<Int> =
+        sourcePhotoCounts.ifEmpty { com.facefusion.mobile.SourcePhotos.counts }
 
     // Both panes share one height, chosen so the pair fits on screen together with the
     // controls around them. The reserve is the wordmark, source button, captions, trim,
@@ -781,6 +814,16 @@ fun SwapScreen(
                     Icon(painterResource(R.drawable.ic_faces),
                          stringResource(R.string.faces_open), Modifier.size(16.dp))
                 }
+                // More photos of the same person for the face shown.
+                if (hasSource && idle) {
+                    IconButton({ openPhotos(activeSource) }, Modifier.size(28.dp)) {
+                        val n = photoCounts.getOrNull(activeSource) ?: 1
+                        BadgedBox(badge = { if (n > 1) Badge { Text(n.toString()) } }) {
+                            Icon(Icons.Default.Add, stringResource(R.string.photos_open),
+                                 Modifier.size(16.dp))
+                        }
+                    }
+                }
                 if (hasSource && idle) {
                     IconButton(onSaveSource, Modifier.size(28.dp)) {
                         Icon(painterResource(if (sourceSaved) R.drawable.ic_saved_face
@@ -824,7 +867,22 @@ fun SwapScreen(
             onSelect = onSelectSource,
             onKeepOriginal = if (assignMode) onKeepOriginal else null,
             enabled = idle,
+            photoCounts = photoCounts,
+            onOpenPhotos = openPhotos,
         )
+        // The same panel as the + in the source pane, spelled out where people look: right
+        // under the faces, naming the face it is for.
+        if (opts.swapsFace && (sourceThumbs.isNotEmpty() || hasSource)) OutlinedButton(
+            onClick = { openPhotos(activeSource) },
+            enabled = idle,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null, Modifier.size(18.dp))
+            Text(stringResource(R.string.photos_row_button, activeSource + 1,
+                                photoCounts.getOrNull(activeSource) ?: 1, com.facefusion.mobile.SourcePhotos.MAX),
+                 Modifier.padding(start = 6.dp))
+        }
 
         // ---- ASSIGN PER PERSON. Video and stills alike: the preview pane swaps
         // through the warm pipeline either way, and native assignments live on
@@ -851,7 +909,7 @@ fun SwapScreen(
                        onCheckedChange = { onToggleAssignMode() },
                        enabled = idle)
             }
-            if (assignMode) {
+            if (assignMode && !videoPeopleFound) {
                 Text(stringResource(if (personThumbs.isEmpty())
                                         R.string.swap_assign_no_people
                                     else R.string.swap_assign_hint),
@@ -911,6 +969,7 @@ fun SwapScreen(
                     }
                 }
             }
+            if (assignMode) videoPeoplePanel?.invoke()
         }
         // ---------------------------------------------------------------- previews
         //
@@ -1155,7 +1214,10 @@ fun SwapScreen(
                 val srcName = if (srcShort > 0)
                                   stringResource(R.string.swap_size_source_at, srcShort)
                               else stringResource(R.string.swap_size_source)
-                val sizeLabel = if (opts.outputMaxShortEdge > 0)
+                // A cap at or above the clip's own size does nothing, so it reads as the
+                // source size (the 1080p default on a 720p clip is just "source").
+                val sizeLabel = if (opts.outputMaxShortEdge > 0 &&
+                                    (srcShort <= 0 || opts.outputMaxShortEdge < srcShort))
                                     opts.outputMaxShortEdge.toString() + "p"
                                 else srcName
                 val rateLabel = if (opts.outputFps in 1..inputFps) opts.outputFps.toString()
@@ -1232,6 +1294,38 @@ fun SwapScreen(
             }
         }
 
+        // ------------------------------------------------------------ continue
+        // An unfinished swap (stopped, closed or crashed) stays offered here until it is
+        // finished or a new swap replaces it -- not only in the one-time question at start.
+        if (resumeLabel != null && idle) OutlinedButton(
+            onClick = onResume,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Text(resumeLabel, fontSize = 14.sp, textAlign = TextAlign.Center)
+        }
+        if (resumeLabel != null && idle && (onSaveDonePart != null || onDiscardResume != null)) Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (onSaveDonePart != null) OutlinedButton(
+                onClick = onSaveDonePart,
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text(stringResource(R.string.resume_save_part), fontSize = 13.sp,
+                     textAlign = TextAlign.Center) }
+            if (onDiscardResume != null) OutlinedButton(
+                onClick = onDiscardResume,
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text(stringResource(R.string.resume_discard), fontSize = 13.sp,
+                     textAlign = TextAlign.Center) }
+        }
+        if (onNewProject != null && idle && (hasTarget || resumeLabel != null)) TextButton(
+            onClick = onNewProject,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(stringResource(R.string.newproj_button)) }
+
         // ---------------------------------------------------------------- run
         // One button, two jobs: a separate Cancel would sit dead for the entire time the
         // only thing you can do is start a swap.
@@ -1256,6 +1350,19 @@ fun SwapScreen(
                     else R.string.swap_action_run,
                     batch.size),
                  fontSize = 16.sp) }
+        if (estimate != null && idle && !imageTarget) Text(
+            estimate,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (onTest3s != null && idle && !imageTarget) OutlinedButton(
+            onClick = onTest3s,
+            enabled = sourceReady && hasTarget && !modelsMissing && (!opts.lipSync || hasVoice),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            shape = RoundedCornerShape(14.dp),
+        ) { Text(stringResource(R.string.swap_test_3s), fontSize = 14.sp) }
         if (photoMakesVideo && idle) Text(
             stringResource(R.string.swap_photo_video_hint),
             style = MaterialTheme.typography.bodySmall,
@@ -1670,6 +1777,19 @@ fun SwapScreen(
                             // second alignment is involved.
                             Text(stringResource(R.string.opt_enhancer_note, opts.pixelBoostLabel),
                                  style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
+                            com.facefusion.mobile.OptionSwitch(
+                                stringResource(R.string.opt_enhancer_512), opts.enhancer512,
+                                { onOptsChange(opts.copy(enhancer512 = it)) },
+                                hint = stringResource(R.string.opt_enhancer_512_hint))
+                            com.facefusion.mobile.OptionSwitch(
+                                stringResource(R.string.opt_sharpen), opts.enhanceSharpen,
+                                { onOptsChange(opts.copy(enhanceSharpen = it)) },
+                                hint = stringResource(R.string.opt_sharpen_hint))
+                            if (opts.enhanceSharpen) OptionSlider(
+                                stringResource(R.string.opt_sharpen_strength),
+                                opts.enhanceSharpenStrength,
+                                { onOptsChange(opts.copy(enhanceSharpenStrength = it)) },
+                            )
                         }
                         "editor" -> FaceEditorSliders(opts, onOptsChange)
                         "lipsync" -> {
@@ -1684,6 +1804,8 @@ fun SwapScreen(
                             // finds.
                         }
                         else -> {
+                            RealismCard(opts, onOptsChange, openCard == "realism",
+                                        { onToggleCard("realism") })
                             FaceSwapperCard(opts, onOptsChange, openCard == "swapper",
                                             { onToggleCard("swapper") },
                                             hyperswap1bAvailable = hasHyperswap1b,

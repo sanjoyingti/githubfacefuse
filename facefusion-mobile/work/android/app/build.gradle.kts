@@ -182,17 +182,139 @@ val qnnStage by tasks.registering {
     }
 }
 
-tasks.named("preBuild") {
-    dependsOn(qnnStage)
+// The bundled mask models must not contain pnnx runtime expressions (`6="..."`): the ncnn
+// staged in ../ncnn cannot parse them, and the app then silently runs without the mask.
+// work/masks/freeze_reshape.py removes them; this keeps a regenerated model from slipping in.
+val checkMaskModels by tasks.registering {
+    doLast {
+        fileTree("src/main/assets/masks") { include("*.param") }.forEach { f ->
+            val bad = f.readLines().filter { "=\"" in it }
+            if (bad.isNotEmpty())
+                throw GradleException("${f.name} has ${bad.size} runtime expression(s) the " +
+                    "bundled ncnn cannot load; run work/masks/freeze_reshape.py. First: ${bad[0].trim()}")
+        }
+    }
 }
 
-// Optional matching native binaries for Kotlin/UI-only builds without the Qualcomm SDK.
-// Supply a directory containing arm64-v8a/libffnative.so and its runtime dependencies.
-val prebuiltNativeDir = providers.gradleProperty("prebuiltNativeDir").orNull?.let { file(it) }
+
+// ---------------------------------------------------------------------------------------
+// NATIVE LIBRARIES WITHOUT THE QUALCOMM DOWNLOAD
+//
+// Normally the build compiles the C++ and stages Qualcomm's runtime (qnnStage above). Where
+// Qualcomm's download is blocked (HTTP 403 in some cloud IDEs), the build can instead take
+// the native libraries (libffnative.so and the Qualcomm runtime, all arm64-v8a) out of the
+// PUBLISHED APK OF THE SAME RELEASE and compile only the Kotlin/UI code around them:
+//
+//   * automatic: if nothing is staged, QNN_SDK_ROOT is not set, the QAIRT zip is not cached
+//     and Qualcomm's URL does not answer, the build downloads
+//     https://github.com/sanjoyingti/githubfacefuse/releases/download/v1.0.<BUILD_NUMBER>/
+//     FaceFusion-1.0.<BUILD_NUMBER>.apk (the zip's BUILD_NUMBER file names its release);
+//   * manual: -PprebuiltNativeDir=<dir containing arm64-v8a/libffnative.so>;
+//   * -PapkFallbackUrl=<url> names another APK.
+//
+// ⚠ The native libraries MUST be those of this source's release. An older APK lacks the
+// newer native functions and the app crashes when it calls them, so checkPrebuiltNative
+// refuses a library that does not export every `external fun` of NativePipe.kt.
+// ---------------------------------------------------------------------------------------
+val qairtProbeUrl = (findProperty("qairtUrl") as String?) ?: qairtUrl
+
+fun qairtReachable(url: String): Boolean = try {
+    var u = url
+    var hops = 0
+    var ok = false
+    while (hops++ < 6) {
+        val c = URI(u).toURL().openConnection() as HttpURLConnection
+        c.setRequestProperty("Range", "bytes=0-0")
+        c.connectTimeout = 15000; c.readTimeout = 15000
+        val code = c.responseCode
+        val next = c.getHeaderField("Location")
+        c.disconnect()
+        if (code in 300..399 && next != null) { u = next; continue }
+        ok = code == 200 || code == 206
+        break
+    }
+    ok
+} catch (e: Exception) { false }
+
+fun nativeFromReleaseApk(): File? {
+    val n = rootProject.file("BUILD_NUMBER").takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull()
+    val url = (findProperty("apkFallbackUrl") as String?) ?: n?.let {
+        "https://github.com/sanjoyingti/githubfacefuse/releases/download/v1.0.$it/FaceFusion-1.0.$it.apk"
+    } ?: return null
+    val cache = rootProject.file(".apk-cache").apply { mkdirs() }
+    val out = File(cache, "native")
+    if (File(out, "arm64-v8a/libffnative.so").isFile) return out
+    val apk = File(cache, "release.apk")
+    try {
+        if (!apk.isFile) {
+            logger.lifecycle("Qualcomm's download is not reachable; taking the native libraries from the matching release APK:\n  $url")
+            var conn = URI(url).toURL().openConnection() as HttpURLConnection
+            var hops = 0
+            while (conn.responseCode in 300..399 && hops++ < 6) {
+                val next = conn.getHeaderField("Location"); conn.disconnect()
+                conn = URI(next).toURL().openConnection() as HttpURLConnection
+            }
+            if (conn.responseCode != 200) throw GradleException("HTTP ${conn.responseCode}")
+            val part = File(cache, "release.apk.part")
+            conn.inputStream.use { i -> part.outputStream().use { o -> i.copyTo(o, 1 shl 20) } }
+            if (!part.renameTo(apk)) throw GradleException("cannot rename the downloaded APK")
+        }
+        ZipFile(apk).use { z ->
+            for (e in z.entries()) {
+                if (e.isDirectory || !e.name.startsWith("lib/arm64-v8a/")) continue
+                val d = File(out, e.name.removePrefix("lib/"))
+                d.parentFile.mkdirs()
+                z.getInputStream(e).use { i -> d.outputStream().use { o -> i.copyTo(o) } }
+            }
+        }
+        return if (File(out, "arm64-v8a/libffnative.so").isFile) out else null
+    } catch (e: Exception) {
+        logger.warn("Could not get the native libraries from the release APK: ${e.message}")
+        return null
+    }
+}
+
+val qnnAlreadyStaged = run {
+    val jni = file("src/main/jniLibs/arm64-v8a")
+    File(file("src/main/cpp/include"), "QNN/QnnBackend.h").isFile &&
+        (listOf("libQnnHtp.so", "libQnnSystem.so") + qnnTiers.map { "libQnnHtpV${it}Stub.so" } +
+            qnnTiers.map { "libQnnHtpV${it}Skel.so" }).all { File(jni, it).isFile }
+}
+val qnnSdkRootOk = System.getenv("QNN_SDK_ROOT")?.let { File(it, "include/QNN/QnnBackend.h").isFile } == true
+val prebuiltNativeDir: File? =
+    providers.gradleProperty("prebuiltNativeDir").orNull?.let { file(it) }
+        ?: if (!qnnAlreadyStaged && !qnnSdkRootOk &&
+               !rootProject.file(".qairt-cache/qairt-$qairtVersion.zip").isFile &&
+               !qairtReachable(qairtProbeUrl)) nativeFromReleaseApk() else null
 if (prebuiltNativeDir != null) {
     require(File(prebuiltNativeDir, "arm64-v8a/libffnative.so").isFile) {
         "prebuiltNativeDir must contain arm64-v8a/libffnative.so"
     }
+    logger.lifecycle("Using prebuilt native libraries from $prebuiltNativeDir (no C++ compile, no Qualcomm download)")
+}
+
+val checkPrebuiltNative by tasks.registering {
+    onlyIf { prebuiltNativeDir != null }
+    doLast {
+        val so = File(prebuiltNativeDir!!, "arm64-v8a/libffnative.so").readBytes()
+            .toString(Charsets.ISO_8859_1)
+        val wanted = Regex("external fun (\\w+)").findAll(
+            file("src/main/java/com/facefusion/mobile/NativePipe.kt").readText()).map { it.groupValues[1] }.toSet()
+        val missing = wanted.filter { !so.contains("Java_com_facefusion_mobile_NativePipe_$it") }
+        if (missing.isNotEmpty())
+            throw GradleException(
+                "The prebuilt native libraries do not belong to this source: libffnative.so lacks " +
+                "${missing.size} of ${wanted.size} native functions (for example ${missing.take(4).joinToString()}). " +
+                "An APK of another release would crash the app. Use the APK of THIS release " +
+                "(BUILD_NUMBER file), or build normally with the Qualcomm download.")
+        logger.lifecycle("Prebuilt native libraries match this source (${wanted.size} native functions).")
+    }
+}
+
+// qnnStage is skipped when the native libraries come prebuilt (they carry the Qualcomm runtime).
+qnnStage.configure { onlyIf { prebuiltNativeDir == null } }
+tasks.named("preBuild") {
+    dependsOn(qnnStage, checkMaskModels, checkPrebuiltNative)
 }
 
 android {
@@ -559,8 +681,15 @@ android {
         // 114 = 0.9.40 as released: the same content as 112, numbered above 113 so it
         // installs over the one phone that had it.
         // 115 = models can download from hf-mirror.com (issue #18).
-        versionCode = 115
-        versionName = "0.9.41$variantTag"    // "-dev" == NO content gate
+        // THE VERSION MOVES WITH EVERY BUILD (asked for): GitHub's run number on release
+        // builds, else BUILD_NUMBER beside settings.gradle.kts, which each release's source
+        // zip carries. versionCode 1000 + build keeps it above every 0.9.x (<= 115), so each
+        // new build installs as an UPDATE of the last.
+        val buildNoTop = (System.getenv("GITHUB_RUN_NUMBER")
+            ?: rootProject.file("BUILD_NUMBER").takeIf { it.isFile }?.readText()?.trim())
+            ?.toIntOrNull()
+        versionCode = 1000 + (buildNoTop ?: 0)
+        versionName = "1.0.${buildNoTop ?: 0}$variantTag"    // "-dev" == NO content gate
         setProperty("archivesBaseName", "facefusion-mobile-$versionName")
         manifestPlaceholders["appLabel"] = appLabel
         ndk { abiFilters += "arm64-v8a" }
@@ -619,6 +748,18 @@ android {
     }
 
     signingConfigs {
+        // A FIXED debug key, committed on purpose (it is the standard public debug key
+        // format, password "android", and protects nothing). Every debug APK -- local or
+        // built by .github/workflows/build-apk.yml -- then has the same signature, so a
+        // newer release installs as an update instead of needing an uninstall.
+        rootProject.file("debug.keystore").takeIf { it.isFile }?.let { ks ->
+            getByName("debug") {
+                storeFile = ks
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         if (keystoreProps.getProperty("storeFile") != null) {
             create("release") {
                 storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
@@ -633,7 +774,14 @@ android {
         debug {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-mic-debug"
+            // The BUILD NUMBER in the version, so two APKs can be told apart in Settings,
+            // About and in every bug report: GitHub's run number on the release builds,
+            // else BUILD_NUMBER beside settings.gradle.kts (bumped with each release), so
+            // a copy compiled from a source zip names the same build as its release.
+            val buildNo = System.getenv("GITHUB_RUN_NUMBER")
+                ?: rootProject.file("BUILD_NUMBER").takeIf { it.isFile }?.readText()?.trim()
+                ?: "local"
+            versionNameSuffix = "-mic-debug-build$buildNo"
             manifestPlaceholders["appLabel"] = "$appLabel Debug"
         }
         release {
@@ -651,6 +799,13 @@ android {
     // out of step with which line actually built. The Live code compiles into both APKs;
     // only the destination is hidden, which keeps `git diff main dev` exactly the gate.
     buildFeatures { compose = true; buildConfig = true }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.systemProperty("robolectric.dependency.repo.url",
+                              "https://maven-central.storage-download.googleapis.com/maven2")
+        }
+    }
 }
 
 dependencies {
@@ -662,6 +817,12 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    // A JVM render test of the Swap screen (Robolectric): app/src/test.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation(platform("androidx.compose:compose-bom:2024.10.01"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     implementation("androidx.camera:camera-core:1.3.4")
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")

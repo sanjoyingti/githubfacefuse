@@ -28,7 +28,8 @@ class PreviewEngine {
      * it must identify the IMAGE and not the array (a fresh decode of the same file has
      * to compare equal, or every refresh would reload).
      */
-    data class SourceSlot(val tag: Any, val bgr: ByteArray, val width: Int, val height: Int)
+    data class SourceSlot(val tag: Any, val bgr: ByteArray, val width: Int, val height: Int,
+                          val extras: List<SourcePhotos.Extra> = emptyList())
 
     /** What a swap preview produced. [faces] is 0 when nothing was detected. */
     data class Swapped(val bitmap: Bitmap?, val faces: Int, val error: String? = null)
@@ -220,6 +221,21 @@ class PreviewEngine {
     private var loadedOpts: SwapOptions? = null
 
     /**
+     * Which optional models the loaded pipeline still holds: lip syncer, face editor
+     * (LivePortrait) and enhancer. The others are unloaded right after init so Android
+     * does not close the app for memory; switching one of them on reloads the pipeline.
+     */
+    private var loadedKeep = BooleanArray(3)
+
+    private fun wants(o: SwapOptions) =
+        booleanArrayOf(o.lipSync, o.faceEdit || o.expressionRestore || o.faceAnimate, o.faceEnhance)
+
+    private fun keeps(have: BooleanArray, o: SwapOptions): Boolean {
+        val w = wants(o)
+        return w.indices.all { !w[it] || have[it] }
+    }
+
+    /**
      * Whose face is currently set on the loaded pipeline.
      *
      * ⚠ SEPARATE from [loadedOpts], and that separation is the point. These were one
@@ -288,6 +304,8 @@ class PreviewEngine {
     fun applyOptions(opts: SwapOptions) {
         if (loadedSwapper == null || loadedSwapper != opts.swapper) return
         if (loadedOpts == opts) return
+        // A model these options need was unloaded to save memory: ensureReady reloads.
+        if (!keeps(loadedKeep, opts)) return
         if (NativePipe.setOptions(opts)) {
             loadedOpts = opts
             // Not part of setOptions: Live sets the same switch for its own session.
@@ -355,13 +373,15 @@ class PreviewEngine {
         //   options  -> push them to the loaded pipeline, no I/O at all
         //   source   -> one gate check and one setSource
         //   swapper  -> a genuine reload, because it is a different model file
-        val reload = loadedSwapper != opts.swapper
+        val reload = loadedSwapper != opts.swapper || !keeps(loadedKeep, opts)
         if (reload) {
             invalidate()
             if (!NativePipe.init(libDir, libDir, modelDir, opts))
                 return@withContext "Could not load the models: " + NativePipe.lastError()
             loadedSwapper = opts.swapper
             loadedOpts = opts
+            loadedKeep = wants(opts)
+            NativePipe.trimModels(loadedKeep[0], loadedKeep[1], loadedKeep[2])
             NativePipe.setSwapEnabled(opts.swapsFace)
         } else {
             applyOptions(opts)
@@ -404,6 +424,8 @@ class PreviewEngine {
             invalidate()
             return@withContext "No face found in the source image"
         }
+        SourcePhotos.checkMain(slots[0].tag, slots[0].bgr, slots[0].width, slots[0].height)
+        SourcePhotos.register(0, slots[0].extras)
         for ((i, slot) in slots.withIndex()) {
             if (i == 0) continue
             if (NativePipe.addSource(slot.bgr, slot.width, slot.height) < 0) {
@@ -413,6 +435,8 @@ class PreviewEngine {
                 invalidate()
                 return@withContext "No face found in source image ${i + 1}"
             }
+            SourcePhotos.checkMain(slot.tag, slot.bgr, slot.width, slot.height)
+            SourcePhotos.register(i, slot.extras)
         }
         appliedSlots = tags
         NativePipe.setActiveSource(activeSource.coerceIn(0, slots.lastIndex))
@@ -450,7 +474,13 @@ class PreviewEngine {
             val frameIndex = if (loadedOpts?.lipSync == true && voicePath != null &&
                                  appliedVoice == voicePath)
                 (timeMs / 1000.0 * audioFps).roundToInt() else -1
-            val faces = NativePipe.processFrameAt(bgr, w, h, frameIndex)
+            // Full NPU power for this one frame, then back to the balanced profile so the
+            // NPU can clock down and sleep while the person looks at the result. Burst used
+            // to stay pinned (maximum voltage, shallow sleep only) for as long as the app
+            // was open after a preview -- warmth and battery for nothing.
+            NativePipe.setPowerProfile(0)
+            val faces = try { NativePipe.processFrameAt(bgr, w, h, frameIndex) }
+                        finally { NativePipe.setPowerProfile(2) }
             if (faces < 0) return@runCatching Swapped(null, 0, NativePipe.lastError())
             if (faces == 0) return@runCatching Swapped(null, 0, null)
 

@@ -209,8 +209,19 @@ object ModelDownload {
     // these two are named here because they are alternatives to a swapper the app already
     // has, not additions to the set it needs.
     private val OPTIONAL_MODELS =
-        listOf("gpen", "edtalk", "wav2lip", "hyperswap_1b", "hyperswap_1c",
-               ModelPaths.LIVEPORTRAIT)
+        listOf("gpen", "edtalk", "wav2lip", ModelPaths.LIVEPORTRAIT)
+
+    /** Every face swapper. Exactly ONE is required: the one selected (see [selectedSwapper]). */
+    private val SWAPPERS = listOf("hyperswap", "hyperswap_1b", "hyperswap_1c")
+
+    /**
+     * The swapper the user has selected, set by the caller before a bulk download. Only it
+     * is fetched as "required"; the other two are alternatives. Before this, 1a was always
+     * required, so a user on 1b or 1c who deleted 1a was made to download its 205 MB
+     * again although nothing used it -- ModelPaths.missing() already required the SELECTED
+     * swapper, the downloader did not agree.
+     */
+    @Volatile var selectedSwapper: String = "hyperswap"
 
     /** Which of [entries] are not already present and correct in [dir]. */
     fun missing(dir: File, entries: List<Entry>): List<Entry> =
@@ -255,7 +266,8 @@ object ModelDownload {
             //
             // filesFor() returns an empty list for a name a variant does not carry (edtalk
             // and wav2lip have no ncnn stems), so this is a no-op there rather than wrong.
-            val optional = OPTIONAL_MODELS
+            val sel = selectedSwapper.takeIf { it in SWAPPERS } ?: "hyperswap"
+            val optional = (OPTIONAL_MODELS + SWAPPERS.filter { it != sel })
                 .flatMap { ModelPaths.filesFor(tier, it) }
                 .toSet()
             val entries =
@@ -323,7 +335,7 @@ object ModelDownload {
         val already = doneBytes
 
         // A .part longer than the target is from a different revision of the file.
-        if (part.exists() && part.length() > e.bytes) part.delete()
+        if (part.exists() && part.length() > e.bytes) part.safeDelete()
 
         var conn: HttpURLConnection? = null
         try {
@@ -342,7 +354,7 @@ object ModelDownload {
             if (from > 0 && code != HttpURLConnection.HTTP_PARTIAL) {
                 // The server ignored the Range, so the bytes coming back start at zero.
                 // Appending them to the .part would silently corrupt it.
-                part.delete()
+                part.safeDelete()
                 from = 0
             }
             if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_PARTIAL)
@@ -378,7 +390,7 @@ object ModelDownload {
 
     private fun verifyAndCommit(part: File, dest: File, e: Entry): String? {
         if (part.length() != e.bytes) {
-            part.delete()
+            part.safeDelete()
             return "${e.name}: expected ${e.bytes} bytes, got ${part.length()}"
         }
         val md = MessageDigest.getInstance("SHA-256")
@@ -393,14 +405,14 @@ object ModelDownload {
         val got = md.digest().joinToString("") { "%02x".format(it) }
         if (!got.equals(e.sha256, ignoreCase = true)) {
             // Not resumable: a hash mismatch means the bytes we have are wrong, not short.
-            part.delete()
+            part.safeDelete()
             return "${e.name}: checksum mismatch"
         }
         if (e.name.startsWith("nsfw") && !got.equals(PINNED[e.name], ignoreCase = true)) {
-            part.delete()
+            part.safeDelete()
             return "${e.name}: not a file this app accepts"
         }
-        dest.delete()
+        dest.safeDelete()
         return if (part.renameTo(dest)) null else "${e.name}: could not be saved"
     }
 }

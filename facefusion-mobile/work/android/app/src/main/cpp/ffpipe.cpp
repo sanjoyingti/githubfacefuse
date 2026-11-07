@@ -6,10 +6,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <condition_variable>
+#include <functional>
+#include <memory>
 #include <mutex>
+#include <thread>
 
 #include "ffnn.h"
 
@@ -70,7 +75,22 @@ struct Nets {
   // per frame.
   ffnn::Handle occ = nullptr, parse = nullptr;
   bool occTried = false, parseTried = false;
+  // The second face detector (Config::secondDetector), opened on first use like the masks.
+  ffnn::Handle scrfd = nullptr;
+  bool scrfdTried = false;
+  // Which face parser `parse` holds (Config::largeParser), so a change reloads it.
+  bool parseLarge = false;
+  // The second landmarker (Config::turnedLandmarker).
+  ffnn::Handle peppa = nullptr;
+  bool peppaTried = false;
+  // GPEN-BFR 512 (Config::enhancer512), NPU only.
+  ffnn::Handle enh512 = nullptr;
+  bool enh512Tried = false;
 };
+
+// PEPPA-Wutz's 98 WFLW points -> the 68-point layout: each of the 68 is one of the 98 or the
+// mean of two (measured from the model's own post-processing graph, exact to 3e-6).
+static const int kPeppa68[68][2] = {{0,0}, {2,2}, {4,4}, {6,6}, {8,8}, {10,10}, {12,12}, {14,14}, {16,16}, {18,18}, {20,20}, {22,22}, {24,24}, {26,26}, {28,28}, {30,30}, {32,32}, {33,33}, {34,34}, {35,35}, {36,36}, {37,37}, {42,42}, {43,43}, {44,44}, {45,45}, {46,46}, {51,51}, {52,52}, {53,53}, {54,54}, {55,55}, {56,56}, {57,57}, {58,58}, {59,59}, {60,60}, {61,62}, {62,63}, {64,64}, {65,66}, {66,67}, {68,68}, {69,70}, {70,71}, {72,72}, {73,74}, {74,75}, {76,76}, {77,77}, {78,78}, {79,79}, {80,80}, {81,81}, {82,82}, {83,83}, {84,84}, {85,85}, {86,86}, {87,87}, {88,88}, {89,89}, {90,90}, {91,91}, {92,92}, {93,93}, {94,94}, {95,95}};
 
 // One clip's audio, reduced to what the lip syncer eats: a mel window per OUTPUT frame.
 // Held here rather than handed across JNI per frame, for the same reason the source
@@ -153,6 +173,8 @@ bool probeExecutes(ffnn::Handle h, std::string* why) {
  */
 static constexpr int kNoSource = -1;
 
+static float faceDistance(const float* a, const float* b);
+
 struct Pipeline::Impl {
   Nets n;
   AudioState audio;
@@ -176,6 +198,53 @@ struct Pipeline::Impl {
   float srcEmbeddingNorm[512]{};
   bool haveSource = false;
   std::vector<std::array<float, 512>> sourceSlots;
+  // Every photo's normalised embedding per slot, first photo first; sourceSlots[i] is
+  // their re-normalised mean. Kept in step with sourceSlots by setSource / addSource /
+  // addSourcePhoto / clearSourceSlots.
+  std::vector<std::vector<std::array<float, 512>>> slotPhotos;
+  // Each photo's head pose {yaw, pitch} in degrees (NaN when it could not be estimated),
+  // parallel to slotPhotos. Used to favour the photo whose angle matches the target face.
+  std::vector<std::vector<std::array<float, 2>>> slotPhotoPose;
+  static std::array<float, 2> poseOf(const Face& f) {
+    const ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
+    return p.ok ? std::array<float, 2>{p.yaw, p.pitch}
+                : std::array<float, 2>{NAN, NAN};
+  }
+  // POSE-MATCHED identity for target face `f` from source slot `slot`: each photo's
+  // embedding weighted by how close its head angle is to the target's (Gaussian, sigma
+  // 20 deg, pitch counted 1.3x as in poseFade), with a floor so every photo keeps a share
+  // of the identity, then re-normalised. Smooth in the angle, so a turning head blends
+  // from one photo to the next instead of flicking between them. One photo, or a pose
+  // that cannot be estimated: the slot's plain mean (sourceSlots), exactly as before.
+  const float* identityFor(int slot, const Face& f, std::array<float, 512>& buf) const {
+    const auto& ph = slotPhotos[(size_t)slot];
+    if (ph.size() < 2 || slotPhotoPose.size() <= (size_t)slot ||
+        slotPhotoPose[(size_t)slot].size() != ph.size())
+      return sourceSlots[(size_t)slot].data();
+    const auto tp = poseOf(f);
+    if (!std::isfinite(tp[0]) || !std::isfinite(tp[1])) return sourceSlots[(size_t)slot].data();
+    constexpr float kSigma = 20.f, kFloor = 0.15f;
+    float w[8]; float wsum = 0;
+    const size_t n = std::min<size_t>(ph.size(), 8);
+    for (size_t i = 0; i < n; ++i) {
+      const auto& pp = slotPhotoPose[(size_t)slot][i];
+      float wi = 1.f;
+      if (std::isfinite(pp[0]) && std::isfinite(pp[1])) {
+        const float dy = tp[0] - pp[0], dp = 1.3f * (tp[1] - pp[1]);
+        wi = kFloor + std::exp(-(dy * dy + dp * dp) / (2.f * kSigma * kSigma));
+      }
+      w[i] = wi; wsum += wi;
+    }
+    buf.fill(0.f);
+    for (size_t i = 0; i < n; ++i)
+      for (int k = 0; k < 512; ++k) buf[(size_t)k] += (w[i] / wsum) * ph[i][(size_t)k];
+    double n2 = 0;
+    for (float v : buf) n2 += (double)v * v;
+    if (!(n2 > 1e-12)) return sourceSlots[(size_t)slot].data();
+    const float inv = (float)(1.0 / std::sqrt(n2));
+    for (float& v : buf) v *= inv;
+    return buf.data();
+  }
   int activeSource = 0;
   // ONE remembered decision about ONE person: who they are, and what to do with them.
   //
@@ -189,8 +258,24 @@ struct Pipeline::Impl {
     std::array<float, 512> embedding;
     int source = kNoSource;
     bool keepOriginal = false;
+    // WHO this is. Several entries may share one person (the same face seen front, left,
+    // right ... in a "find everyone" scan); a frame gives each person to at most ONE face,
+    // which is what stops two people getting the same picture.
+    int person = 0;
   };
   std::vector<FaceAssignment> faceAssignments;
+  int nextPersonId = 1;
+  // Bumped whenever the assignments or their switches change: the per-frame decision
+  // cache below is only valid for the version it was made with.
+  unsigned assignVersion = 1;
+  // ON: a face that matches nobody the user assigned keeps its own face, instead of
+  // taking the frozen default source (which gave a person who appears later in the video
+  // the same picture as someone else).
+  bool assignUnknownKeep = true;
+  // Per-frame decision cache (see resolveAssignments).
+  std::vector<int> frameAssign;
+  std::vector<float> frameAssignKey;
+  void resolveAssignments(const std::vector<Face>& faces, float refDistance);
   // One person currently in the live frame, matched frame to frame by box overlap
   // (embedding as a fallback). `pinned` means a tap decided this person's source ONCE;
   // the source is then STICKY -- swapAll never re-scores it against the per-frame
@@ -233,17 +318,94 @@ struct Pipeline::Impl {
   //
   // ⚠ Members, not file-static helpers, because Pipeline::Impl is a private name and
   // nothing outside the class may spell it.
-  void rememberAssignment(const float* embeddingNorm, int sourceIndex, bool keepOriginal);
+  void rememberAssignment(const float* embeddingNorm, int sourceIndex, bool keepOriginal,
+                          int person = -1);
 
   // ---- temporal state for Pipeline::setSequence
+  // Consecutive analysed frames in which no face was found (second look throttle).
+  int noFaceStreak = 0;
+
   struct SeqFace {
     float box[4] = {};
     ffmotion::OneEuro5 filt;
     float fade = 1.f;
     int miss = 0;
+    // Smart speed: this face's last mask (before the pose fade) and what its crop looked
+    // like when it was computed; shared_ptr so the per-frame copy of SeqFace stays cheap.
+    std::shared_ptr<ffcv::MatF> mask;
+    std::vector<uint8_t> maskThumb;
+    int maskCS = 0, maskAge = 0;
+    // Frames the expression restorer stays on after the eyes last closed.
+    int restoreHold = 0;
+    // temporalSmooth: this face's colour statistics and last final mask (crop space).
+    ffmotion::ColorState color;
+    std::shared_ptr<ffcv::MatF> lastMask;
+    // Frames the face parser stays on after the mouth was last open ("Keep original mouth
+    // inside" alone), and whether the stored mask had the parser in it.
+    int mouthHold = 0;
+    bool maskParsed = false;
+    // The face's raw centre on the previous frame, for Face::vel.
+    float prevC[2] = {0.f, 0.f};
+    bool havePrev = false;
+    // LOST-FACE RECOVERY: last alignment points, eye span and per-frame motion, so a face
+    // the detector misses during a fast flip can be looked for where it is heading.
+    float lm5[10] = {};
+    float span = 0.f;
+    float vel[2] = {0.f, 0.f};
+    bool haveLm = false;
+    int recRun = 0;   // consecutive frames this face was held, not detected
+    // STICKY SELECTION: frames left during which this face, once recognised as the chosen
+    // person, stays chosen although the matcher is unsure (eyes shut, head turned); and
+    // this frame's verdict, so every later pass of the frame gives the same answer.
+    int refHold = 0;
+    bool refPass = false;
+    // STICKY PERSON (assign per person): which assigned person this face was last
+    // recognised as, and for how many more frames that holds while the match is weak
+    // (blink, turned head, looking down). -1 = nobody.
+    int assignPerson = -1;
+    int assignHold = 0;
   };
+  // The sequence state of faces[fi] on this frame (any options), or null.
+  SeqFace* seqFaceAny(const Face& f, size_t fi) {
+    if (!seq.on || fi >= seq.faces.size()) return nullptr;
+    SeqFace& sf = seq.faces[fi];
+    return std::memcmp(sf.box, f.box, sizeof(sf.box)) == 0 ? &sf : nullptr;
+  }
+  // The sequence state of faces[fi] on THIS frame, or null outside a sequence. temporal()
+  // writes this frame's faces first and in order, so index fi is face fi.
+  SeqFace* seqFaceFor(const Face& f, size_t fi) {
+    if (!seq.on || !cfg.smartSpeed || fi >= seq.faces.size()) return nullptr;
+    SeqFace& sf = seq.faces[fi];
+    return std::memcmp(sf.box, f.box, sizeof(sf.box)) == 0 ? &sf : nullptr;
+  }
+  // SIDE PHOTOS: when a source face has a photo turned the same way as this face (25 degrees
+  // or more), the swap holds 15 degrees further round before it fades: the identity for that
+  // angle then comes mostly from the matching photo (identityFor). Turned-off fade (>= 90)
+  // and a face without such a photo are unchanged.
+  float sideBonus(const Face& f, const Config& c) const {
+    if (!c.sideHold || c.poseFadeStart >= 90.f) return 0.f;
+    const ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
+    if (!p.ok || std::fabs(p.yaw) < 25.f) return 0.f;
+    for (const auto& slot : slotPhotoPose)
+      for (const auto& pp : slot)
+        if (std::isfinite(pp[0]) && std::fabs(pp[0]) >= 25.f && (pp[0] > 0) == (p.yaw > 0))
+          return 15.f;
+    return 0.f;
+  }
+
+  // The swap's verdict on face fi when it made one this frame, else the plain match.
+  bool refAllows(const Face& f, size_t fi, float refDistance) {
+    if (SeqFace* sq = seqFaceAny(f, fi)) return sq->refPass ||
+        faceDistance(f.embeddingNorm, refEmbeddingNorm) < refDistance;
+    return faceDistance(f.embeddingNorm, refEmbeddingNorm) < refDistance;
+  }
   struct Sequence {
-    bool on = false;
+    // Written by setSequence from ANY thread (the UI thread stops the live player), read by
+    // analyse on the pipeline thread. The face list itself is only touched by analyse: a
+    // reset is REQUESTED here and carried out at the start of the next analyse, so the UI
+    // thread never clears a vector the pipeline thread is iterating.
+    std::atomic<bool> on{false};
+    std::atomic<bool> resetPending{false};
     std::vector<SeqFace> faces;
     void reset() { faces.clear(); }
   };
@@ -258,25 +420,208 @@ struct Pipeline::Impl {
   ffnn::Handle maskNet(const char* name, int size, ffnn::Handle& h, bool& tried);
   // Shrinks `m` (CS x CS, already the box mask) by the occlusion and region masks computed
   // on `crop`, the TARGET face before any swap. Returns false only on an execution error.
-  bool applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m, std::string& err);
+  // `skipParser`: leave the face parser out this time (Smart speed, mouth closed).
+  bool applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m, std::string& err,
+                       bool skipParser = false);
+  // The parser's only job is "Keep original mouth inside": with the face parser mask and
+  // "keep lips" off it changes nothing while the mouth is closed (no inside is visible).
+  bool parserOnlyForMouth() const {
+    return cfg.keepMouth && !cfg.regionMask && !cfg.keepLips;
+  }
   bool wantsMaskModels() const {
-    return cfg.occlusionMask || cfg.regionMask || cfg.keepMouth;
+    return cfg.occlusionMask || cfg.regionMask || cfg.keepMouth || cfg.keepLips;
   }
   // The combined per-face mask swapAll used on this frame, keyed by the face's alignment
   // points, so the enhancer (same template, same crop size) reuses it instead of running
   // the mask models a second time on an already-swapped face.
   struct CachedMask {
     float lm5[10];
-    ffcv::MatF mask;
+    ffcv::MatF mask;      // box x occlusion/region x pose fade, in the swap crop
+    ffcv::Affine am;      // frame -> swap crop
   };
+
+  // ONE long-lived thread for the mask models, reused for every face of every frame.
+  // (Build 7 started a new std::async thread per face per frame, and that path crashed on
+  // device; a fixed thread also keeps the OpenMP thread pool of the mask models stable.)
+  struct MaskWorker {
+    std::thread th;
+    std::mutex m;
+    std::condition_variable cv;
+    std::function<void()> job;
+    bool busy = false, stop = false;
+    void post(std::function<void()> j) {
+      if (!th.joinable()) th = std::thread([this] { loop(); });
+      {
+        std::lock_guard<std::mutex> l(m);
+        job = std::move(j);
+        busy = true;
+      }
+      cv.notify_all();
+    }
+    void wait() {
+      std::unique_lock<std::mutex> l(m);
+      cv.wait(l, [&] { return !busy; });
+    }
+    void loop() {
+      for (;;) {
+        std::function<void()> j;
+        {
+          std::unique_lock<std::mutex> l(m);
+          cv.wait(l, [&] { return stop || static_cast<bool>(job); });
+          if (!job) return;
+          j.swap(job);
+        }
+        j();
+        {
+          std::lock_guard<std::mutex> l(m);
+          busy = false;
+        }
+        cv.notify_all();
+      }
+    }
+    ~MaskWorker() {
+      {
+        std::lock_guard<std::mutex> l(m);
+        stop = true;
+      }
+      cv.notify_all();
+      if (th.joinable()) th.join();
+    }
+  };
+  MaskWorker maskWorker;
   std::vector<CachedMask> maskCache;
+  // The frame as it was BEFORE swapAll, for the expression restorer (which needs the
+  // original face's expression). Only kept when the restorer will run.
+  ffcv::Image preSwap;
+  bool havePreSwap = false;
+  const CachedMask* cachedMaskEntry(const Face& f) const {
+    for (const auto& c : maskCache)
+      if (std::memcmp(c.lm5, f.landmark5_68, sizeof(c.lm5)) == 0) return &c;
+    return nullptr;
+  }
   const ffcv::MatF* cachedMask(const Face& f) const {
     for (const auto& c : maskCache)
       if (std::memcmp(c.lm5, f.landmark5_68, sizeof(c.lm5)) == 0) return &c.mask;
     return nullptr;
   }
   void applyToSelected(int sourceIndex, bool keepOriginal);
-  int sourceForFace(const Face& f, size_t fi, size_t faceCount, float refDistance) const;
+  // ---- second face detector (SCRFD 2.5G, ncnn, bundled in assets/masks)
+  int secondDetectorHits = 0;
+  int peppaUsed = 0;
+  /** GPEN-BFR 512 on the NPU, opened when first wanted; null where there is no NPU build. */
+  ffnn::Handle enh512Net() {
+    if (!n.enh512Tried) { n.enh512Tried = true; n.enh512 = ffnn::openAuxNpu("gpen512"); }
+    return n.enh512;
+  }
+  /**
+   * PEPPA-Wutz, opened on first use: the NPU build when it places the points where the CPU
+   * does (within 3 px of the 256 crop on a fixed probe; fp16 on the simulated HTP was 1.65 px
+   * from the original on a turned face), else the CPU.
+   */
+  ffnn::Handle peppaNet() {
+    if (n.peppaTried) return n.peppa;
+    n.peppaTried = true;
+    ffnn::Handle cpu = ffnn::openAux("peppa", ffnn::Placement::Cpu);
+    if (!cpu) return nullptr;
+    if (ffnn::Handle npu = ffnn::openAuxNpu("peppa")) {
+      std::vector<float> probe((size_t)3 * 256 * 256);
+      for (size_t i = 0; i < probe.size(); ++i) probe[i] = (float)((i * 2654435761u) % 1000) / 1000.f;
+      float a[136], b[136], sa = 0, sb = 0;
+      if (runPeppa(cpu, probe, a, &sa) && runPeppa(npu, probe, b, &sb)) {
+        float worst = 0;
+        for (int k = 0; k < 136; ++k) worst = std::max(worst, std::fabs(a[k] - b[k]));
+        if (worst <= 3.f) { ffnn::release(cpu); n.peppa = npu; return npu; }
+      }
+      ffnn::release(npu);
+    }
+    n.peppa = cpu;
+    return cpu;
+  }
+  /** 68 points in the 256 crop and the score (FaceFusion: mean peak / 0.95, clipped). */
+  static bool runPeppa(ffnn::Handle h, const std::vector<float>& in, float* xy, float* score) {
+    std::vector<std::vector<float>> out;
+    if (!ffnn::execute(h, {"input"}, {in.data()}, out) || out.empty() ||
+        out[0].size() < (size_t)294 * 64 * 64) return false;
+    const float* hm = out[0].data();
+    float px[98], py[98], pk[98];
+    for (int i = 0; i < 98; ++i) {
+      const float* c = hm + (size_t)i * 4096;
+      int best = 0;
+      for (int j = 1; j < 4096; ++j) if (c[j] > c[best]) best = j;
+      pk[i] = c[best];
+      px[i] = (float)(best % 64) + hm[(size_t)(98 + i) * 4096 + best];
+      py[i] = (float)(best / 64) + hm[(size_t)(196 + i) * 4096 + best];
+      if (!std::isfinite(px[i]) || !std::isfinite(py[i]) || !std::isfinite(pk[i])) return false;
+    }
+    double s = 0;
+    for (int k = 0; k < 68; ++k) {
+      const int a = kPeppa68[k][0], b = kPeppa68[k][1];
+      xy[2 * k] = (px[a] + px[b]) * 0.5f / 64.f * 256.f;
+      xy[2 * k + 1] = (py[a] + py[b]) * 0.5f / 64.f * 256.f;
+      s += (pk[a] + pk[b]) * 0.5;
+    }
+    *score = (float)std::min(1.0, std::max(0.0, s / 68.0 / 0.95));
+    return true;
+  }
+  ffnn::Handle secondDetectorNet() {
+    if (!n.scrfdTried) { n.scrfdTried = true; n.scrfd = ffnn::openAux("scrfd"); }
+    return n.scrfd;
+  }
+  /**
+   * SCRFD on [frame]: boxes, scores and the five points, in frame pixels, after NMS.
+   * As FaceFusion runs it: BGR, letterboxed into the top-left of 640x640 (zero pad),
+   * (x - 127.5) / 128; three strides (8, 16, 32), two anchors per cell, distances in
+   * stride units.
+   */
+  bool runScrfd(const ffcv::Image& frame, float thr, std::vector<std::array<float, 4>>& ob,
+                std::vector<float>& os, std::vector<std::array<float, 10>>& ol) {
+    constexpr int S = 640;
+    const double scale = std::min(1.0, std::min((double)S / frame.w, (double)S / frame.h));
+    const int tw = std::max(1, (int)(frame.w * scale)), th = std::max(1, (int)(frame.h * scale));
+    const ffcv::Image r = (tw == frame.w && th == frame.h) ? frame : ffcv::resizeLinear(frame, tw, th);
+    std::vector<float> in((size_t)3 * S * S, -127.5f / 128.f);
+    for (int y = 0; y < th; ++y) {
+      const uint8_t* row = r.row(y);
+      for (int x = 0; x < tw; ++x)
+        for (int c = 0; c < 3; ++c)
+          in[(size_t)c * S * S + (size_t)y * S + x] = (row[x * 3 + c] - 127.5f) / 128.f;
+    }
+    std::vector<std::vector<float>> out;
+    if (!ffnn::execute(n.scrfd, {"input"}, {in.data()}, out) || out.size() < 9) return false;
+    const float inv = (float)(1.0 / scale);
+    std::vector<std::array<float, 4>> b; std::vector<float> s; std::vector<std::array<float, 10>> l;
+    const int strides[3] = {8, 16, 32};
+    for (int k = 0; k < 3; ++k) {
+      const int st = strides[k], g = S / st, A = g * g * 2;
+      const auto& sc = out[(size_t)k];
+      const auto& bb = out[(size_t)3 + k];
+      const auto& kp = out[(size_t)6 + k];
+      if ((int)sc.size() < A || (int)bb.size() < A * 4 || (int)kp.size() < A * 10) return false;
+      for (int i = 0; i < A; ++i) {
+        const float v = sc[(size_t)i];
+        if (!(v > thr) || !std::isfinite(v)) continue;
+        const int cell = i / 2;
+        const float cx = (float)((cell % g) * st), cy = (float)((cell / g) * st);
+        const float* d = &bb[(size_t)i * 4];
+        std::array<float, 4> box{(cx - d[0] * st) * inv, (cy - d[1] * st) * inv,
+                                 (cx + d[2] * st) * inv, (cy + d[3] * st) * inv};
+        bool ok = std::isfinite(box[0]) && std::isfinite(box[1]) && std::isfinite(box[2]) &&
+                  std::isfinite(box[3]) && box[2] - box[0] > 1.f && box[3] - box[1] > 1.f;
+        std::array<float, 10> pts{};
+        for (int q = 0; q < 10 && ok; ++q) {
+          pts[(size_t)q] = ((q % 2 == 0 ? cx : cy) + kp[(size_t)i * 10 + q] * st) * inv;
+          ok = std::isfinite(pts[(size_t)q]);
+        }
+        if (!ok) continue;
+        b.push_back(box); s.push_back(v); l.push_back(pts);
+      }
+    }
+    for (int idx : ffcv::nmsBoxes(b, s, thr, 0.4f)) {
+      ob.push_back(b[(size_t)idx]); os.push_back(s[(size_t)idx]); ol.push_back(l[(size_t)idx]);
+    }
+    return true;
+  }
+  int sourceForFace(const std::vector<Face>& faces, size_t fi, float refDistance);
   // The source every UNPINNED face keeps while assign mode is on. Captured when the
   // mode is turned on, so flipping the chip afterwards changes nothing on the feed --
   // in assign mode the chip is a BRUSH: only tapping a face applies it. Without the
@@ -353,6 +698,7 @@ struct Pipeline::Impl {
   };
   BoxMaskCache lipBoxMask;    // at LS, for syncLip
   BoxMaskCache swapBoxMask;   // at swapSize*pixelBoost, for swapAll
+  BoxMaskCache swapBoxMaskBig;   // at swapSize*4, for close-ups under autoBoost
 
   // Detector tracking state. SINGLE FACE ONLY, deliberately: tracking two faces needs
   // identity matching across frames, and a crossover that mis-assigns them swaps the wrong
@@ -381,7 +727,7 @@ Pipeline::Pipeline() = default;
 Pipeline::~Pipeline() {
   if (p_) {
     for (auto h : {p_->n.det, p_->n.fan, p_->n.fan685, p_->n.arc, p_->n.swap, p_->n.lip, p_->n.nsfw,
-                   p_->n.enh, p_->n.occ, p_->n.parse})
+                   p_->n.enh, p_->n.occ, p_->n.parse, p_->n.scrfd, p_->n.peppa, p_->n.enh512})
       if (h) ffnn::release(h);
   }
 }
@@ -444,11 +790,13 @@ bool Pipeline::init(const std::string& libDir, const std::string& skelDir,
   auto dropNets = [&]() {
     for (ffnn::Handle* h : {&p_->n.det, &p_->n.fan, &p_->n.fan685, &p_->n.arc, &p_->n.lip,
                             &p_->n.swap, &p_->n.nsfw, &p_->n.enh, &p_->n.lpFeat,
-                            &p_->n.lpMotion, &p_->n.lpGen, &p_->n.occ, &p_->n.parse}) {
+                            &p_->n.lpMotion, &p_->n.lpGen, &p_->n.occ, &p_->n.parse,
+                            &p_->n.scrfd, &p_->n.peppa, &p_->n.enh512}) {
       if (*h) ffnn::release(*h);
       *h = nullptr;
     }
-    p_->n.occTried = p_->n.parseTried = false;
+    p_->n.occTried = p_->n.parseTried = p_->n.scrfdTried = p_->n.peppaTried = false;
+    p_->n.enh512Tried = false;
     p_->lpMlps = ffportrait::Mlps();
     nsfwQuantised_ = false;
   };
@@ -717,6 +1065,12 @@ void Pipeline::updateConfig(const Config& c) {
   live.occlusionMask     = c.occlusionMask;
   live.regionMask        = c.regionMask;
   live.keepMouth         = c.keepMouth;
+  live.keepLips          = c.keepLips;
+  live.colorMatch        = c.colorMatch;
+  live.expressionRestore = c.expressionRestore;
+  live.expressionRestoreFactor = c.expressionRestoreFactor;
+  live.parallelMasks     = c.parallelMasks;
+  live.smartSpeed        = c.smartSpeed;
   live.poseFadeStart     = c.poseFadeStart;
   live.motionSmooth      = c.motionSmooth;
   live.lowScoreRecovery  = c.lowScoreRecovery;
@@ -727,14 +1081,6 @@ void Pipeline::updateConfig(const Config& c) {
 
 ContentVerdict Pipeline::checkContent(const ffcv::Image& frame) {
   ContentVerdict v;
-  // NSFW gate DORMANT (developer override): always allow and clear the pipeline.
-  // Model is never run. Rest of the function is left intact for easy re-enable.
-  (void)frame;
-  v.ok = true;
-  v.score = 0.f;
-  v.blocked = false;
-  if (p_) p_->gateCleared = true;
-  return v;
   if (!p_ || !p_->n.nsfw) { err_ = "content gate not loaded"; return v; }
 
   // vision.py:fit_contain_frame -- scale to FIT, then pad CENTRED.
@@ -809,6 +1155,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   double t0 = 0;
 
   auto& tr = p_->track;
+  if (p_->seq.resetPending.exchange(false)) p_->seq.reset();
   const int trackPeriod =
       p_->trackPeriodOverride >= 0 ? p_->trackPeriodOverride : ffTrackPeriod();
   // ⚠ boxesOnly never tracks: reconstructing the box from the PREVIOUS frame is
@@ -846,18 +1193,25 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   // --face-detector-angles: upright first; the rotated passes only run when it found
   // nothing, so a frame with a face never pays for them.
   static const int kAngles[4] = {0, 90, 270, 180};
-  const int nAngles = cfg.detectRotated ? 4 : 1;
+  // HARDER LOOK on a frame that has none: the second look (tiles) and, when a face was seen
+  // in the last half second, the rotated passes too even with "detect rotated faces" off --
+  // a head thrown upside down mid-dance is exactly the face that vanishes. Throttled: on
+  // a run of face-less frames it repeats every 3rd frame, every 8th after one second.
+  const int streak = p_->noFaceStreak;
+  const int lookPeriod = streak < 30 ? 3 : 8;
+  const bool videoLook = cfg.secondLook && p_->seq.on && !noTrack && !boxesOnly;
+  const bool harder = videoLook && (streak % lookPeriod) == 0;
+  const bool autoRot = !cfg.detectRotated && harder && streak <= 15;
+  int nAngles = (cfg.detectRotated || autoRot) ? 4 : 1;
   const bool recover = cfg.lowScoreRecovery && p_->seq.on && !noTrack && !boxesOnly &&
                        !p_->seq.faces.empty();
   const float detThr = recover ? std::min(cfg.detectorScore,
                                           std::max(0.2f, cfg.detectorScore - 0.25f))
                                : cfg.detectorScore;
-  for (int ai = 0; ai < nAngles; ++ai) {
-  const int angle = kAngles[ai];
-  ffcv::Image rotated;
-  if (angle != 0) rotated = ffmotion::rotateImage(frame, angle);
-  const ffcv::Image& dimg = angle != 0 ? rotated : frame;
-  boxes.clear(); scores.clear(); lms.clear(); keep.clear();
+  // One detector pass over `dimg` (the frame, a rotated copy of it, or a tile of it at
+  // offset ox, oy): appends the faces it finds, in whole-frame coordinates, to
+  // boxes/scores/lms and recomputes `keep` over everything collected so far.
+  auto passOn = [&](const ffcv::Image& dimg, int angle, float ox, float oy, float zoom = 1.f) -> bool {
 
   t0 = nowMs();
   // restrict_frame + zero-pad to SxS  (vision.py:222, face_detector.py:445)
@@ -881,7 +1235,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   std::vector<std::vector<float>> out;
   if (!ffnn::execute(p_->n.det, {"input"}, {in.data()}, out)) {
     err_ = std::string("detector: ") + ffnn::lastError();
-    return faces;
+    return false;
   }
   msDetect += nowMs() - t0;
 
@@ -960,12 +1314,18 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
         l[2 * k] = px; l[2 * k + 1] = py;
       }
     }
+    // A tile of the frame (second look): back to whole-frame coordinates.
+    if (ox != 0.f || oy != 0.f || zoom != 1.f) {
+      bb[0] = bb[0] / zoom + ox; bb[2] = bb[2] / zoom + ox;
+      bb[1] = bb[1] / zoom + oy; bb[3] = bb[3] / zoom + oy;
+      for (int k = 0; k < 5; ++k) { l[2 * k] = l[2 * k] / zoom + ox; l[2 * k + 1] = l[2 * k + 1] / zoom + oy; }
+    }
     // LOW-SCORE RECOVERY: under the user's threshold only when it overlaps a face the
     // sequence saw in the last few frames -- motion blur, not a new false positive.
     if (sc <= cfg.detectorScore) {
       bool near = false;
       for (const auto& sf : p_->seq.faces)
-        if (sf.miss <= 3 && ffmotion::iou(bb.data(), sf.box) >= 0.3f) { near = true; break; }
+        if (sf.miss <= 12 && ffmotion::iou(bb.data(), sf.box) >= 0.2f) { near = true; break; }
       if (!near) continue;
     }
     boxes.push_back(bb);
@@ -974,9 +1334,172 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   }
   keep = ffcv::nmsBoxes(boxes, scores, detThr, cfg.nmsThreshold);
   msGeom += nowMs() - t0;
-  if (!keep.empty()) break;
+  return true;
+  };
+  // UPSIDE-DOWN FACES: the upright detector also "finds" a head that is upside down or on
+  // its side, but with its five points labelled by image side instead of by anatomy, so the
+  // mouth lies ABOVE the eyes (estimatePose says pitch 90). Aligned from those the swap is
+  // distorted, or faded out altogether, and the hit used to end the search so the rotated
+  // passes never ran. Such a face now triggers the rotated passes (even with "detect
+  // rotated faces" off), and its upright detection is dropped where a properly oriented
+  // one overlaps it. Costs nothing on frames without such a face.
+  auto upsideDown = [&](size_t idx) {
+    const ffmotion::Pose po = ffmotion::estimatePose(lms[idx].data());
+    return !po.ok || po.pitch >= 85.f;
+  };
+  bool sawUpsideDown = false;
+  std::vector<char> penalized;   // per box: its score was lowered as an upside-down looking face
+  auto penalizeBad = [&]() {
+    penalized.resize(boxes.size(), 0);
+    for (int idx : keep)
+      if (!penalized[(size_t)idx] && upsideDown((size_t)idx)) {
+        penalized[(size_t)idx] = 1;
+        // Lowered so that a properly oriented detection of the same head wins the NMS.
+        scores[(size_t)idx] *= 0.5f;
+      }
+  };
+  for (int ai = 0; ai < nAngles; ++ai) {
+  const int angle = kAngles[ai];
+  ffcv::Image rotated;
+  if (angle != 0) rotated = ffmotion::rotateImage(frame, angle);
+  const ffcv::Image& dimg = angle != 0 ? rotated : frame;
+  if (!sawUpsideDown) { boxes.clear(); scores.clear(); lms.clear(); keep.clear(); }
+  if (!passOn(dimg, angle, 0.f, 0.f)) return faces;
+  if (!keep.empty() && !noTrack && !boxesOnly) {
+    bool any = false;
+    for (int idx : keep) any = any || upsideDown((size_t)idx);
+    if (any || sawUpsideDown) {
+      sawUpsideDown = true;
+      penalizeBad();
+      // The rotated passes run even when only the upright one was planned.
+      if (nAngles < 4) nAngles = 4;
+      continue;
+    }
+  }
+  if (!sawUpsideDown && !keep.empty()) break;
   }  // angles
+  if (sawUpsideDown) {
+    // Keep a bad face only when no properly oriented face overlaps it.
+    std::vector<int> kept;
+    for (int idx : keep) {
+      const bool bad = upsideDown((size_t)idx);
+      bool covered = false;
+      if (bad)
+        for (int o : keep)
+          if (o != idx && !upsideDown((size_t)o) &&
+              ffmotion::iou(boxes[(size_t)idx].data(), boxes[(size_t)o].data()) >= 0.2f) {
+            covered = true; break;
+          }
+      if (!covered) kept.push_back(idx);
+    }
+    keep.swap(kept);
+  }
+  // SECOND LOOK (video only): the whole frame is squeezed into the detector's 640 px, so a
+  // small or distant face can fall below what it sees and the frame then goes out as
+  // filmed. A frame with NO face is looked at again in overlapping tiles of ~3/4 of the
+  // short side -- up to 2.4x the detail -- and only then, so frames with faces pay nothing.
+  // On a run of face-less frames it repeats every third frame, so a scene with no one in
+  // it costs a third of the extra passes.
+  if (keep.empty() && harder && std::max(frame.w, frame.h) > S) {
+    {
+      const int W = frame.w, H = frame.h;
+      int L = std::max(S, (int)(0.75f * std::min(W, H)));
+      L = std::min(L, std::min(W, H));
+      const int stride = std::max(1, (int)(0.7f * L));
+      const int nx = W <= L ? 1 : (W - L + stride - 1) / stride + 1;
+      const int ny = H <= L ? 1 : (H - L + stride - 1) / stride + 1;
+      boxes.clear(); scores.clear(); lms.clear(); keep.clear();
+      for (int ty = 0; ty < ny && true; ++ty)
+        for (int tx = 0; tx < nx; ++tx) {
+          const int x0 = nx == 1 ? 0 : (int)((long long)(W - L) * tx / (nx - 1));
+          const int y0 = ny == 1 ? 0 : (int)((long long)(H - L) * ty / (ny - 1));
+          ffcv::Image tile(L, L, 3);
+          for (int y = 0; y < L; ++y)
+            std::memcpy(tile.row(y), frame.row(y0 + y) + (size_t)x0 * 3, (size_t)L * 3);
+          if (!passOn(tile, 0, (float)x0, (float)y0)) return faces;
+        }
+    }
+  }
+  // SECOND DETECTOR (SCRFD): a face the sequence saw a moment ago that the main detector
+  // has lost (turned, half hidden, blurred), or a frame with no face at all. Measured on a
+  // 15 s two-person clip: 19 lost faces and 18 of 59 face-less frames found again, all
+  // real faces; frames where every face is found never run it.
+  if (cfg.secondDetector && !boxesOnly) {
+    std::vector<const float*> lost;
+    if (p_->seq.on && !noTrack)
+      for (const auto& sf : p_->seq.faces) {
+        if (sf.miss > 12) continue;
+        if (std::min(sf.box[2] - sf.box[0], sf.box[3] - sf.box[1]) < 48.f) continue;
+        bool found = false;
+        for (int idx : keep)
+          if (ffmotion::iou(boxes[(size_t)idx].data(), sf.box) >= 0.2f) { found = true; break; }
+        if (!found) lost.push_back(sf.box);
+      }
+    const bool none = keep.empty() && (harder || noTrack || !p_->seq.on);
+    if ((!lost.empty() || none) && p_->secondDetectorNet()) {
+      std::vector<std::array<float, 4>> sb; std::vector<float> ss; std::vector<std::array<float, 10>> sl;
+      if (p_->runScrfd(frame, cfg.detectorScore, sb, ss, sl)) {
+        for (size_t k = 0; k < sb.size(); ++k) {
+          bool dup = false;
+          for (int idx : keep)
+            if (ffmotion::iou(boxes[(size_t)idx].data(), sb[k].data()) >= 0.3f) { dup = true; break; }
+          if (dup) continue;
+          bool atLost = false;
+          for (const float* lb : lost)
+            if (ffmotion::iou(lb, sb[k].data()) >= 0.2f) { atLost = true; break; }
+          // With faces on screen only the lost ones come back; with none, any real-sized face.
+          if (!atLost && !(none && keep.empty())) continue;
+          if (!atLost && std::min(sb[k][2] - sb[k][0], sb[k][3] - sb[k][1]) < 32.f) continue;
+          boxes.push_back(sb[k]); scores.push_back(ss[k]); lms.push_back(sl[k]);
+          keep.push_back((int)boxes.size() - 1);
+          ++p_->secondDetectorHits;
+        }
+      }
+    }
+  }
   }  // end of the real-detection path
+  if (!noTrack && !boxesOnly) {
+    if (keep.empty()) ++p_->noFaceStreak; else p_->noFaceStreak = 0;
+  }
+
+  // LOST-FACE RECOVERY (video): a face seen a moment ago that the detector missed on this
+  // frame -- a head flip blurs and tilts it past the detector -- is looked for again where
+  // it was heading: its last box and points moved by its last motion. The landmarker
+  // below must then find a confident face there of about the same size, or it is dropped.
+  std::vector<char> recovered(boxes.size(), 0);
+  std::vector<float> recoverSpan(boxes.size(), 0.f);
+  if (!useTrack && cfg.lowScoreRecovery && p_->seq.on && !noTrack && !boxesOnly) {
+    // Each detection accounts for ONE face of the previous frame (the one it overlaps most),
+    // so two faces cheek to cheek, one of them missed, do not hide each other.
+    std::vector<char> claimed(p_->seq.faces.size(), 0);
+    for (int idx : keep) {
+      int best = -1; float bv = 0.2f;
+      for (size_t i = 0; i < p_->seq.faces.size(); ++i) {
+        if (claimed[i]) continue;
+        const float v = ffmotion::iou(boxes[(size_t)idx].data(), p_->seq.faces[i].box);
+        if (v >= bv) { bv = v; best = (int)i; }
+      }
+      if (best >= 0) claimed[(size_t)best] = 1;
+    }
+    for (size_t si = 0; si < p_->seq.faces.size(); ++si) {
+      const auto& sf = p_->seq.faces[si];
+      if (claimed[si] || !sf.haveLm || sf.miss > 4 || sf.recRun >= 12) continue;
+      // The head keeps drifting for a frame or two, then is assumed to stay where it was
+      // (a hand across the mouth hides a face that is not going anywhere).
+      const float steps = std::min(2.f, (float)(sf.miss + 1));
+      const float dx = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[0] * steps));
+      const float dy = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[1] * steps));
+      std::array<float, 4> bb = {sf.box[0] + dx, sf.box[1] + dy, sf.box[2] + dx, sf.box[3] + dy};
+      std::array<float, 10> l{};
+      for (int k = 0; k < 5; ++k) { l[2 * k] = sf.lm5[2 * k] + dx; l[2 * k + 1] = sf.lm5[2 * k + 1] + dy; }
+      boxes.push_back(bb);
+      scores.push_back(0.f);
+      lms.push_back(l);
+      recovered.push_back(1);
+      recoverSpan.push_back(sf.span);
+      keep.push_back((int)boxes.size() - 1);
+    }
+  }
 
   for (int idx : keep) {
     Face f{};
@@ -1066,6 +1589,50 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
     meanPeak /= 68.0;
     float score68 = (float)std::min(1.0, std::max(0.0, meanPeak / 0.9));  // numpy.interp
     f.lmScore = score68;
+    // NOT A FACE: the detector also fires on face-like patterns (a plaid shirt, a logo), and
+    // the swap then pastes a face there. The landmarker cannot find a face on those: on a
+    // test clip they scored 0.07-0.11, while real faces -- turned, blurred, looking down --
+    // never went below 0.36 (median 0.93). Under 0.2 the box is dropped.
+    if (cfg.rejectFalseFaces && score68 < 0.2f) continue;
+    // SECOND LANDMARKER on a face 2DFAN4 is unsure of: the more confident one is used
+    // (FaceFusion's "many" landmarker). The NOT-A-FACE test above stays on 2DFAN4's score.
+    if (cfg.turnedLandmarker && score68 < 0.85f) {
+      if (ffnn::Handle pe = p_->peppaNet()) {
+        float pxy[136], psc = 0.f;
+        const double tp = nowMs();
+        if (Impl::runPeppa(pe, fin, pxy, &psc) && psc > score68) {
+          if (angle != 0) {
+            float tmp[136]; ffcv::transformPoints(pxy, 68, ffcv::invertAffine(rot), tmp);
+            std::memcpy(pxy, tmp, sizeof(pxy));
+          }
+          ffcv::transformPoints(pxy, 68, ia, f.landmark68);
+          score68 = psc;
+          f.lmScore = psc;
+          ++p_->peppaUsed;
+        }
+        msLandmark += nowMs() - tp;
+      }
+    }
+    if ((size_t)idx < recovered.size() && recovered[(size_t)idx]) {
+      // A recovered face must be a confident face of about the size it had.
+      float l5[10];
+      ffcv::toLandmark5(f.landmark68, l5);
+      const float span = std::hypot(l5[2] - l5[0], l5[3] - l5[1]);
+      const float want = recoverSpan[(size_t)idx];
+      if (score68 < 0.6f || !(span > 0.6f * want && span < 1.6f * want)) continue;
+      // ...and not a face already found (the landmarker can lock on the neighbour).
+      const float cx = (l5[0] + l5[2] + l5[4] + l5[6] + l5[8]) / 5.f;
+      const float cy = (l5[1] + l5[3] + l5[5] + l5[7] + l5[9]) / 5.f;
+      bool dup = false;
+      for (const Face& g : faces) {
+        const float gx = (g.landmark5_68[0] + g.landmark5_68[2] + g.landmark5_68[4] + g.landmark5_68[6] + g.landmark5_68[8]) / 5.f;
+        const float gy = (g.landmark5_68[1] + g.landmark5_68[3] + g.landmark5_68[5] + g.landmark5_68[7] + g.landmark5_68[9]) / 5.f;
+        if (std::hypot(cx - gx, cy - gy) < 0.6f * span) { dup = true; break; }
+      }
+      if (dup) continue;
+      f.detScore = score68;
+      f.recovered = true;
+    }
     if (score68 > cfg.landmarkerScore)
       ffcv::toLandmark5(f.landmark68, f.landmark5_68);
     else
@@ -1135,7 +1702,8 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   // Pose fade and the temporal pass. A source image (noTrack) and a boxes-only question
   // never touch the sequence state.
   if (!boxesOnly) {
-    for (Face& f : faces) f.poseFade = ffmotion::poseFade(f.landmark5_68, cfg.poseFadeStart);
+    for (Face& f : faces)
+      f.poseFade = ffmotion::poseFade(f.landmark5_68, cfg.poseFadeStart + p_->sideBonus(f, cfg));
     if (p_->seq.on && !noTrack) p_->temporal(faces);
   }
 
@@ -1203,10 +1771,25 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   return faces;
 }
 
+void Pipeline::trimModels(bool keepLipSync, bool keepPortrait, bool keepEnhancer) {
+  if (!p_) return;
+  auto drop = [](ffnn::Handle& h) {
+    if (h) ffnn::release(h);
+    h = nullptr;
+  };
+  if (!keepLipSync) { drop(p_->n.lip); p_->n.lipIsEdtalk = false; }
+  if (!keepPortrait) {
+    drop(p_->n.lpFeat); drop(p_->n.lpMotion); drop(p_->n.lpGen);
+    p_->lpMlps = ffportrait::Mlps();
+    std::vector<float>().swap(p_->lpHg);   // the 29 MB hourglass buffer too
+  }
+  if (!keepEnhancer) drop(p_->n.enh);
+}
+
 void Pipeline::setSequence(bool on) {
   if (!p_) return;
   p_->seq.on = on;
-  p_->seq.reset();
+  p_->seq.resetPending = true;
 }
 
 bool Pipeline::hasOcclusionModel() const { return p_ && p_->n.occ != nullptr; }
@@ -1227,11 +1810,26 @@ void Pipeline::Impl::temporal(std::vector<Face>& faces) {
     SeqFace sf;
     if (best >= 0) { used[(size_t)best] = true; sf = seq.faces[(size_t)best]; }
     else sf.fade = f.poseFade;   // a new face starts at its own fade, not at 1
+    {
+      float cx = 0, cy = 0;
+      for (int k = 0; k < 5; ++k) { cx += f.landmark5_68[2 * k]; cy += f.landmark5_68[2 * k + 1]; }
+      cx /= 5.f; cy /= 5.f;
+      if (best >= 0 && sf.havePrev && sf.miss == 0) { f.vel[0] = cx - sf.prevC[0]; f.vel[1] = cy - sf.prevC[1]; }
+      else { f.vel[0] = f.vel[1] = 0.f; }
+      sf.prevC[0] = cx; sf.prevC[1] = cy; sf.havePrev = true;
+    }
     if (cfg.motionSmooth) sf.filt.apply(f.landmark5_68);
     else sf.filt.reset();
     // The fade follows a turning head over ~3 frames rather than flickering with landmark
     // noise near the threshold.
-    sf.fade += 0.35f * (f.poseFade - sf.fade);
+    // Slower going towards the original (0.2) than back to the swap (0.35): near the limit
+    // of a big turn or tilt the swap eases out instead of flicking on and off.
+    sf.fade += (f.poseFade < sf.fade ? 0.2f : 0.35f) * (f.poseFade - sf.fade);
+    sf.recRun = f.recovered ? sf.recRun + 1 : 0;
+    std::memcpy(sf.lm5, f.landmark5_68, sizeof(sf.lm5));
+    sf.span = std::hypot(f.landmark5_68[2] - f.landmark5_68[0], f.landmark5_68[3] - f.landmark5_68[1]);
+    sf.vel[0] = f.vel[0]; sf.vel[1] = f.vel[1];
+    sf.haveLm = sf.span > 2.f;
     f.poseFade = sf.fade;
     std::memcpy(sf.box, f.box, sizeof(sf.box));
     sf.miss = 0;
@@ -1242,7 +1840,7 @@ void Pipeline::Impl::temporal(std::vector<Face>& faces) {
   for (size_t i = 0; i < seq.faces.size(); ++i) {
     if (used[i]) continue;
     SeqFace sf = seq.faces[i];
-    if (++sf.miss <= 5) { sf.filt.reset(); next.push_back(sf); }
+    if (++sf.miss <= 12) { sf.filt.reset(); next.push_back(sf); }
   }
   seq.faces.swap(next);
 }
@@ -1279,6 +1877,8 @@ bool Pipeline::setSource(const ffcv::Image& img) {
   std::array<float, 512> slot{};
   std::memcpy(slot.data(), best->embeddingNorm, sizeof(float) * 512);
   p_->sourceSlots.push_back(slot);
+  p_->slotPhotos.assign(1, {slot});
+  p_->slotPhotoPose.assign(1, {Impl::poseOf(*best)});
   p_->activeSource = 0;
   p_->faceAssignments.clear();
   p_->tracked.clear(); p_->frameSources.clear(); p_->frameSourcesValid = false;
@@ -1312,6 +1912,10 @@ int Pipeline::addSource(const ffcv::Image& img) {
   std::array<float, 512> slot{};
   std::memcpy(slot.data(), best->embeddingNorm, sizeof(float) * 512);
   p_->sourceSlots.push_back(slot);
+  p_->slotPhotos.resize(p_->sourceSlots.size() - 1);
+  p_->slotPhotos.push_back({slot});
+  p_->slotPhotoPose.resize(p_->sourceSlots.size() - 1);
+  p_->slotPhotoPose.push_back({Impl::poseOf(*best)});
   if (!p_->haveSource) {
     std::memcpy(p_->srcEmbeddingNorm, slot.data(), sizeof(float) * 512);
     std::memcpy(p_->srcEmbedding, best->embedding, sizeof(p_->srcEmbedding));
@@ -1320,7 +1924,61 @@ int Pipeline::addSource(const ffcv::Image& img) {
   return (int)p_->sourceSlots.size() - 1;
 }
 
+int Pipeline::addSourcePhoto(int slotIndex, const ffcv::Image& img) {
+  err_.clear();
+  if (slotIndex < 0 || slotIndex >= (int)p_->sourceSlots.size()) {
+    err_ = "no such source slot"; return -3;
+  }
+  p_->slotPhotos.resize(p_->sourceSlots.size());
+  p_->slotPhotoPose.resize(p_->sourceSlots.size());
+  auto& photos = p_->slotPhotos[(size_t)slotIndex];
+  auto& poses = p_->slotPhotoPose[(size_t)slotIndex];
+  if (photos.empty()) photos.push_back(p_->sourceSlots[(size_t)slotIndex]);
+  poses.resize(photos.size(), std::array<float, 2>{NAN, NAN});
+  if ((int)photos.size() >= kMaxSourcePhotos) {
+    err_ = "this face already has the most photos"; return -4;
+  }
+  // Detected cold, like every source photo (see addSource): never from the tracker.
+  auto faces = analyse(img, /*boxesOnly=*/false, /*noTrack=*/true);
+  if (faces.empty()) { if (err_.empty()) err_ = "no face detected in this photo"; return -1; }
+  const Face* best = &faces[0]; float area = -1.f;
+  for (const auto& f : faces) {
+    const float a = (f.box[2] - f.box[0]) * (f.box[3] - f.box[1]);
+    if (a > area) { area = a; best = &f; }
+  }
+  // SAME PERSON: cosine of the normalised embeddings against the slot's FIRST photo.
+  // Photos of one person at different angles and light score well above this; different
+  // people score near zero. Averaging in a stranger would blend two identities.
+  constexpr float kSamePersonCos = 0.30f;
+  const auto& first = photos.front();
+  float cosv = 0.f;
+  for (int i = 0; i < 512; ++i) cosv += first[(size_t)i] * best->embeddingNorm[i];
+  if (!(cosv >= kSamePersonCos)) {
+    char msg[96];
+    snprintf(msg, sizeof(msg), "looks like a different person (match %.2f)", cosv);
+    err_ = msg;
+    return -2;
+  }
+  std::array<float, 512> e{};
+  std::memcpy(e.data(), best->embeddingNorm, sizeof(float) * 512);
+  photos.push_back(e);
+  poses.push_back(Impl::poseOf(*best));
+  // The slot's identity: the mean of its photos, re-normalised to unit length.
+  std::array<float, 512> mean{};
+  for (const auto& ph : photos)
+    for (int i = 0; i < 512; ++i) mean[(size_t)i] += ph[(size_t)i];
+  double n2 = 0;
+  for (float v : mean) n2 += (double)v * v;
+  const float inv = n2 > 0 ? (float)(1.0 / std::sqrt(n2)) : 0.f;
+  for (float& v : mean) v *= inv;
+  p_->sourceSlots[(size_t)slotIndex] = mean;
+  if (slotIndex == 0) std::memcpy(p_->srcEmbeddingNorm, mean.data(), sizeof(float) * 512);
+  return (int)photos.size();
+}
+
 void Pipeline::clearSourceSlots() {
+  p_->slotPhotos.clear();
+  p_->slotPhotoPose.clear();
   p_->sourceSlots.clear(); p_->faceAssignments.clear();
   p_->tracked.clear(); p_->frameSources.clear(); p_->frameSourcesValid = false;
   p_->selectedId = -1;
@@ -1349,18 +2007,131 @@ static constexpr float kSamePerson = 0.15f;
  * repeated taps on one person simply piled up.
  */
 void Pipeline::Impl::rememberAssignment(const float* embeddingNorm, int sourceIndex,
-                                       bool keepOriginal) {
-  faceAssignments.erase(
-      std::remove_if(faceAssignments.begin(), faceAssignments.end(),
-          [&](const FaceAssignment& a) {
-            return faceDistance(embeddingNorm, a.embedding.data()) < kSamePerson;
-          }),
-      faceAssignments.end());
+                                       bool keepOriginal, int person) {
+  const int src = keepOriginal ? kNoSource : sourceIndex;
+  ++assignVersion;
+  if (person < 0) {
+    // A TAP. If it lands on a person who is already known (several pictures, from a
+    // scan), the new choice applies to ALL of that person's pictures -- replacing only
+    // the nearest one would leave the person half on the old picture.
+    int known = -1;
+    for (const auto& a : faceAssignments)
+      if (faceDistance(embeddingNorm, a.embedding.data()) < kSamePerson) { known = a.person; break; }
+    if (known >= 0) {
+      bool grouped = false;
+      for (const auto& a : faceAssignments) if (a.person == known &&
+          faceDistance(embeddingNorm, a.embedding.data()) >= kSamePerson) { grouped = true; break; }
+      if (grouped) {
+        for (auto& a : faceAssignments)
+          if (a.person == known) { a.source = src; a.keepOriginal = keepOriginal; }
+        person = known;
+      }
+    }
+    if (person < 0) {
+      faceAssignments.erase(
+          std::remove_if(faceAssignments.begin(), faceAssignments.end(),
+              [&](const FaceAssignment& a) {
+                return faceDistance(embeddingNorm, a.embedding.data()) < kSamePerson;
+              }),
+          faceAssignments.end());
+      person = 1000000 + nextPersonId++;
+    }
+  } else {
+    // A RESTORED person picture: one person, one choice -- every picture of them agrees.
+    for (auto& a : faceAssignments)
+      if (a.person == person) { a.source = src; a.keepOriginal = keepOriginal; }
+  }
   FaceAssignment a{};
   std::memcpy(a.embedding.data(), embeddingNorm, sizeof(float) * 512);
-  a.source = keepOriginal ? kNoSource : sourceIndex;
+  a.source = src;
   a.keepOriginal = keepOriginal;
+  a.person = person;
   faceAssignments.push_back(a);
+  // Cap the memory: a person needs a handful of pictures, and a long film may list a
+  // hundred people (6 pictures each). 2 KB per picture.
+  if (faceAssignments.size() > 1024) faceAssignments.erase(faceAssignments.begin());
+}
+
+/**
+ * WHO IS WHO on this frame, decided once for all faces together and cached, so the
+ * swapper, the enhancer, the expression restorer and the face editor all get the same
+ * answer.
+ *
+ *  - Each face is scored against every assigned person (nearest of their pictures).
+ *  - Pairs are taken best first, and a PERSON goes to ONE face only: two people can no
+ *    longer both get the same person's picture because one of them looks a bit alike.
+ *  - A clear match (distance < refDistance) decides and is held for 60 frames; a weaker
+ *    match (< 0.42) is enough for the person the face already was (eyes shut, head
+ *    turned); a held face with no match at all stays that person for the hold.
+ *  - A face nobody claims keeps its own face (assignUnknownKeep) or the frozen default.
+ */
+void Pipeline::Impl::resolveAssignments(const std::vector<Face>& faces, float refDistance) {
+  const size_t n = faces.size();
+  frameAssign.assign(n, assignUnknownKeep ? kNoSource : assignDefaultSource);
+  // The people, and each one's nearest picture per face.
+  std::vector<int> people;
+  for (const auto& a : faceAssignments) {
+    if (!a.keepOriginal && (a.source < 0 || a.source >= (int)sourceSlots.size())) continue;
+    if (std::find(people.begin(), people.end(), a.person) == people.end()) people.push_back(a.person);
+  }
+  // With nothing to swap assigned, "unknown keeps its face" would leave the whole video
+  // untouched -- in that case unknown faces take the default source as before.
+  bool anySwap = false;
+  for (const auto& a : faceAssignments)
+    if (!a.keepOriginal && a.source >= 0 && a.source < (int)sourceSlots.size()) anySwap = true;
+  if (!anySwap) frameAssign.assign(n, assignDefaultSource);
+  if (n == 0 || people.empty()) return;
+  const size_t P = people.size();
+  std::vector<float> d(n * P, 9.f);
+  std::vector<int> srcOf(P, kNoSource);
+  for (size_t pi = 0; pi < P; ++pi)
+    for (const auto& a : faceAssignments) {
+      if (a.person != people[pi]) continue;
+      if (!a.keepOriginal && (a.source < 0 || a.source >= (int)sourceSlots.size())) continue;
+      srcOf[pi] = a.keepOriginal ? kNoSource : a.source;
+      for (size_t i = 0; i < n; ++i) {
+        const float v = faceDistance(faces[i].embeddingNorm, a.embedding.data());
+        if (v < d[i * P + pi]) d[i * P + pi] = v;
+      }
+    }
+  std::vector<SeqFace*> sq(n, nullptr);
+  for (size_t i = 0; i < n; ++i) sq[i] = seqFaceAny(faces[i], i);
+  constexpr float kWeak = 0.42f;
+  struct Cand { float key; size_t i; size_t pi; };
+  std::vector<Cand> cands;
+  for (size_t i = 0; i < n; ++i)
+    for (size_t pi = 0; pi < P; ++pi) {
+      const float v = d[i * P + pi];
+      const bool held = sq[i] && sq[i]->assignHold > 0 && sq[i]->assignPerson == people[pi];
+      if (v < refDistance) cands.push_back({held ? v - 0.05f : v, i, pi});
+      else if (held && v < kWeak) cands.push_back({v, i, pi});
+    }
+  std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.key < b.key; });
+  std::vector<int> faceP(n, -1);
+  std::vector<char> personUsed(P, 0);
+  for (const auto& c : cands) {
+    if (faceP[c.i] >= 0 || personUsed[c.pi]) continue;
+    faceP[c.i] = (int)c.pi; personUsed[c.pi] = 1;
+  }
+  // Held faces nobody else claimed stay who they were, for the rest of the hold.
+  for (size_t i = 0; i < n; ++i) {
+    if (faceP[i] >= 0 || !sq[i] || sq[i]->assignHold <= 0) continue;
+    for (size_t pi = 0; pi < P; ++pi)
+      if (!personUsed[pi] && people[pi] == sq[i]->assignPerson) {
+        faceP[i] = (int)pi; personUsed[pi] = 1; break;
+      }
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (faceP[i] >= 0) frameAssign[i] = srcOf[(size_t)faceP[i]];
+    if (!sq[i]) continue;
+    if (faceP[i] >= 0) {
+      const size_t pi = (size_t)faceP[i];
+      if (d[i * P + pi] < refDistance) { sq[i]->assignPerson = people[pi]; sq[i]->assignHold = 60; }
+      else sq[i]->assignHold = std::max(0, sq[i]->assignHold - 1);
+    } else {
+      sq[i]->assignHold = 0; sq[i]->assignPerson = -1;
+    }
+  }
 }
 
 /**
@@ -1383,22 +2154,26 @@ void Pipeline::Impl::rememberAssignment(const float* embeddingNorm, int sourceIn
  * Unassigned faces take the FROZEN default slot in both, so the source row behaves as a
  * brush on both screens: changing it changes nothing until a person is tapped.
  */
-int Pipeline::Impl::sourceForFace(const Face& f, size_t fi, size_t faceCount,
-                                  float refDistance) const {
+int Pipeline::Impl::sourceForFace(const std::vector<Face>& faces, size_t fi,
+                                  float refDistance) {
   if (!assignEnabled) return activeSource;
-  if (frameSourcesValid && frameSources.size() == faceCount) return frameSources[fi];
-  const FaceAssignment* best = nullptr;
-  float bestD = refDistance;
-  for (const auto& a : faceAssignments) {
-    // A slot the user has since deleted. keepOriginal entries index nothing and so
-    // survive it -- the person was excluded, which is still true with fewer sources.
-    if (!a.keepOriginal &&
-        (a.source < 0 || a.source >= (int)sourceSlots.size())) continue;
-    const float d = faceDistance(f.embeddingNorm, a.embedding.data());
-    if (d < bestD) { bestD = d; best = &a; }
+  if (frameSourcesValid && frameSources.size() == faces.size()) return frameSources[fi];
+  if (fi >= faces.size()) return assignDefaultSource;
+  // SWAP screen: by identity, decided for the whole frame at once (resolveAssignments)
+  // and cached under this frame's boxes, so every pass asks once and agrees.
+  // (A slot the user has since deleted is skipped there; keepOriginal entries index
+  // nothing and so survive it.)
+  std::vector<float> key;
+  key.reserve(faces.size() * 4 + 3);
+  key.push_back((float)assignVersion);
+  key.push_back((float)sourceSlots.size());
+  key.push_back((float)faces.size());
+  for (const auto& f : faces) key.insert(key.end(), f.box, f.box + 4);
+  if (key != frameAssignKey || frameAssign.size() != faces.size()) {
+    resolveAssignments(faces, refDistance);
+    frameAssignKey.swap(key);
   }
-  if (!best) return assignDefaultSource;
-  return best->keepOriginal ? kNoSource : best->source;
+  return frameAssign[fi];
 }
 
 /** Apply a brush to the SELECTED live person, if there is one. Shared by both brushes. */
@@ -1468,7 +2243,39 @@ bool Pipeline::restoreFaceAssignment(const float* embedding, int sourceIndex,
   return true;
 }
 
+bool Pipeline::restorePersonAssignment(const float* embedding, int sourceIndex,
+                                       bool keepOriginal, int person) {
+  err_.clear();
+  if (!p_ || !embedding) { err_ = "no pipeline"; return false; }
+  if (person < 0 || person >= 1000000) { err_ = "person id out of range"; return false; }
+  if (keepOriginal) sourceIndex = kNoSource;
+  else if (sourceIndex < 0 || sourceIndex >= (int)p_->sourceSlots.size()) {
+    err_ = "source index out of range"; return false;
+  }
+  float norm[512];
+  double s2 = 0;
+  for (int i = 0; i < 512; ++i) s2 += (double)embedding[i] * embedding[i];
+  const float inv = s2 > 0 ? (float)(1.0 / std::sqrt(s2)) : 0.f;
+  for (int i = 0; i < 512; ++i) norm[i] = embedding[i] * inv;
+  p_->rememberAssignment(norm, sourceIndex, keepOriginal, person);
+  return true;
+}
+
+int Pipeline::secondDetectorHits() const { return p_ ? p_->secondDetectorHits : 0; }
+int Pipeline::turnedLandmarkerUsed() const { return p_ ? p_->peppaUsed : 0; }
+
+int Pipeline::sourceFor(const std::vector<Face>& faces, size_t fi) {
+  return p_ ? p_->sourceForFace(faces, fi, p_->cfg.referenceDistance) : -1;
+}
+
+void Pipeline::setAssignUnknownKeep(bool keep) {
+  if (!p_) return;
+  p_->assignUnknownKeep = keep;
+  ++p_->assignVersion;
+}
+
 void Pipeline::clearFaceSourceAssignments() {
+  ++p_->assignVersion;
   p_->faceAssignments.clear();
   // The people being tracked are only "who has which source" because of the
   // assignments; clearing the memory clears the presence table too, and the selection
@@ -1479,6 +2286,7 @@ void Pipeline::clearFaceSourceAssignments() {
 
 void Pipeline::setFaceAssignEnabled(bool enabled) {
   p_->assignEnabled = enabled;
+  ++p_->assignVersion;
   // ⚠ The per-frame table belongs to the mode that built it. Leaving it standing across a
   // toggle would let a Swap run inherit a table the Live pump filled -- the same-length
   // coincidence that made the length test an unreliable way to tell the two modes apart.
@@ -1926,6 +2734,18 @@ bool Pipeline::hasLipReferenceFace() const {
   return !p_->lipRefs.empty();
 }
 
+std::string Pipeline::swapReport(bool reset) {
+  char buf[320];
+  if (framesWithFaces == 0) buf[0] = 0;
+  else snprintf(buf, sizeof(buf),
+                "faces found but not swapped in some frames: face selection %d, turned too far "
+                "%d, kept as filmed (assign) %d, largest face only %d (of %d frames with faces)",
+                skipRefFrames, skipFadeFrames, skipKeepFrames, skipLargestFrames, framesWithFaces);
+  std::string out = (skipRefFrames + skipFadeFrames + skipKeepFrames + skipLargestFrames) ? buf : "";
+  if (reset) skipRefFrames = skipFadeFrames = skipKeepFrames = skipLargestFrames = framesWithFaces = 0;
+  return out;
+}
+
 void Pipeline::resetStats() {
   msDetect = msLandmark = msRecognise = msSwap = msGeom = msEnhance = msLipSync = 0;
   msEdit = msEditCpu = 0;
@@ -2003,16 +2823,14 @@ bool Pipeline::syncLip(ffcv::Image& frame, const std::vector<Face>& faces,
   for (size_t fi = 0; fi < faces.size(); ++fi) {
     const Face& f = faces[fi];
     if (only && &f != only) continue;
-    if (byReference &&
-        faceDistance(f.embeddingNorm, p_->refEmbeddingNorm) >= cfg.referenceDistance)
-      continue;
+    if (byReference && !p_->refAllows(f, fi, cfg.referenceDistance)) continue;
     if (byLipReference) {
       if (lipBest[fi] < 0) continue;
     } else {
       // Same answer as swapAll for this face: Keep face (kNoSource) is honoured
       // here, otherwise an excluded person would be synced but not swapped.
       // With assign mode off this returns the active slot and changes nothing.
-      const int six = p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance);
+      const int six = p_->sourceForFace(faces, fi, cfg.referenceDistance);
       if (six == kNoSource) continue;
     }
     double t0 = nowMs();
@@ -2136,6 +2954,7 @@ namespace {
 // skin, brows, eyes, glasses, nose, mouth, upper lip, lower lip.
 constexpr int kRegionLabels[] = {1, 2, 3, 4, 5, 6, 10, 11, 12, 13};
 constexpr int kMouthLabel = 11;   // the mouth INTERIOR: teeth, tongue, whatever is in it
+constexpr int kUpperLip = 12, kLowerLip = 13;
 
 void finishModelMask(ffcv::MatF& mm, int CS, ffcv::MatF& m) {
   ffcv::MatF r = ffmotion::resizeMask(mm, CS, CS);
@@ -2153,28 +2972,137 @@ bool allFinite(const std::vector<float>& v) {
   for (float x : v) if (!std::isfinite(x)) return false;
   return !v.empty();
 }
+
+// What maskNet last found out, per model (0 = occlusion, 1 = face parser).
+std::mutex g_maskMu;
+std::string g_maskState[2] = {"not used yet", "not used yet"};
+void setMaskState(int i, const std::string& s) {
+  std::lock_guard<std::mutex> lk(g_maskMu);
+  g_maskState[i] = s;
+}
+
+// A smooth synthetic face-sized probe: a bright ellipse on a gradient. Constant input is a
+// poor probe -- it drives a U-Net's activations toward a corner where a wrong GPU and a
+// right CPU can agree.
+std::vector<float> maskProbe(int size, bool imagenet) {
+  std::vector<float> v((size_t)3 * size * size);
+  for (int c = 0; c < 3; ++c)
+    for (int y = 0; y < size; ++y)
+      for (int x = 0; x < size; ++x) {
+        const float dx = (x - size * 0.5f) / (size * 0.3f), dy = (y - size * 0.55f) / (size * 0.4f);
+        float p = 0.25f + 0.3f * x / size + (dx * dx + dy * dy < 1.f ? 0.4f : 0.f) + 0.05f * c;
+        if (imagenet) p = (p - 0.45f) / 0.226f;
+        v[(size_t)c * size * size + (size_t)y * size + x] = p;
+      }
+  return v;
+}
+
+// Do the GPU and the CPU compute the same mask? xseg: mean absolute difference of the
+// sigmoid output; bisenet: per-pixel label agreement over 19 logit planes.
+bool masksAgree(const std::vector<float>& a, const std::vector<float>& b, int size, bool labels,
+                std::string* why) {
+  if (a.size() != b.size() || a.empty()) { *why = "output sizes differ"; return false; }
+  char buf[96];
+  if (!labels) {
+    double d = 0;
+    for (size_t i = 0; i < a.size(); ++i) d += std::fabs(a[i] - b[i]);
+    d /= (double)a.size();
+    snprintf(buf, sizeof(buf), "GPU differs from CPU by %.3f", d);
+    *why = buf;
+    return d < 0.03;
+  }
+  const size_t plane = (size_t)size * size;
+  const int L = (int)(a.size() / plane);
+  size_t same = 0;
+  for (size_t i = 0; i < plane; ++i) {
+    int ba = 0, bb = 0;
+    for (int l = 1; l < L; ++l) {
+      if (a[(size_t)l * plane + i] > a[(size_t)ba * plane + i]) ba = l;
+      if (b[(size_t)l * plane + i] > b[(size_t)bb * plane + i]) bb = l;
+    }
+    same += ba == bb;
+  }
+  const double agree = (double)same / (double)plane;
+  snprintf(buf, sizeof(buf), "GPU agrees with CPU on %.1f%% of pixels", agree * 100.0);
+  *why = buf;
+  return agree > 0.98;
+}
 }  // namespace
+
+std::string Pipeline::maskStatus() {
+  std::lock_guard<std::mutex> lk(g_maskMu);
+  return "Occlusion model: " + g_maskState[0] + "\nFace parser: " + g_maskState[1];
+}
 
 ffnn::Handle Pipeline::Impl::maskNet(const char* name, int size, ffnn::Handle& h,
                                      bool& tried) {
   if (tried) return h;
   tried = true;
-  std::vector<float> probe((size_t)3 * size * size, 0.5f);
-  for (ffnn::Placement place : {ffnn::Placement::Default, ffnn::Placement::Cpu}) {
-    h = ffnn::openAux(name, place);
-    if (!h) return nullptr;   // not installed: the same answer on every unit
-    std::vector<std::vector<float>> out;
-    if (ffnn::execute(h, {"input"}, {probe.data()}, out) && !out.empty() &&
-        allFinite(out[0]))
-      return h;
-    ffnn::release(h);
-    h = nullptr;
+  const bool parser = std::strncmp(name, "bisenet", 7) == 0;   // bisenet or bisenet34
+  const int slot = parser ? 1 : 0;
+  const std::vector<float> probe = maskProbe(size, parser);
+  auto run = [&](ffnn::Handle x, std::vector<float>& out) {
+    std::vector<std::vector<float>> o;
+    if (!ffnn::execute(x, {"input"}, {probe.data()}, o) || o.empty() || !allFinite(o[0]))
+      return false;
+    out.swap(o[0]);
+    return true;
+  };
+
+  // The CPU is the reference. A mask model that is wrong but finite is the failure that
+  // matters here -- it silently turns the mask into "all face" -- so the GPU is only used
+  // when it computes the same mask as the CPU does on this device.
+  ffnn::Handle cpu = ffnn::openAux(name, ffnn::Placement::Cpu);
+  if (!cpu) {
+    setMaskState(slot, std::string("not loaded: ") + ffnn::auxLastError());
+    return nullptr;
   }
-  return nullptr;
+  std::vector<float> ref;
+  if (!run(cpu, ref)) {
+    ffnn::release(cpu);
+    setMaskState(slot, "loaded but does not run on the CPU");
+    return nullptr;
+  }
+  // The NPU first: lowest power and memory, and it frees the GPU. Used only when it
+  // computes the same mask as the CPU on this device, like the GPU below.
+  std::string npuWhy;
+  if (ffnn::Handle npu = ffnn::openAuxNpu(name)) {
+    std::vector<float> got;
+    npuWhy = "NPU returned no usable output";
+    if (run(npu, got) && masksAgree(got, ref, size, parser, &npuWhy)) {
+      ffnn::release(cpu);
+      h = npu;
+      std::string note = npuWhy;
+      const size_t at = note.find("GPU");
+      if (at != std::string::npos) note.replace(at, 3, "NPU");
+      setMaskState(slot, "running on the NPU (" + note + ")");
+      return h;
+    }
+    ffnn::release(npu);
+  }
+  ffnn::Handle gpu = ffnn::openAux(name, ffnn::Placement::Default);
+  if (gpu && ffnn::onGpu(gpu)) {
+    std::vector<float> got;
+    std::string why = "GPU returned no usable output";
+    if (run(gpu, got) && masksAgree(got, ref, size, parser, &why)) {
+      ffnn::release(cpu);
+      h = gpu;
+      setMaskState(slot, "running on the GPU (" + why + ")");
+      return h;
+    }
+    ffnn::release(gpu);
+    h = cpu;
+    setMaskState(slot, "running on the CPU, slower (GPU rejected: " + why + ")");
+    return h;
+  }
+  if (gpu) ffnn::release(gpu);
+  h = cpu;
+  setMaskState(slot, "running on the CPU, slower (no usable GPU)");
+  return h;
 }
 
 bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
-                                     std::string& err) {
+                                     std::string& err, bool skipParser) {
   const int CS = crop.w;
   if (cfg.occlusionMask && maskNet("xseg", 256, n.occ, n.occTried)) {
     constexpr int XS = 256;
@@ -2196,7 +3124,16 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
     std::memcpy(om.data.data(), out[0].data(), sizeof(float) * XS * XS);
     finishModelMask(om, CS, m);
   }
-  if ((cfg.regionMask || cfg.keepMouth) && maskNet("bisenet", 512, n.parse, n.parseTried)) {
+  if (!skipParser && (cfg.regionMask || cfg.keepMouth || cfg.keepLips) &&
+      [&] {
+        // The parser the settings ask for; switching it drops the loaded one.
+        if (n.parseTried && n.parseLarge != cfg.largeParser) {
+          if (n.parse) ffnn::release(n.parse);
+          n.parse = nullptr; n.parseTried = false;
+        }
+        n.parseLarge = cfg.largeParser;
+        return maskNet(cfg.largeParser ? "bisenet34" : "bisenet", 512, n.parse, n.parseTried) != nullptr;
+      }()) {
     constexpr int PS = 512;
     const ffcv::Image s = ffcv::resizeLinear(crop, PS, PS);
     static const float mean[3] = {0.485f, 0.456f, 0.406f}, stdv[3] = {0.229f, 0.224f, 0.225f};
@@ -2215,12 +3152,21 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
       err = std::string("face parser: ") + ffnn::auxLastError();
       return false;
     }
+    // Labels left ORIGINAL by the mouth switches.
+    bool original[L] = {};
+    if (cfg.keepMouth) original[kMouthLabel] = true;
+    // Hair (17) and hat (18) are never swapped: a strand across the face stays the
+    // original strand, not a half-swapped smear.
+    if (cfg.hairAware) { original[17] = true; original[18] = true; }
+    if (cfg.keepLips) { original[kUpperLip] = true; original[kLowerLip] = true; }
+    // With the region mask on only the face regions are swapped; without it everything the
+    // box mask covers is, except what the mouth switches keep original.
     bool keepLabel[L] = {};
-    for (int lab : kRegionLabels) keepLabel[lab] = true;
-    if (cfg.keepMouth) keepLabel[kMouthLabel] = false;
-    // keepMouth alone (region mask off) removes ONLY the mouth interior.
-    if (!cfg.regionMask)
-      for (int lab = 0; lab < L; ++lab) keepLabel[lab] = lab != kMouthLabel;
+    if (cfg.regionMask)
+      for (int lab : kRegionLabels) keepLabel[lab] = true;
+    else
+      for (int lab = 0; lab < L; ++lab) keepLabel[lab] = true;
+    for (int lab = 0; lab < L; ++lab) if (original[lab]) keepLabel[lab] = false;
     const float* lg = out[0].data();
     const size_t plane = (size_t)PS * PS;
     ffcv::MatF rm(PS, PS, 1);
@@ -2235,33 +3181,41 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
     }
     finishModelMask(rm, CS, m);
   }
+  // Snap the soft edge to the picture's own edges (hair, jaw, fingers), only shrinking.
+  if (cfg.hairAware && (cfg.occlusionMask || cfg.regionMask || cfg.keepMouth || cfg.keepLips))
+    ffmotion::refineMaskEdges(crop, m, std::max(2, CS / 128), 1e-3f);
   return true;
 }
 
 bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
   p_->maskCache.clear();
+  p_->havePreSwap = false;   // set again below only when THIS frame is swapped
+  if (!p_->cfg.occlusionMask && !p_->n.occTried) setMaskState(0, "switched off");
+  if (!p_->cfg.regionMask && !p_->cfg.keepMouth && !p_->cfg.keepLips && !p_->n.parseTried)
+    setMaskState(1, "switched off");
   if (!p_->cfg.swapEnabled) return true;
   if (!p_->haveSource) { err_ = "setSource not called"; return false; }
   // ⚠ NO CHECK, NO SWAP. See Impl::gateCleared. The message never quotes the score.
-  // NSFW gate DORMANT: clearance check disabled.
-  if (false && !p_->gateCleared) {
+  if (!p_->gateCleared) {
     err_ = "content check has not run for this pipeline";
     return false;
   }
   const Config& cfg = p_->cfg;
   const int SS = cfg.swapSize;                       // what the GRAPH takes: always 256
-  const int PB = cfg.pixelBoost < 1 ? 1 : cfg.pixelBoost;
-  const int CS = SS * PB;                            // what the FACE is warped at
+  const int PB0 = cfg.pixelBoost < 1 ? 1 : cfg.pixelBoost;
+  const int CS0 = SS * PB0;                          // what the FACE is warped at
+  p_->havePreSwap = cfg.expressionRestore && hasFaceEditor() && !faces.empty();
+  if (p_->havePreSwap) p_->preSwap = frame;
 
-  float tmpl[10];
+  float tmpl0[10];
   const float* T = ffcv::warpTemplate(1);            // arcface_128, both swappers
-  for (int i = 0; i < 10; ++i) tmpl[i] = T[i] * CS;
+  for (int i = 0; i < 10; ++i) tmpl0[i] = T[i] * CS0;
 
   // The mask is built at the crop size, not the model size: with pixel boost the crop is
   // larger than the graph and paste_back works on the crop. Cached, because CS, maskBlur
   // and maskPadding are identical on every frame of a run and this is a 79-tap blur.
   double tm = nowMs();
-  const ffcv::MatF& mask = p_->swapBoxMask.get(CS, cfg.maskBlur, cfg.maskPadding);
+  const ffcv::MatF& mask0 = p_->swapBoxMask.get(CS0, cfg.maskBlur, cfg.maskPadding);
   msGeom += nowMs() - tm;
   msGeomMask += nowMs() - tm;
 
@@ -2282,19 +3236,60 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     }
   }
 
+  bool skipRef = false, skipFade = false, skipKeep = false, skipLargest = false;
+  struct SkipCount {
+    Pipeline* p; const bool& r; const bool& f; const bool& k; const bool& l; bool any;
+    ~SkipCount() {
+      if (!any) return;
+      ++p->framesWithFaces;
+      if (r) ++p->skipRefFrames;
+      if (f) ++p->skipFadeFrames;
+      if (k) ++p->skipKeepFrames;
+      if (l) ++p->skipLargestFrames;
+    }
+  } skipCount{this, skipRef, skipFade, skipKeep, skipLargest, !faces.empty()};
   for (size_t fi = 0; fi < faces.size(); ++fi) {
     const Face& f = faces[fi];
-    if (only && &f != only) continue;
+    if (only && &f != only) { skipLargest = true; continue; }
     // face_selector.py:find_match_faces -- ALL faces near the reference, not the nearest
     // one. Upstream returns a list, and a clip where the same person is detected twice
     // (a reflection, a poster) should swap both rather than pick between them.
-    if (byReference &&
-        faceDistance(f.embeddingNorm, p_->refEmbeddingNorm) >= cfg.referenceDistance)
-      continue;
+    // STICKY in a video: a face the sequence has been following, recognised as the chosen
+    // person within the last 45 frames, stays chosen while the match is merely weak (eyes
+    // shut, looking down, turned) -- a different person scores far lower than 0.42.
+    if (byReference) {
+      const float d = faceDistance(f.embeddingNorm, p_->refEmbeddingNorm);
+      Impl::SeqFace* sq = p_->seqFaceAny(f, fi);
+      bool pass = d < cfg.referenceDistance;
+      if (!pass && sq && sq->refHold > 0 && d < 0.42f) pass = true;
+      if (sq) {
+        sq->refPass = pass;
+        sq->refHold = d < cfg.referenceDistance ? 45 : (sq->refHold > 0 ? sq->refHold - 1 : 0);
+      }
+      if (!pass) { skipRef = true; continue; }
+    }
 
     // POSE FADE: a head turned far enough that the swapper would stretch it keeps its own
     // face. Checked before any pixel work, so a profile costs nothing.
-    if (f.poseFade < 0.02f) continue;
+    if (f.poseFade < 0.02f) { skipFade = true; continue; }
+
+    // AUTO PIXEL BOOST, per face: the frame->crop scale of the alignment at the normal
+    // size says how much the swapped face would be STRETCHED when pasted back. A face
+    // shown more than 1.25x larger than its crop is a close-up: swap it at 4 x 4 tiles
+    // (1024 px) instead. Other faces keep the chosen pixel boost.
+    int PB = PB0, CS = CS0;
+    float tmpl[10];
+    std::memcpy(tmpl, tmpl0, sizeof(tmpl));
+    if (cfg.autoBoost && PB0 < 4) {
+      const ffcv::Affine a0 = ffcv::umeyama(f.landmark5_68, tmpl0, 5);
+      const double sc = std::sqrt(std::fabs(a0(0, 0) * a0(1, 1) - a0(0, 1) * a0(1, 0)));
+      if (sc > 0 && sc < 0.8) {
+        PB = 4; CS = SS * PB;
+        for (int i = 0; i < 10; ++i) tmpl[i] = T[i] * CS;
+      }
+    }
+    const ffcv::MatF& mask = (CS == CS0)
+        ? mask0 : p_->swapBoxMaskBig.get(CS, cfg.maskBlur, cfg.maskPadding);
 
     double t0 = nowMs();
     ffcv::Affine am = ffcv::umeyama(f.landmark5_68, tmpl, 5);
@@ -2310,14 +3305,74 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // it.
     // PER-PERSON ASSIGNMENT, on either screen. With the mode off this returns the
     // active slot and the rest of this loop is byte-for-byte what it always was.
-    const int six = p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance);
+    const int six = p_->sourceForFace(faces, fi, cfg.referenceDistance);
     // ⚠ The ONE assignment that is an instruction NOT to swap. It has to be honoured
     // here, before any pixel is read, rather than by pointing the face at some harmless
     // slot: "keep this person's own face" is not a swap with a different source.
-    if (six == kNoSource) continue;
+    if (six == kNoSource) { skipKeep = true; continue; }
+
+    // The MASK MODELS run on THIS thread, before the paste. Build 7 ran them on a
+    // std::async thread per face to overlap the swapper; on device that path crashed
+    // inside swapAll (SEGV_MAPERR, and an abort), so it is gone. Sequential is what builds
+    // 4-6 shipped. The fp16 GPU arithmetic, which is where most of the speed came from,
+    // stays.
+    const bool modelMasks = p_->wantsMaskModels();
+    ffcv::MatF faceMask;
+    // SMART SPEED: the same face, looking the same as when its mask was last computed --
+    // reuse that mask instead of running the two mask models again. Anything entering or
+    // moving in front of the face changes the thumbnail and forces a fresh mask; so does
+    // age, every 10 frames.
+    Impl::SeqFace* sface = modelMasks ? p_->seqFaceFor(f, fi) : nullptr;
+    std::vector<uint8_t> thumb;
+    bool reuseMask = false;
+    // SMART SPEED, mouth: with "Keep original mouth inside" the parser only matters while
+    // the mouth is open. It runs while the inner lips are apart and for 6 frames after, so
+    // a mouth that is just opening is never missed; a closed mouth skips it.
+    bool skipParser = false;
+    if (sface && p_->parserOnlyForMouth()) {
+      if (ffmotion::mouthOpenness(f.landmark68) > 0.05f) sface->mouthHold = 6;
+      else if (sface->mouthHold > 0) --sface->mouthHold;
+      skipParser = sface->mouthHold == 0;
+    }
+    if (sface) {
+      thumb = ffmotion::thumbGray(crop, 32);
+      reuseMask = sface->mask && sface->maskCS == CS && sface->maskAge < 10 &&
+                  (sface->maskParsed || skipParser) &&
+                  ffmotion::thumbSame(thumb, sface->maskThumb);
+    }
+    const bool runModels = modelMasks && !reuseMask;
+    // PARALLEL: the mask models read only the original crop, so with parallelMasks they run
+    // on the helper thread while this thread runs the swapper. Joined before the paste; the
+    // guard joins on any early return too, before the locals it reads go away.
+    std::string maskErr;
+    bool maskOk = true;
+    struct Join {
+      Impl::MaskWorker* w = nullptr;
+      ~Join() { if (w) w->wait(); }
+    } join;
+    const bool parallel = runModels && cfg.parallelMasks;
+    if (parallel) {
+      faceMask = mask;
+      Impl* impl = p_.get();
+      join.w = &p_->maskWorker;
+      p_->maskWorker.post([impl, &crop, &faceMask, &maskErr, &maskOk, skipParser] {
+        try {
+          maskOk = impl->applyMaskModels(crop, faceMask, maskErr, skipParser);
+        } catch (const std::exception& e) {
+          maskOk = false;
+          maskErr = std::string("mask: ") + e.what();
+        } catch (...) {
+          maskOk = false;
+          maskErr = "mask: native error";
+        }
+      });
+    }
     const float* srcEmbNorm = p_->srcEmbeddingNorm;
+    std::array<float, 512> poseMatched;
     if (!p_->sourceSlots.empty() && six >= 0 && six < (int)p_->sourceSlots.size())
-      srcEmbNorm = p_->sourceSlots[(size_t)six].data();
+      srcEmbNorm = (six < (int)p_->slotPhotos.size())
+                       ? p_->identityFor(six, f, poseMatched)
+                       : p_->sourceSlots[(size_t)six].data();
 
     // balance_source_embedding (face_swapper/core.py:715). Identity-space, so it is
     // computed once per face and shared by every pixel-boost sub-image.
@@ -2384,19 +3439,101 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // crop (taken before the swap overwrote nothing -- `crop` is the original pixels), then
     // scaled by the pose fade.
     const ffcv::MatF* useMask = &mask;
-    ffcv::MatF faceMask;
-    if (p_->wantsMaskModels() || f.poseFade < 0.999f) {
+    // TOUCHING FACES: the other faces whose box overlaps this one (grown by a quarter).
+    std::vector<const Face*> touching;
+    if (cfg.overlapGuard) {
+      const float w = f.box[2] - f.box[0], h = f.box[3] - f.box[1];
+      const float gx0 = f.box[0] - 0.25f * w, gy0 = f.box[1] - 0.25f * h;
+      const float gx1 = f.box[2] + 0.25f * w, gy1 = f.box[3] + 0.25f * h;
+      for (const Face& g : faces)
+        if (&g != &f && g.box[0] < gx1 && g.box[2] > gx0 && g.box[1] < gy1 && g.box[3] > gy0)
+          touching.push_back(&g);
+    }
+    // CLOSED EYES: how much of each eye stays as filmed (0 open .. 1 shut).
+    float eyeKeepL = 0.f, eyeKeepR = 0.f;
+    if (cfg.keepClosedEyes) {
+      float oL = 1.f, oR = 1.f;
+      ffmotion::eyeOpenness2(f.landmark68, &oL, &oR);
+      auto keepOf = [](float o) { return std::max(0.f, std::min(1.f, (0.20f - o) / 0.07f)); };
+      eyeKeepL = keepOf(oL); eyeKeepR = keepOf(oR);
+    }
+    const bool keepEyes = eyeKeepL > 0.f || eyeKeepR > 0.f;
+    if (modelMasks || f.poseFade < 0.999f || !touching.empty() || keepEyes) {
       t0 = nowMs();
-      faceMask = mask;
-      if (p_->wantsMaskModels() && !p_->applyMaskModels(crop, faceMask, err_)) return false;
+      if (parallel) {
+        p_->maskWorker.wait();
+        join.w = nullptr;
+        if (!maskOk) { err_ = maskErr; return false; }
+      } else if (reuseMask) {
+        faceMask = *sface->mask;
+        ++sface->maskAge;
+      } else {
+        faceMask = mask;
+        if (runModels && !p_->applyMaskModels(crop, faceMask, err_, skipParser)) return false;
+      }
+      if (runModels && sface) {
+        sface->mask = std::make_shared<ffcv::MatF>(faceMask);
+        sface->maskParsed = !skipParser;
+        sface->maskThumb = std::move(thumb);
+        sface->maskCS = CS;
+        sface->maskAge = 0;
+      }
+      // TEMPORAL: the mask edge moves 70% of the way to this frame's, so it does not
+      // shimmer between frames; crop-aligned, so it follows the face.
+      if (cfg.temporalSmooth && sface) {
+        if (sface->lastMask && sface->lastMask->w == faceMask.w &&
+            sface->lastMask->h == faceMask.h)
+          for (size_t i = 0; i < faceMask.data.size(); ++i)
+            faceMask.data[i] = 0.7f * faceMask.data[i] + 0.3f * sface->lastMask->data[i];
+        sface->lastMask = std::make_shared<ffcv::MatF>(faceMask);
+      }
+      if (keepEyes) ffmotion::keepEyesOriginal(faceMask, am, f.landmark68, eyeKeepL, eyeKeepR);
+      if (!touching.empty()) {
+        std::vector<std::array<float, 4>> ob;
+        for (const Face* g : touching) ob.push_back({g->box[0], g->box[1], g->box[2], g->box[3]});
+        ffmotion::excludeOtherFaces(faceMask, am, f.box, ob);
+      }
       if (f.poseFade < 0.999f)
         for (float& v : faceMask.data) v *= f.poseFade;
       Impl::CachedMask cm;
       std::memcpy(cm.lm5, f.landmark5_68, sizeof(cm.lm5));
       cm.mask = faceMask;
+      cm.am = am;
       p_->maskCache.push_back(std::move(cm));
       useMask = &faceMask;
       msGeomMask += nowMs() - t0;
+    }
+
+    // MOTION BLUR MATCH: the real head is streaked by its own motion; give the swapped
+    // face the same streak (half the frame's travel, the usual shutter), in crop space.
+    if (cfg.motionBlurMatch) {
+      const float vx = (float)(am(0, 0) * f.vel[0] + am(0, 1) * f.vel[1]);
+      const float vy = (float)(am(1, 0) * f.vel[0] + am(1, 1) * f.vel[1]);
+      const float len = 0.5f * std::sqrt(vx * vx + vy * vy);
+      if (len >= 2.f) {
+        t0 = nowMs();
+        ffmotion::directionalBlur(outCrop, vx, vy, len);
+        msGeom += nowMs() - t0;
+      }
+    }
+
+    // SKIN TONE: the swapped face takes the target face's colour statistics, measured
+    // over the pixels this face will actually be pasted on.
+    if (cfg.colorMatch > 0.f) {
+      t0 = nowMs();
+      ffmotion::matchColor(crop, outCrop, *useMask, cfg.colorMatch,
+                           (cfg.temporalSmooth && sface) ? &sface->color : nullptr);
+      msGeom += nowMs() - t0;
+    }
+
+    // SEAMLESS: blend the swapped face into the original crop band by band. Pasted with
+    // the SAME mask, so holes for hands and food stay exactly as they were; what changes is
+    // that near the edge the face already carries the original's shading, so the edge
+    // leaves no outline.
+    if (cfg.seamless && modelMasks) {
+      t0 = nowMs();
+      ffmotion::seamlessBlend(crop, outCrop, *useMask, 5);
+      msGeom += nowMs() - t0;
     }
 
     t0 = nowMs();
@@ -2408,20 +3545,25 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
 }
 
 bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
-  if (!p_ || !p_->n.enh) return true;   // absent is not a failure, matches syncLip
+  if (!p_) return true;
   const Config& cfg = p_->cfg;
   if (!cfg.faceEnhance) return true;
+  // The 512 enhancer when chosen and on the NPU; otherwise GPEN 256 exactly as before.
+  // FF_ENH512_TEST (host tests only): the 512 path without the NPU, painting the face red
+  // so where it is pasted can be checked.
+  static const bool paintTest = getenv("FF_ENH512_TEST") != nullptr;
+  const bool use512 = cfg.enhancer512 && (paintTest || p_->enh512Net());
+  if (!p_->n.enh && !use512) return true;   // absent is not a failure, matches syncLip
   // Same rule as swapAll and editFaces: with the swapper off this stage alone changes
   // the frame, so it may not run on a pipeline no check has cleared.
-  // NSFW gate DORMANT: clearance check disabled.
-  if (false && !p_->gateCleared) {
+  if (!p_->gateCleared) {
     err_ = "content check has not run for this pipeline";
     return false;
   }
   const int SS = cfg.swapSize;
   const int PB = cfg.pixelBoost < 1 ? 1 : cfg.pixelBoost;
   const int CS = SS * PB;
-  if (CS % kEnhSize != 0) return true;
+  if (!use512 && CS % kEnhSize != 0) return true;
 
   float tmpl[10];
   const float* T = ffcv::warpTemplate(1);            // arcface_128, same as swapAll
@@ -2446,9 +3588,14 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
     // A person the swapper left alone must be left alone here too -- gpen would otherwise
     // redraw the face this mode exists to preserve, and the result would be neither the
     // original nor a swap.
-    if (p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance) == kNoSource)
+    if (p_->sourceForFace(faces, fi, cfg.referenceDistance) == kNoSource)
       continue;
     if (f.poseFade < 0.02f) continue;   // the swap left this face alone; so does gpen
+
+    if (use512) {
+      if (!enhanceFace512(frame, f, mask, tmpl, CS)) return false;
+      continue;
+    }
 
     double t0 = nowMs();
     ffcv::Affine am = ffcv::umeyama(f.landmark5_68, tmpl, 5);
@@ -2508,6 +3655,8 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
       for (int i = 0, n = CS * 3; i < n; ++i)
         orow[i] = (float)srow[i] * (1.f - b) + erow[i] * b;
     }
+    if (cfg.enhanceSharpen > 0.f) ffmotion::sharpen(outF, std::fmin(1.f, cfg.enhanceSharpen),
+                                              std::max(1, CS / 256));
     msGeom += nowMs() - t0;
 
     // The swap's own mask when it made one for this face (same template, same size), so
@@ -2531,6 +3680,91 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
   return true;
 }
 
+
+/**
+ * GPEN-BFR 512 on one face (FaceFusion's gpen_bfr_512): its own ffhq_512 crop, RGB scaled
+ * to [-1, 1], output clipped and blended with the crop by the enhancer blend. The mask is
+ * the swap's own mask for this face (occlusion, parser, head-turn fade) moved from the swap
+ * crop into this crop, times a box mask -- so it never repaints what the swap kept.
+ */
+bool Pipeline::enhanceFace512(ffcv::Image& frame, const Face& f, const ffcv::MatF& boxCS,
+                              const float* tmplCS, int CS) {
+  const Config& cfg = p_->cfg;
+  constexpr int ES = 512;
+  float t512[10];
+  const float* T = ffcv::warpTemplate(2);   // ffhq_512
+  for (int i = 0; i < 10; ++i) t512[i] = T[i] * ES;
+  double t0 = nowMs();
+  const ffcv::Affine am = ffcv::umeyama(f.landmark5_68, t512, 5);
+  const ffcv::Image crop = ffcv::warpAffine(frame, am, ES, ES, ffcv::BORDER_REPLICATE);
+  std::vector<float> in((size_t)3 * ES * ES);
+  for (int y = 0; y < ES; ++y) {
+    const uint8_t* row = crop.row(y);
+    for (int x = 0; x < ES; ++x)
+      for (int c = 0; c < 3; ++c)   // BGR byte c -> RGB plane 2-c
+        in[(size_t)(2 - c) * ES * ES + (size_t)y * ES + x] = (row[x * 3 + c] / 255.f - 0.5f) / 0.5f;
+  }
+  msGeom += nowMs() - t0;
+  t0 = nowMs();
+  std::vector<std::vector<float>> out;
+  static const bool paintTest = getenv("FF_ENH512_TEST") != nullptr;
+  if (paintTest) {
+    out.assign(1, std::vector<float>((size_t)3 * ES * ES, -1.f));
+    std::fill(out[0].begin(), out[0].begin() + (size_t)ES * ES, 1.f);   // R plane
+  } else if (!ffnn::execute(p_->n.enh512, {"input"}, {in.data()}, out) || out.empty() ||
+      out[0].size() < (size_t)3 * ES * ES) {
+    err_ = std::string("enhancer 512: ") + ffnn::lastError();
+    return false;
+  }
+  msEnhance += nowMs() - t0;
+  t0 = nowMs();
+  const float b = cfg.faceEnhancerBlend < 0.f ? 0.f
+                : (cfg.faceEnhancerBlend > 1.f ? 1.f : cfg.faceEnhancerBlend);
+  ffcv::MatF outF(ES, ES, 3);
+  const float* e = out[0].data();
+  for (int y = 0; y < ES; ++y) {
+    const uint8_t* srow = crop.row(y);
+    float* orow = outF.row(y);
+    for (int x = 0; x < ES; ++x)
+      for (int c = 0; c < 3; ++c) {
+        float v = e[(size_t)(2 - c) * ES * ES + (size_t)y * ES + x];
+        v = !std::isfinite(v) ? 0.f : (v < -1.f ? -1.f : (v > 1.f ? 1.f : v));
+        orow[x * 3 + c] = (float)srow[x * 3 + c] * (1.f - b) + (v + 1.f) * 0.5f * 255.f * b;
+      }
+  }
+  if (cfg.enhanceSharpen > 0.f) ffmotion::sharpen(outF, std::fmin(1.f, cfg.enhanceSharpen), 2);
+
+  // The swap's mask for this face, in the SWAP crop: cached when the swap made one, else
+  // built the way the 256 enhancer builds it.
+  const ffcv::Affine amCS = ffcv::umeyama(f.landmark5_68, tmplCS, 5);
+  ffcv::MatF built;
+  const ffcv::MatF* mCS = &boxCS;
+  if (const ffcv::MatF* cached = p_->cachedMask(f)) {
+    mCS = cached;
+  } else if (p_->wantsMaskModels() || f.poseFade < 0.999f) {
+    built = boxCS;
+    if (p_->wantsMaskModels()) {
+      const ffcv::Image cropCS = ffcv::warpAffine(frame, amCS, CS, CS, ffcv::BORDER_REPLICATE);
+      if (!p_->applyMaskModels(cropCS, built, err_)) return false;
+    }
+    if (f.poseFade < 0.999f) for (float& v : built.data) v *= f.poseFade;
+    mCS = &built;
+  }
+  // swap crop -> frame -> 512 crop
+  const ffcv::Affine inv = ffcv::invertAffine(amCS);
+  ffcv::Affine m;
+  for (int r = 0; r < 2; ++r) {
+    m(r, 0) = am(r, 0) * inv(0, 0) + am(r, 1) * inv(1, 0);
+    m(r, 1) = am(r, 0) * inv(0, 1) + am(r, 1) * inv(1, 1);
+    m(r, 2) = am(r, 0) * inv(0, 2) + am(r, 1) * inv(1, 2) + am(r, 2);
+  }
+  ffcv::MatF mask = ffcv::warpAffineF(*mCS, m, ES, ES, ffcv::BORDER_CONSTANT);
+  const ffcv::MatF box = ffcv::createBoxMask(ES, ES, cfg.maskBlur, cfg.maskPadding);
+  for (size_t i = 0; i < mask.data.size() && i < box.data.size(); ++i) mask.data[i] *= box.data[i];
+  ffcv::pasteBack(frame, outF, mask, am);
+  msGeom += nowMs() - t0;
+  return true;
+}
 
 // ------------------------------------------------------------- LivePortrait
 //
@@ -2658,15 +3892,100 @@ bool Pipeline::lpRender(const std::vector<float>& fv, const float* source, const
 }
 
 // face_editor/core.py:edit_face.
+bool Pipeline::restoreExpression(ffcv::Image& frame, const std::vector<Face>& faces) {
+  const Config& cfg = p_->cfg;
+  if (p_->preSwap.w != frame.w || p_->preSwap.h != frame.h) return true;
+  const int noPadding[4] = {0, 0, 0, 0};
+  const ffcv::MatF box = ffcv::createBoxMask(kLpCrop, kLpCrop, cfg.maskBlur, noPadding);
+  // numpy.interp(factor, [0, 100], [0, 1.2]) with the factor stored as 0..1.
+  const float factor = std::fmin(1.f, std::fmax(0.f, cfg.expressionRestoreFactor)) * 1.2f;
+
+  const Face* only = nullptr;
+  if (!p_->haveReference && cfg.swapLargestOnly) {
+    float best = -1.f;
+    for (const Face& f : faces) {
+      float a = (f.box[2] - f.box[0]) * (f.box[3] - f.box[1]);
+      if (a > best) { best = a; only = &f; }
+    }
+  }
+  std::vector<float> in, inOrig, fv;
+  for (size_t fi = 0; fi < faces.size(); ++fi) {
+    const Face& f = faces[fi];
+    // The faces swapAll changed, and only those.
+    if (only && &f != only) continue;
+    if (p_->haveReference && !p_->refAllows(f, fi, cfg.referenceDistance)) continue;
+    if (p_->sourceForFace(faces, fi, cfg.referenceDistance) == kNoSource) continue;
+    if (f.poseFade < 0.02f) continue;
+    // SMART SPEED: the restorer's job the swap cannot do is the EYES -- a blink or closed
+    // eyes, where the swapped face keeps the source photo's open ones. With the eyes open
+    // it adds little, and it is the most expensive stage, so in a video it runs from the
+    // moment the eyes start closing until 8 frames after they are open again (the hold
+    // stops it flickering on and off around the threshold).
+    if (Impl::SeqFace* sf = p_->seqFaceFor(f, fi)) {
+      // Closed (either eye under 0.22), or a WINK: one eye clearly more closed than the other
+      // while still narrowed. Both the restorer's job -- the swapped face would otherwise
+      // keep the source photo's two open eyes.
+      float eyeL = 1.f, eyeR = 1.f;
+      ffmotion::eyeOpenness2(f.landmark68, &eyeL, &eyeR);
+      const float eyeMin = std::min(eyeL, eyeR), eyeMax = std::max(eyeL, eyeR);
+      if (eyeMin < 0.22f || (eyeMax - eyeMin > 0.09f && eyeMin < 0.30f)) sf->restoreHold = 8;
+      else if (sf->restoreHold > 0) --sf->restoreHold;
+      else continue;
+    }
+
+    double t0 = nowMs();
+    ffcv::Affine am, amOrig;
+    lpCrop(frame, f, &am, &in);
+    lpCrop(p_->preSwap, f, &amOrig, &inOrig);
+    msGeom += nowMs() - t0;
+
+    t0 = nowMs();
+    ffportrait::Motion swapped, original;
+    if (!lpFeature(in, &fv) || !lpMotion(in, &swapped) || !lpMotion(inOrig, &original))
+      return false;
+    msEdit += nowMs() - t0;
+
+    float source[ffportrait::kKeypoints * 3], target[ffportrait::kKeypoints * 3];
+    ffportrait::restoreKeypoints(swapped, original, factor, source, target);
+
+    // The same mask the swap used, in this crop's geometry: occlusion and the mouth
+    // switches are measured on the ORIGINAL face, so a kept mouth or a hand stays kept.
+    ffcv::MatF mask = box;
+    bool faded = false;
+    t0 = nowMs();
+    if (const Impl::CachedMask* cm = p_->cachedMaskEntry(f)) {
+      // REUSED, not recomputed: the swap's own mask for this face (occlusion, mouth, pose
+      // fade already in it), re-mapped from its crop into this one. Running the two mask
+      // models again here doubled their cost per face per frame.
+      const ffcv::MatF moved = ffmotion::remapMask(cm->mask, cm->am, am, kLpCrop, kLpCrop);
+      for (size_t i = 0; i < mask.data.size(); ++i)
+        if (moved.data[i] < mask.data[i]) mask.data[i] = moved.data[i];
+      faded = true;
+    } else if (p_->wantsMaskModels()) {
+      const ffcv::Image oc =
+          ffcv::warpAffine(p_->preSwap, am, kLpCrop, kLpCrop, ffcv::BORDER_REPLICATE);
+      if (!p_->applyMaskModels(oc, mask, err_)) return false;
+    }
+    msGeomMask += nowMs() - t0;
+    if (!faded && f.poseFade < 0.999f)
+      for (float& v : mask.data) v *= f.poseFade;
+    if (!lpRender(fv, source, target, am, mask, frame)) return false;
+  }
+  return true;
+}
+
 bool Pipeline::editFaces(ffcv::Image& frame, const std::vector<Face>& faces) {
   if (!hasFaceEditor()) return true;   // absent is not a failure, matches enhance
+  if (p_->havePreSwap) {
+    p_->havePreSwap = false;
+    if (p_->cfg.expressionRestore && !restoreExpression(frame, faces)) return false;
+  }
   const Config& cfg = p_->cfg;
   if (!cfg.faceEdit || !ffportrait::anyEdit(cfg.faceEditor)) return true;
   static_assert(ffportrait::kSliderCount == 14, "Config::faceEditor is 14 sliders");
   // The swap's own rule, because with the swapper off this stage is the one that changes
   // the frame: no check, no edit. See Impl::gateCleared.
-  // NSFW gate DORMANT: clearance check disabled.
-  if (false && !p_->gateCleared) {
+  if (!p_->gateCleared) {
     err_ = "content check has not run for this pipeline";
     return false;
   }
@@ -2687,7 +4006,7 @@ bool Pipeline::editFaces(ffcv::Image& frame, const std::vector<Face>& faces) {
   for (size_t fi = 0; fi < faces.size(); ++fi) {
     const Face& f = faces[fi];
     if (only && &f != only) continue;
-    if (p_->sourceForFace(f, fi, faces.size(), cfg.referenceDistance) == kNoSource) continue;
+    if (p_->sourceForFace(faces, fi, cfg.referenceDistance) == kNoSource) continue;
 
     double t0 = nowMs();
     ffcv::Affine am;
@@ -2737,8 +4056,7 @@ bool Pipeline::animate(const ffcv::Image& driver, ffcv::Image& out) {
   Impl::Portrait& P = p_->portrait;
   if (!P.ready) { err_ = "setPortrait not called"; return false; }
   // No check, no frame: the rule every stage that changes a picture follows.
-  // NSFW gate DORMANT: clearance check disabled.
-  if (false && !p_->gateCleared) {
+  if (!p_->gateCleared) {
     err_ = "content check has not run for this pipeline";
     return false;
   }

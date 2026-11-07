@@ -416,7 +416,7 @@
     <string name="live_assign_kept">Этот человек сохраняет своё лицо</string>
     <string name="swap_assign_on">Ничего не меняется, пока вы не коснётесь человека</string>
     <string name="swap_assign_off">Каждое лицо берёт выбранный источник</string>
-    <string name="swap_assign_hint">Выберите источник (или «Своё лицо»), затем коснитесь человека ниже. Те, кого вы не коснулись, возьмут источник, выбранный при включении режима.</string>
+    <string name="swap_assign_hint">Выберите источник (или «Своё лицо»), затем коснитесь человека ниже. Те, кого вы не коснулись, сохраняют своё лицо. Для людей, появляющихся позже, используйте поиск по всему видео.</string>
     <string name="swap_assign_no_people">В показанном кадре лиц не найдено. Передвиньте ползунок обрезки к кадру с нужными людьми.</string>
     <string name="swap_assign_person">Человек %1$d</string>
     <string name="swap_assign_badge">И%1$d</string>

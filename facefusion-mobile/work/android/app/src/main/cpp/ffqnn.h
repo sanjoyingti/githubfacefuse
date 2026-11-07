@@ -97,4 +97,9 @@ enum class Fp16 { Unknown, Yes, No };
 //            Never report Unknown as "no fp16".
 Fp16 fp16Canary(const std::string& canaryDir);
 
+// HTP clock profile: Burst (default; previews, photos), Sustained (long video swaps),
+// Balanced (when the phone is warm). A no-op where the HTP power API is not available.
+enum PowerProfile { kPowerBurst = 0, kPowerSustained = 1, kPowerBalanced = 2 };
+void setPowerProfile(int profile);
+
 }  // namespace ffqnn

@@ -64,15 +64,42 @@ object BatchStatus {
  */
 class BatchService : Service() {
 
+    private var wake: android.os.PowerManager.WakeLock? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * Android 15+ caps a dataSync foreground service at 6 hours a day and then calls this.
+     * The service must stop within seconds or the system kills the app. Only the keep-alive
+     * ends here; the run itself carries on in the app while it stays open.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        runCatching { wake?.takeIf { it.isHeld }?.release() }
+        wake = null
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        SafeFiles.init(this)
         if (intent?.action == ACTION_CANCEL) {
             BatchStatus.cancelled = true
             return START_NOT_STICKY
         }
         createChannel()
         startForeground(NOTIF_ID, build())
+        // The CPU keeps feeding the NPU with the screen off, for the length of the batch.
+        if (wake == null) {
+            wake = (getSystemService(POWER_SERVICE) as android.os.PowerManager)
+                .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "facefusion:batch").apply {
+                    setReferenceCounted(false)
+                    acquire(8 * 60 * 60 * 1000L)
+                }
+        }
         // Poll rather than observe: the state lives in an object the runner writes from a
         // worker thread, and a notification refreshed twice a second is cheaper than any
         // callback plumbing across a service boundary.

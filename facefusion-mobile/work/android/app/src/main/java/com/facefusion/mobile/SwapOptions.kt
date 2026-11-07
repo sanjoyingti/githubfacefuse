@@ -26,7 +26,7 @@ data class SwapOptions(
      * unmodified; above it the source is amplified and the target identity subtracted,
      * which is the direction to push for a stronger resemblance.
      */
-    val weight: Float = 0.5f,
+    val weight: Float = 0.65f,
 
     /** `--face-mask-blur`, 0.0-1.0 step 0.05. How soft the swapped region's edge is. */
     val maskBlur: Float = 0.3f,
@@ -35,13 +35,13 @@ data class SwapOptions(
     val maskPadding: List<Int> = listOf(0, 0, 0, 0),
 
     /** `--face-detector-score`, 0.0-1.0 step 0.05. Raise it to ignore uncertain faces. */
-    val detectorScore: Float = 0.5f,
+    val detectorScore: Float = 0.35f,
 
     /** `--face-landmarker-score`, 0.0-1.0 step 0.05. Below it, the 5-point set is kept. */
     val landmarkerScore: Float = 0.5f,
 
     /** `--face-swapper-pixel-boost` as a per-axis factor: 1=256, 2=512, 3=768, 4=1024. */
-    val pixelBoost: Int = 1,
+    val pixelBoost: Int = 2,
 
     /** `--face-selector-mode`: false = `many`, true = `one` (largest face only). */
     val largestOnly: Boolean = false,
@@ -90,9 +90,10 @@ data class SwapOptions(
      * ⚠ It is a real trade, not a free win: swap quality follows how many pixels THE FACE
      * has, not the frame. A face filling a quarter of the frame has plenty either way; a
      * face far away in a 4K shot has half as many pixels at 1080p and will look worse.
-     * Hence 0 by default.
+     * 1080 by default since build 29 (a 4K clip is swapped at 1080p: about 4x less work per
+     * frame); 1080p and smaller clips are untouched. "Original" in Output settings is 0.
      */
-    val outputMaxShortEdge: Int = 0,
+    val outputMaxShortEdge: Int = 1080,
 
     /**
      * Frames between real face detections during a VIDEO run. 0 = detect every frame,
@@ -110,7 +111,7 @@ data class SwapOptions(
      * ⚠ Applies to video runs ONLY. The preview shares `Pipeline::analyse`, where
      * consecutive calls are unrelated frames the user seeked to.
      */
-    val trackPeriod: Int = 0,
+    val trackPeriod: Int = 2,
 
     /**
      * `--face-enhancer`, gpen_bfr_256. Off by default.
@@ -120,7 +121,7 @@ data class SwapOptions(
      * when the model is absent, and the UI only offers the switch when
      * [NativePipe.hasEnhancer] is true.
      */
-    val faceEnhance: Boolean = false,
+    val faceEnhance: Boolean = true,
 
     /**
      * `--face-enhancer-blend`, upstream's 0-100 as a 0.0-1.0 fraction, step 0.05.
@@ -128,7 +129,7 @@ data class SwapOptions(
      * 1.0 is the enhancer's output alone; 0.0 leaves the swap untouched. Upstream's
      * default is 80.
      */
-    val enhanceBlend: Float = 0.8f,
+    val enhanceBlend: Float = 0.5f,
 
     /**
      * `--processors lip_syncer`, edtalk_256. Off by default.
@@ -198,13 +199,15 @@ data class SwapOptions(
      * cost NPU time producing nothing new, so the cap is structural rather than validated
      * after the fact.
      */
-    val outputFps: Int = 0,
+    val outputFps: Int = 30,
     // Occlusion mask (XSeg): keep the swap off food, hands, cups and hair in front of the face.
     val occlusionMask: Boolean = true,
     // Face-parser mask (BiSeNet): swap only skin/eyes/brows/nose/lips.
-    val regionMask: Boolean = false,
+    val regionMask: Boolean = true,
     // Leave the mouth interior (teeth, tongue, food) original.
-    val keepMouth: Boolean = false,
+    val keepMouth: Boolean = true,
+    // Leave the lips original too, so the whole mouth is as filmed.
+    val keepLips: Boolean = false,
     // Fade the swap out on extreme head turns instead of stretching the face.
     val poseFade: Boolean = true,
     val poseFadeStart: Float = 60f,
@@ -212,7 +215,109 @@ data class SwapOptions(
     val motionSmooth: Boolean = true,
     // Also look for faces rotated 90/180/270 degrees.
     val detectRotated: Boolean = false,
+    // Match the swapped face's skin tone and lighting to the target (Reinhard colour transfer).
+    val colorMatch: Boolean = true,
+    val colorMatchStrength: Float = 0.6f,
+    // Put the target's own expression (closed eyes, mouth shape) back on the swapped face
+    // (FaceFusion's expression_restorer, LivePortrait). Needs the face editor models.
+    val expressionRestore: Boolean = true,
+    val expressionFactor: Float = 0.8f,
+    // Run the mask models alongside the swap (GPU beside the NPU): faster with the masks on.
+    val parallelMasks: Boolean = true,
+    // Video only: reuse masks while nothing in front of the face changes, and run the
+    // expression restorer only around blinks and closed eyes. Faster and cooler.
+    val smartSpeed: Boolean = true,
+    // Close-ups swapped at 1024 px instead of stretched from 512 (ffpipe autoBoost).
+    val autoBoost: Boolean = true,
+    // Multi-band blend at the face edge: no outline (ffpipe seamless).
+    val seamless: Boolean = true,
+    // Hair stays original, mask edges follow the picture's own edges (ffpipe hairAware).
+    val hairAware: Boolean = true,
+    // Video: skin tone and mask edge smoothed between frames (ffpipe temporalSmooth).
+    val temporalSmooth: Boolean = true,
+    // Sharper enhancer: a gentle unsharp mask after the face enhancer. Off by default.
+    val enhanceSharpen: Boolean = false,
+    val enhanceSharpenStrength: Float = 0.5f,
+    // Lowest memory: one frame in flight between decode, swap and encode instead of two.
+    // Same output, a little slower. Off by default.
+    val lowestMemory: Boolean = false,
+    // Closed eyes keep their own lids and lashes (ffpipe keepClosedEyes).
+    val keepClosedEyes: Boolean = true,
+    // A face turned the way one of its photos is turned keeps the swap further round.
+    val sideHold: Boolean = true,
+    // 1.0.54 models. The first two only run where a face was lost or its points are unsure,
+    // so normal frames cost the same; the last two are heavier and off by default.
+    val secondDetector: Boolean = true,
+    val turnedLandmarker: Boolean = true,
+    val largeParser: Boolean = false,
+    val enhancer512: Boolean = false,
 ) {
+    /**
+     * The most realistic settings this app has, applied in one tap ("Most realistic").
+     * Keeps the user's swapper model, sources and output choices. Slower than the defaults:
+     * pixel boost 512 is four swapper runs per face, and the restorer and the mask models
+     * add their own per-face cost.
+     */
+    /**
+     * Quick and still good ("Fast"): the swapper at its native 256, no enhancer, no
+     * expression restorer and no face parser (the slowest per-face extras). The occlusion
+     * mask stays on -- it runs beside the swapper, so it costs little -- and so does skin-tone
+     * matching, which is cheap. Fast video re-detects every 2 frames.
+     */
+    fun fastPreset(): SwapOptions = copy(
+        weight = 0.65f,
+        pixelBoost = 1,
+        maskBlur = 0.4f,
+        maskPadding = listOf(0, 0, 0, 0),
+        occlusionMask = true,
+        regionMask = false,
+        keepMouth = false,
+        keepLips = false,
+        poseFade = true,
+        poseFadeStart = 60f,
+        motionSmooth = true,
+        detectorScore = 0.35f,
+        landmarkerScore = 0.5f,
+        trackPeriod = 2,
+        colorMatch = true,
+        colorMatchStrength = 0.6f,
+        expressionRestore = false,
+        faceEnhance = false,
+    )
+
+    fun realisticPreset(): SwapOptions = copy(
+        weight = 0.65f,
+        pixelBoost = 2,
+        maskBlur = 0.3f,
+        maskPadding = listOf(0, 0, 0, 0),
+        occlusionMask = true,
+        regionMask = true,
+        autoBoost = true,
+        seamless = true,
+        hairAware = true,
+        temporalSmooth = true,
+        smartSpeed = true,
+        parallelMasks = true,
+        detectRotated = false,
+        largestOnly = false,
+        keepMouth = true,
+        keepLips = false,
+        poseFade = true,
+        poseFadeStart = 60f,
+        motionSmooth = true,
+        detectorScore = 0.35f,
+        landmarkerScore = 0.5f,
+        trackPeriod = 2,
+        colorMatch = true,
+        colorMatchStrength = 0.6f,
+        expressionRestore = true,
+        expressionFactor = 0.8f,
+        faceEnhance = true,
+        enhanceBlend = 0.5f,
+        keepClosedEyes = true,
+        sideHold = true,
+    )
+
     val pixelBoostLabel get() = "${256 * pixelBoost}x${256 * pixelBoost}"
 
     /** Whether this run swaps faces, and therefore needs a source. See [swapEnabled]. */
@@ -258,10 +363,30 @@ data class SwapOptions(
             .putBoolean(K_OCCLUSION, occlusionMask)
             .putBoolean(K_REGION, regionMask)
             .putBoolean(K_KEEP_MOUTH, keepMouth)
+            .putBoolean(K_KEEP_LIPS, keepLips)
             .putBoolean(K_POSE_FADE, poseFade)
             .putFloat(K_POSE_FADE_START, poseFadeStart)
             .putBoolean(K_MOTION_SMOOTH, motionSmooth)
             .putBoolean(K_ROTATED, detectRotated)
+            .putBoolean(K_COLOR_MATCH, colorMatch)
+            .putFloat(K_COLOR_MATCH_STRENGTH, colorMatchStrength)
+            .putBoolean(K_EXPRESSION, expressionRestore)
+            .putFloat(K_EXPRESSION_FACTOR, expressionFactor)
+            .putBoolean(K_PARALLEL_MASKS, parallelMasks)
+            .putBoolean(K_SMART_SPEED, smartSpeed)
+            .putBoolean(K_AUTO_BOOST, autoBoost)
+            .putBoolean(K_SEAMLESS, seamless)
+            .putBoolean(K_HAIR_AWARE, hairAware)
+            .putBoolean(K_TEMPORAL, temporalSmooth)
+            .putBoolean(K_SHARPEN, enhanceSharpen)
+            .putFloat(K_SHARPEN_STRENGTH, enhanceSharpenStrength)
+            .putBoolean(K_LOWEST_MEMORY, lowestMemory)
+            .putBoolean(K_CLOSED_EYES, keepClosedEyes)
+            .putBoolean(K_SIDE_HOLD, sideHold)
+            .putBoolean(K_SECOND_DET, secondDetector)
+            .putBoolean(K_TURNED_LM, turnedLandmarker)
+            .putBoolean(K_LARGE_PARSER, largeParser)
+            .putBoolean(K_ENH512, enhancer512)
             .apply()
     }
 
@@ -289,10 +414,30 @@ data class SwapOptions(
         private const val K_OCCLUSION = "occlusion_mask"
         private const val K_REGION = "region_mask"
         private const val K_KEEP_MOUTH = "keep_mouth"
+        private const val K_KEEP_LIPS = "keep_lips"
         private const val K_POSE_FADE = "pose_fade"
         private const val K_POSE_FADE_START = "pose_fade_start"
         private const val K_MOTION_SMOOTH = "motion_smooth"
         private const val K_ROTATED = "detect_rotated"
+        private const val K_COLOR_MATCH = "color_match"
+        private const val K_COLOR_MATCH_STRENGTH = "color_match_strength"
+        private const val K_EXPRESSION = "expression_restore"
+        private const val K_EXPRESSION_FACTOR = "expression_restore_factor"
+        private const val K_PARALLEL_MASKS = "parallel_masks"
+        private const val K_SMART_SPEED = "smart_speed"
+        private const val K_AUTO_BOOST = "auto_boost"
+        private const val K_SEAMLESS = "seamless"
+        private const val K_HAIR_AWARE = "hair_aware"
+        private const val K_TEMPORAL = "temporal_smooth"
+        private const val K_SHARPEN = "enhance_sharpen"
+        private const val K_SHARPEN_STRENGTH = "enhance_sharpen_strength"
+        private const val K_LOWEST_MEMORY = "lowest_memory"
+        private const val K_CLOSED_EYES = "keep_closed_eyes"
+        private const val K_SIDE_HOLD = "side_hold"
+        private const val K_SECOND_DET = "second_detector"
+        private const val K_TURNED_LM = "turned_landmarker"
+        private const val K_LARGE_PARSER = "large_parser"
+        private const val K_ENH512 = "enhancer_512"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -362,10 +507,33 @@ data class SwapOptions(
                 occlusionMask = p.getBoolean(K_OCCLUSION, d.occlusionMask),
                 regionMask = p.getBoolean(K_REGION, d.regionMask),
                 keepMouth = p.getBoolean(K_KEEP_MOUTH, d.keepMouth),
+                keepLips = p.getBoolean(K_KEEP_LIPS, d.keepLips),
                 poseFade = p.getBoolean(K_POSE_FADE, d.poseFade),
                 poseFadeStart = p.getFloat(K_POSE_FADE_START, d.poseFadeStart).coerceIn(30f, 85f),
                 motionSmooth = p.getBoolean(K_MOTION_SMOOTH, d.motionSmooth),
                 detectRotated = p.getBoolean(K_ROTATED, d.detectRotated),
+                colorMatch = p.getBoolean(K_COLOR_MATCH, d.colorMatch),
+                colorMatchStrength = p.getFloat(K_COLOR_MATCH_STRENGTH, d.colorMatchStrength)
+                    .coerceIn(0f, 1f),
+                expressionRestore = p.getBoolean(K_EXPRESSION, d.expressionRestore),
+                expressionFactor = p.getFloat(K_EXPRESSION_FACTOR, d.expressionFactor)
+                    .coerceIn(0f, 1f),
+                parallelMasks = p.getBoolean(K_PARALLEL_MASKS, d.parallelMasks),
+                smartSpeed = p.getBoolean(K_SMART_SPEED, d.smartSpeed),
+                autoBoost = p.getBoolean(K_AUTO_BOOST, d.autoBoost),
+                seamless = p.getBoolean(K_SEAMLESS, d.seamless),
+                hairAware = p.getBoolean(K_HAIR_AWARE, d.hairAware),
+                temporalSmooth = p.getBoolean(K_TEMPORAL, d.temporalSmooth),
+                enhanceSharpen = p.getBoolean(K_SHARPEN, d.enhanceSharpen),
+                enhanceSharpenStrength = p.getFloat(K_SHARPEN_STRENGTH, d.enhanceSharpenStrength)
+                    .coerceIn(0f, 1f),
+                lowestMemory = p.getBoolean(K_LOWEST_MEMORY, d.lowestMemory),
+                keepClosedEyes = p.getBoolean(K_CLOSED_EYES, d.keepClosedEyes),
+                sideHold = p.getBoolean(K_SIDE_HOLD, d.sideHold),
+                secondDetector = p.getBoolean(K_SECOND_DET, d.secondDetector),
+                turnedLandmarker = p.getBoolean(K_TURNED_LM, d.turnedLandmarker),
+                largeParser = p.getBoolean(K_LARGE_PARSER, d.largeParser),
+                enhancer512 = p.getBoolean(K_ENH512, d.enhancer512),
             )
         }
     }
