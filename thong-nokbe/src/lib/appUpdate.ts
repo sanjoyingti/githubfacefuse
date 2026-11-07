@@ -2,6 +2,7 @@ import { Linking, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { startActivityAsync } from 'expo-intent-launcher';
 import { APP_INVITE_LINK, UPDATE_INFO_URL } from '../config';
+import { ApkInstaller } from '../../modules/apk-installer';
 
 /** This APK's build number (set by the GitHub build). 0 = a developer build: never asks to update. */
 export const BUILD_NUMBER = Number(process.env.EXPO_PUBLIC_BUILD_NUMBER ?? 0) || 0;
@@ -86,11 +87,25 @@ export async function downloadAndInstall(update: UpdateInfo, onProgress: (writte
     await FileSystem.moveAsync({ from: part, to: path });
   }
   const contentUri = await FileSystem.getContentUriAsync(path);
-  await startActivityAsync('android.intent.action.VIEW', {
-    data: contentUri,
-    type: 'application/vnd.android.package-archive',
-    flags: FLAG_GRANT_READ_URI_PERMISSION,
-  });
+  // Open Android's installer directly (never blocked by an earlier screen that didn't report back).
+  if (ApkInstaller) {
+    ApkInstaller.install(contentUri);
+    return;
+  }
+  // Older app builds without the installer module.
+  try {
+    await startActivityAsync('android.intent.action.VIEW', {
+      data: contentUri,
+      type: 'application/vnd.android.package-archive',
+      flags: FLAG_GRANT_READ_URI_PERMISSION,
+    });
+  } catch (e: any) {
+    if (/already started/i.test(String(e?.message))) {
+      await downloadUpdate(update.url); // fall back to the browser download
+      return;
+    }
+    throw e;
+  }
 }
 
 /** Removes downloaded update files this phone no longer needs (the app is already that version or newer). */
