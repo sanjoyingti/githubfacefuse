@@ -1516,7 +1516,8 @@ class MainActivity : ComponentActivity() {
                             last = now
                             runOnUiThread { if (videoPeopleScan != null) videoPeopleScan = p }
                         }
-                    }, { videoPeopleCancel }, maxLooks = 900, cropMax = 160, maxPeople = 24)
+                    }, { videoPeopleCancel }, maxLooks = 400, cropMax = 160, maxPeople = 24,
+                       parts = 3, minStepUs = 1_000_000L, maxGapUs = 2_500_000L)
                     found.toMutableList()
                 }
                 if (videoPeopleCancel || forTarget != targetVersion) {

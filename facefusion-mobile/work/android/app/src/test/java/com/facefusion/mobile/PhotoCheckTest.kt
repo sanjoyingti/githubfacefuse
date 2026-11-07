@@ -88,6 +88,20 @@ class PhotoCheckTest {
         println("PICKER people=${people.size} crops=$crops target=${only[0].count}")
     }
 
+    @Test fun quickScanJumpsOnlyToNearKeyFrames() {
+        val J = VideoFacePicker.Next.JUMP; val D = VideoFacePicker.Next.DECODE
+        // phone video, key frame every second: skip straight to it
+        assertEquals(J, VideoFacePicker.nextLook(0L, 1_000_000L, 1_000_000L, 2_500_000L))
+        assertEquals(J, VideoFacePicker.nextLook(0L, 2_000_000L, 1_000_000L, 2_500_000L))
+        // key frames 7 s apart: decode in order, so nobody in between is missed
+        assertEquals(D, VideoFacePicker.nextLook(0L, 7_000_000L, 1_000_000L, 2_500_000L))
+        // photo picker (no extra gap allowed): only when the key frame is the next look
+        assertEquals(J, VideoFacePicker.nextLook(0L, 500_000L, 500_000L, 0L))
+        assertEquals(D, VideoFacePicker.nextLook(0L, 1_000_000L, 500_000L, 0L))
+        // never backwards
+        assertEquals(D, VideoFacePicker.nextLook(3_000_000L, 2_000_000L, 1_000_000L, 2_500_000L))
+    }
+
     @Test fun everyoneMergesSidesAndOrdersByFirstSeen() {
         val bmp = { Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888) }
         val a = unit(11); val b = unit(12)

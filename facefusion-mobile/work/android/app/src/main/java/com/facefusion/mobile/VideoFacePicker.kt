@@ -170,80 +170,220 @@ object VideoFacePicker {
     fun people(found: List<Person>): List<Person> =
         found.filter { it.count >= 2 && it.best.isNotEmpty() }.sortedByDescending { it.count }
 
+    /** Where to look next, decided by [nextLook]. Pure; unit-tested. */
+    enum class Next { JUMP, DECODE }
+
+    /**
+     * After a look at [lookUs]: JUMP to the key frame at [nextSyncUs] when it is close
+     * enough (skipping every frame in between without decoding it), else keep DECODING
+     * frame by frame so a long gap between key frames is still looked at every [stepUs].
+     */
+    fun nextLook(lookUs: Long, nextSyncUs: Long, stepUs: Long, maxGapUs: Long): Next =
+        if (nextSyncUs > lookUs && nextSyncUs - lookUs <= maxOf(stepUs, maxGapUs)) Next.JUMP
+        else Next.DECODE
+
     /**
      * Go through the video at [uri]. [target] limits it to one person (a face already in
      * the list); null finds everyone. Needs a loaded pipeline. Blocking: call off the main
      * thread.
+     *
+     * QUICK: frames between two looks are not decoded when a key frame is near (phone
+     * videos have one every 1-2 s, so most of the clip is skipped outright); only a clip
+     * with key frames far apart is decoded frame by frame. A long clip is split into
+     * [parts] pieces decoded side by side (the phone has several hardware decoders); the
+     * looks themselves take turns on the one pipeline.
      */
     fun scan(
         ctx: Context, uri: Uri, target: FloatArray?,
         onProgress: (Float) -> Unit, cancelled: () -> Boolean,
         maxLooks: Int = 240, cropMax: Int = 1024, maxPeople: Int = MAX_PEOPLE,
+        parts: Int = 1, minStepUs: Long = 500_000L, maxGapUs: Long = 0L,
     ): List<Person> {
+        val info = probe(ctx, uri) ?: return emptyList()
+        val durUs = info.durUs
+        // About two a second; a long clip is spread over at most [maxLooks] looks.
+        val stepUs = maxOf(minStepUs, if (durUs > 0) durUs / maxLooks else minStepUs)
+        // Pieces of at least 20 s: below that a second decoder costs more than it saves.
+        val n = if (durUs <= 0) 1 else parts.coerceIn(1, maxOf(1, (durUs / 20_000_000L).toInt()))
+        val done = FloatArray(n)
+        val report = { k: Int, f: Float ->
+            synchronized(done) { done[k] = f; onProgress(done.sum() / n) }
+        }
+        val results = arrayOfNulls<MutableList<Person>>(n)
+        val failed = BooleanArray(n)
+        val run = { k: Int ->
+            val from = if (n == 1) 0L else durUs * k / n
+            val to = if (n == 1 || k == n - 1) Long.MAX_VALUE else durUs * (k + 1) / n
+            val ppl = mutableListOf<Person>()
+            try {
+                scanPart(ctx, uri, info, from, to, stepUs, maxGapUs, target, ppl, cropMax, maxPeople,
+                         { f -> report(k, f) }, cancelled)
+            } catch (t: Throwable) {
+                android.util.Log.w("VideoFacePicker", "part $k: $t")
+                failed[k] = true
+            }
+            results[k] = ppl
+        }
+        if (n == 1) run(0)
+        else {
+            val threads = (1 until n).map { k -> Thread({ run(k) }, "vscan-$k").apply { start() } }
+            run(0)
+            threads.forEach { it.join() }
+            // A piece whose decoder could not start (too many at once) is done again alone.
+            for (k in 0 until n) if (failed[k] && !cancelled()) {
+                results[k]?.forEach { p -> p.best.values.forEach { it.crop?.recycle() } }
+                failed[k] = false; run(k)
+            }
+        }
         val people = mutableListOf<Person>()
+        for (r in results) r?.let { people += it }
+        if (n > 1) {
+            if (target != null) {
+                // One person, found in several pieces: one entry, as with a single piece.
+                while (people.size > 1) {
+                    val b = people.removeAt(people.size - 1)
+                    val a = people[0]
+                    for (i in 0 until 512) a.sum[i] += b.sum[i]
+                    a.count += b.count; a.firstUs = minOf(a.firstUs, b.firstUs)
+                    for ((ang, sb) in b.best) {
+                        val sa = a.best[ang]
+                        if (sa == null || sb.quality > sa.quality) { sa?.crop?.recycle(); a.best[ang] = sb }
+                        else sb.crop?.recycle()
+                    }
+                }
+            } else joinParts(people)
+        }
+        onProgress(1f)
+        return people
+    }
+
+    /** People found in different pieces who are the same person become one (as in [add]). */
+    private fun joinParts(people: MutableList<Person>) {
+        var joined = true
+        while (joined) {
+            joined = false
+            loop@ for (a in people.indices) for (b in a + 1 until people.size) {
+                if (cos(people[a].meanNorm(), people[b].meanNorm()) < SAME_PERSON) continue
+                val pa = people[a]; val pb = people[b]
+                for (i in 0 until 512) pa.sum[i] += pb.sum[i]
+                pa.count += pb.count; pa.firstUs = minOf(pa.firstUs, pb.firstUs)
+                for ((ang, sb) in pb.best) {
+                    val sa = pa.best[ang]
+                    if (sa == null || sb.quality > sa.quality) { sa?.crop?.recycle(); pa.best[ang] = sb }
+                    else sb.crop?.recycle()
+                }
+                people.removeAt(b); joined = true; break@loop
+            }
+        }
+    }
+
+    /** What the scan needs to know about the video track. */
+    class Probe(val track: Int, val format: MediaFormat, val w: Int, val h: Int,
+                val rotation: Int, val durUs: Long)
+
+    private fun probe(ctx: Context, uri: Uri): Probe? {
         val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(ctx, uri, null)
+            for (i in 0 until extractor.trackCount) {
+                val f = extractor.getTrackFormat(i)
+                if (f.getString(MediaFormat.KEY_MIME)?.startsWith("video/") != true) continue
+                val rotation = if (f.containsKey(MediaFormat.KEY_ROTATION))
+                    f.getInteger(MediaFormat.KEY_ROTATION) else runCatching {
+                        val r = android.media.MediaMetadataRetriever()
+                        r.setDataSource(ctx, uri)
+                        val d = r.extractMetadata(
+                            android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                            ?.toIntOrNull() ?: 0
+                        r.release(); d
+                    }.getOrDefault(0)
+                val durUs = if (f.containsKey(MediaFormat.KEY_DURATION))
+                    f.getLong(MediaFormat.KEY_DURATION) else 0L
+                return Probe(i, f, f.getInteger(MediaFormat.KEY_WIDTH),
+                             f.getInteger(MediaFormat.KEY_HEIGHT), rotation, durUs)
+            }
+            return null
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    /** One piece [fromUs, toUs) of the video, with its own extractor and decoder. */
+    private fun scanPart(
+        ctx: Context, uri: Uri, info: Probe, fromUs: Long, toUs: Long, stepUs: Long,
+        maxGapUs: Long, target: FloatArray?, people: MutableList<Person>, cropMax: Int, maxPeople: Int,
+        onProgress: (Float) -> Unit, cancelled: () -> Boolean,
+    ) {
+        val extractor = MediaExtractor()
+        // A second reader, only to ask "where is the next key frame" -- the decoding
+        // reader's position is never disturbed by the question.
+        val syncs = MediaExtractor()
         var decoder: MediaCodec? = null
         try {
             extractor.setDataSource(ctx, uri, null)
-            var track = -1
-            var fmt: MediaFormat? = null
-            for (i in 0 until extractor.trackCount) {
-                val f = extractor.getTrackFormat(i)
-                if (f.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true) {
-                    track = i; fmt = f; break
-                }
-            }
-            val vf = fmt ?: return people
-            extractor.selectTrack(track)
-            val w = vf.getInteger(MediaFormat.KEY_WIDTH)
-            val h = vf.getInteger(MediaFormat.KEY_HEIGHT)
-            val rotation = if (vf.containsKey(MediaFormat.KEY_ROTATION))
-                vf.getInteger(MediaFormat.KEY_ROTATION) else runCatching {
-                    val r = android.media.MediaMetadataRetriever()
-                    r.setDataSource(ctx, uri)
-                    val d = r.extractMetadata(
-                        android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
-                        ?.toIntOrNull() ?: 0
-                    r.release(); d
-                }.getOrDefault(0)
-            val durUs = if (vf.containsKey(MediaFormat.KEY_DURATION))
-                vf.getLong(MediaFormat.KEY_DURATION) else 0L
-            // About two a second; a long clip is spread over at most [maxLooks] looks.
-            val stepUs = maxOf(500_000L, if (durUs > 0) durUs / maxLooks else 500_000L)
+            extractor.selectTrack(info.track)
+            syncs.setDataSource(ctx, uri, null)
+            syncs.selectTrack(info.track)
+            val w = info.w; val h = info.h; val rotation = info.rotation
             val upW = if (rotation % 180 != 0) h else w
             val upH = if (rotation % 180 != 0) w else h
             val scale = minOf(1f, 1920f / maxOf(upW, upH))
             val outW = ((upW * scale).toInt() and 1.inv()).coerceAtLeast(2)
             val outH = ((upH * scale).toInt() and 1.inv()).coerceAtLeast(2)
-
+            val vf = MediaFormat(info.format)
             vf.setInteger(MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            // Not playback: ask the decoder to run as fast as it can.
+            runCatching {
+                vf.setInteger(MediaFormat.KEY_PRIORITY, 1)
+                vf.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
+            }
             val dec = MediaCodec.createDecoderByType(vf.getString(MediaFormat.KEY_MIME)!!)
             decoder = dec
-            dec.configure(vf, null, null, 0)
+            try { dec.configure(vf, null, null, 0) }
+            catch (e: Exception) {
+                // Some decoders refuse the speed hints; configure plainly instead.
+                vf.removeKey(MediaFormat.KEY_OPERATING_RATE); vf.removeKey(MediaFormat.KEY_PRIORITY)
+                dec.configure(vf, null, null, 0)
+            }
             dec.start()
-            val info = MediaCodec.BufferInfo()
-            var nextUs = 0L
+            if (fromUs > 0) extractor.seekTo(fromUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            val span = (if (toUs == Long.MAX_VALUE) info.durUs else toUs) - fromUs
+            val bufInfo = MediaCodec.BufferInfo()
+            var nextUs = fromUs     // the next look is at or after this time
             var inEos = false
             var outEos = false
+            var jumpTo = -1L
             while (!outEos && !cancelled()) {
                 if (!inEos) {
                     val ix = dec.dequeueInputBuffer(10_000)
                     if (ix >= 0) {
+                        if (jumpTo >= 0) {
+                            // Skip ahead to the key frame of the next look. Only forward:
+                            // a reader already there (or past it) just carries on.
+                            if (jumpTo > extractor.sampleTime && extractor.sampleTime >= 0) {
+                                extractor.seekTo(jumpTo, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                                // Frames shown before the key frame may lean on skipped
+                                // ones: the next look is the key frame itself or later.
+                                nextUs = maxOf(nextUs, extractor.sampleTime)
+                            }
+                            jumpTo = -1L
+                        }
                         val n = extractor.readSampleData(dec.getInputBuffer(ix)!!, 0)
-                        if (n < 0) {
+                        val t = extractor.sampleTime
+                        if (n < 0 || (toUs != Long.MAX_VALUE && t >= toUs)) {
                             dec.queueInputBuffer(ix, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inEos = true
                         } else {
-                            dec.queueInputBuffer(ix, 0, n, extractor.sampleTime, 0)
+                            dec.queueInputBuffer(ix, 0, n, t, 0)
                             extractor.advance()
                         }
                     }
                 }
-                val ox = dec.dequeueOutputBuffer(info, 10_000)
+                val ox = dec.dequeueOutputBuffer(bufInfo, 10_000)
                 if (ox >= 0) {
-                    val pts = info.presentationTimeUs
-                    if (info.size > 0 && pts >= nextUs) {
+                    val pts = bufInfo.presentationTimeUs
+                    if (bufInfo.size > 0 && pts >= nextUs && pts < toUs) {
                         nextUs = pts + stepUs
                         val bgr = dec.getOutputImage(ox)?.let { img ->
                             try {
@@ -251,9 +391,16 @@ object VideoFacePicker {
                             } finally { img.close() }
                         }
                         if (bgr != null) look(people, bgr, outW, outH, pts, target, cropMax, maxPeople)
-                        if (durUs > 0) onProgress((pts.toFloat() / durUs).coerceIn(0f, 1f))
+                        if (span > 0) onProgress(((pts - fromUs).toFloat() / span).coerceIn(0f, 1f))
+                        // A key frame close to the next look: jump straight to it.
+                        if (!inEos) {
+                            syncs.seekTo(nextUs, MediaExtractor.SEEK_TO_NEXT_SYNC)
+                            val s = syncs.sampleTime
+                            if (s >= 0 && nextLook(pts, s, stepUs, maxGapUs) == Next.JUMP &&
+                                s > extractor.sampleTime) jumpTo = s
+                        }
                     }
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outEos = true
+                    if (bufInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outEos = true
                     dec.releaseOutputBuffer(ox, false)
                 }
             }
@@ -261,9 +408,9 @@ object VideoFacePicker {
             runCatching { decoder?.stop() }
             runCatching { decoder?.release() }
             runCatching { extractor.release() }
+            runCatching { syncs.release() }
         }
         onProgress(1f)
-        return people
     }
 
     private fun look(people: MutableList<Person>, bgr: ByteArray, w: Int, h: Int, pts: Long,
