@@ -229,33 +229,78 @@ object ModelPaths {
     @Volatile private var npuMasksStarted = false
 
     /**
+     * NPU builds in assets/masks_npu that are only for OPTIONAL settings (off by default):
+     * they are copied out of the APK only when their setting is on, so a phone that never
+     * uses them spends no storage and no install-time copy on them. Logical name -> setting.
+     */
+    private val OPTIONAL_NPU = mapOf("bisenet34" to "largeParser", "gpen512" to "enhancer512")
+
+    /** The logical name of an asset (`gpen512_v79.bin.001` -> `gpen512`). */
+    private fun npuLogical(asset: String): String = asset.substringBefore('_')
+
+    /**
      * Copy assets/masks_npu/<name>_<tier>.bin to filesDir/npu_masks once per app version,
      * then tell native where they are. Off the main thread; until it finishes the masks
-     * simply run where they did before (GPU or CPU).
+     * simply run where they did before (GPU or CPU). A file stored in pieces
+     * (`<file>.000`, `.001`, ...: GitHub keeps files under 100 MB) is joined on the way.
+     * Optional models (see [OPTIONAL_NPU]) only when [wanted] names them.
      */
-    private fun installNpuMasks(app: Context) {
-        if (npuMasksStarted) return
-        npuMasksStarted = true
+    private fun installNpuMasks(app: Context, wanted: Set<String> = emptySet(), prune: Boolean = false) {
+        synchronized(this) {
+            if (npuMasksStarted && wanted.all { it in npuWanted }) return
+            npuMasksStarted = true
+            npuWanted += wanted
+        }
+        val want = synchronized(this) { npuWanted.toSet() }
         Thread({
-            runCatching {
-                val dir = java.io.File(app.filesDir, "npu_masks").apply { mkdirs() }
-                val stamp = java.io.File(dir, "version")
-                val code = buildCode(app).toString()
-                val names = app.assets.list("masks_npu")?.toList().orEmpty()
-                if (stamp.takeIf { it.isFile }?.readText() != code ||
-                    names.any { !java.io.File(dir, it).isFile }) {
-                    for (n in names) {
-                        val tmp = java.io.File(dir, "$n.part")
-                        app.assets.open("masks_npu/$n").use { input ->
-                            tmp.outputStream().use { input.copyTo(it, 1 shl 20) }
+            synchronized(npuLock) {
+                runCatching {
+                    val dir = java.io.File(app.filesDir, "npu_masks").apply { mkdirs() }
+                    val code = buildCode(app).toString()
+                    val targets = npuTargets(app.assets.list("masks_npu")?.toList().orEmpty(), want)
+                    for ((name, pieces) in targets) {
+                        val out = java.io.File(dir, name)
+                        val stamp = java.io.File(dir, "$name.version")
+                        if (out.isFile && stamp.takeIf { it.isFile }?.readText() == code) continue
+                        val tmp = java.io.File(dir, "$name.part")
+                        tmp.outputStream().use { o ->
+                            for (p in pieces) app.assets.open("masks_npu/$p").use { it.copyTo(o, 1 shl 20) }
                         }
-                        tmp.renameTo(java.io.File(dir, n))
+                        tmp.renameTo(out)
+                        stamp.writeText(code)
                     }
-                    stamp.writeText(code)
-                }
-                NativePipe.setAuxQnnDir(dir.absolutePath)
-            }.onFailure { android.util.Log.w("ffmodels", "npu masks not installed", it) }
+                    // Optional models the user turned off again: the space comes back.
+                    if (prune) for (opt in OPTIONAL_NPU.keys) if (opt !in want)
+                        dir.listFiles { f -> npuLogical(f.name) == opt }?.forEach { it.safeDelete() }
+                    NativePipe.setAuxQnnDir(dir.absolutePath)
+                }.onFailure { android.util.Log.w("ffmodels", "npu masks not installed", it) }
+            }
         }, "ff-npu-masks").start()
+    }
+    /**
+     * Which files to make from the bundled NPU assets: target file -> its pieces in order.
+     * Optional models only when [want] names them. Pure; unit-tested.
+     */
+    internal fun npuTargets(assets: List<String>, want: Set<String>): Map<String, List<String>> =
+        assets.filter { npuLogical(it) !in OPTIONAL_NPU || npuLogical(it) in want }
+            .groupBy { a -> if (Regex("\\.\\d{3}$").containsMatchIn(a)) a.dropLast(4) else a }
+            .mapValues { (_, v) -> v.sorted() }
+
+    private val npuWanted = mutableSetOf<String>()
+    private val npuLock = Any()
+
+    /**
+     * The optional NPU builds the settings need ([OPTIONAL_NPU]); copies what is missing in
+     * the background and removes what is no longer needed. Call when the options change.
+     */
+    fun syncOptionalNpu(ctx: Context, opts: SwapOptions) {
+        val want = buildSet {
+            if (opts.largeParser) add("bisenet34")
+            if (opts.enhancer512 && opts.faceEnhance) add("gpen512")
+        }
+        synchronized(this) { npuWanted.retainAll(want) }
+        npuMasksStarted = false
+        installNpuMasks(ctx.applicationContext, want, prune = true)
     }
 
     /**

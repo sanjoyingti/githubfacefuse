@@ -1778,6 +1778,10 @@ fun SwapScreen(
                             Text(stringResource(R.string.opt_enhancer_note, opts.pixelBoostLabel),
                                  style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
                             com.facefusion.mobile.OptionSwitch(
+                                stringResource(R.string.opt_enhancer_512), opts.enhancer512,
+                                { onOptsChange(opts.copy(enhancer512 = it)) },
+                                hint = stringResource(R.string.opt_enhancer_512_hint))
+                            com.facefusion.mobile.OptionSwitch(
                                 stringResource(R.string.opt_sharpen), opts.enhanceSharpen,
                                 { onOptsChange(opts.copy(enhanceSharpen = it)) },
                                 hint = stringResource(R.string.opt_sharpen_hint))

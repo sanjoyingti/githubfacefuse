@@ -119,6 +119,23 @@ struct Config {
   bool sideHold = true;
   // NOT A FACE: detections whose landmarker score is under 0.2 are dropped (see analyse).
   bool rejectFalseFaces = true;
+  // SECOND DETECTOR (SCRFD 2.5G, bundled): when the main detector finds no face on a video
+  // frame, or loses a face that was on screen a moment ago, SCRFD looks at the frame too.
+  // Only a face where the lost one was is added (posters and pictures stay out); with no
+  // face at all, any face it finds. Frames where every face is found pay nothing.
+  bool secondDetector = true;
+  // LARGER FACE PARSER: BiSeNet ResNet-34 instead of ResNet-18 for the face parser mask
+  // (bundled; on the NPU when it computes the same labels as the CPU). A more exact outline
+  // of skin, hair and ears; about 1.2x the parser's work. Off by default.
+  bool largeParser = false;
+  // SECOND LANDMARKER (PEPPA-Wutz, bundled): for a face the 2DFAN4 landmarker is unsure of
+  // (score under 0.85: turned, tilted, blurred), PEPPA-Wutz places the 68 points too and
+  // the more confident of the two is used. Faces 2DFAN4 is sure of pay nothing.
+  bool turnedLandmarker = true;
+  // SHARPER ENHANCER (GPEN-BFR 512, bundled, NPU only): the face enhancer restores the face
+  // at 512 px on its own FFHQ crop instead of GPEN 256 on the swap crop. Twice the detail on
+  // close-ups; slower. Off by default; without the NPU build the 256 one runs as before.
+  bool enhancer512 = false;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;
@@ -621,6 +638,9 @@ class Pipeline {
    * same "absent is not a failure" convention as `syncLip`.
    */
   bool enhance(ffcv::Image& frame, const std::vector<Face>& faces);
+  // GPEN-BFR 512 on one face (Config::enhancer512); see ffpipe.cpp.
+  bool enhanceFace512(ffcv::Image& frame, const Face& f, const ffcv::MatF& boxCS,
+                      const float* tmplCS, int CS);
 
   /**
    * face_editor/core.py:edit_face on every face, in place: crop ffhq_512 at 512 around
@@ -686,6 +706,10 @@ class Pipeline {
   // Which source face [fi] of [faces] gets on this frame (-1 = keeps its own face).
   // What swapAll would use; for tests and logs.
   int sourceFor(const std::vector<Face>& faces, size_t fi);
+  // Faces the second detector (SCRFD) added since the pipeline was built.
+  int secondDetectorHits() const;
+  // Faces whose points came from the second landmarker (PEPPA-Wutz).
+  int turnedLandmarkerUsed() const;
   // Zero every counter above.  A run has to call this itself: the accumulators are
   // cumulative across frames by design, and setSource clears only SOME of them --
   // msSwap and msLipSync survive it, so a second run without this reports the first

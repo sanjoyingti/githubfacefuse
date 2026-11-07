@@ -155,6 +155,16 @@ class PhotoCheckTest {
         }
     }
 
+    @Test fun optionalNpuModelsOnlyWhenTheirSettingIsOn() {
+        val bundled = listOf("xseg_v79.bin", "bisenet_v79.bin", "peppa_v79.bin", "bisenet34_v79.bin",
+                             "gpen512_v79.bin.001", "gpen512_v79.bin.000")
+        assertEquals(setOf("xseg_v79.bin", "bisenet_v79.bin", "peppa_v79.bin"),
+                     ModelPaths.npuTargets(bundled, emptySet()).keys)
+        val all = ModelPaths.npuTargets(bundled, setOf("bisenet34", "gpen512"))
+        assertEquals(listOf("gpen512_v79.bin.000", "gpen512_v79.bin.001"), all["gpen512_v79.bin"])
+        assertEquals(6 - 1, all.size)
+    }
+
     @Test fun quickScanJumpsOnlyToNearKeyFrames() {
         val J = VideoFacePicker.Next.JUMP; val D = VideoFacePicker.Next.DECODE
         // phone video, key frame every second: skip straight to it

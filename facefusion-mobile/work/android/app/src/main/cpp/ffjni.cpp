@@ -154,6 +154,8 @@ struct Quality {
   float enhanceSharpen = 0.f;
   bool keepClosedEyes = true;
   bool sideHold = true;
+  // 1.0.54: the added models (see ffpipe::Config).
+  bool secondDetector = true, turnedLandmarker = true, largeParser = false, enhancer512 = false;
 };
 Quality g_quality;
 // Whether the caller is feeding consecutive frames (setSequence). Re-applied at initEx so a
@@ -179,6 +181,10 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.enhanceSharpen = g_quality.enhanceSharpen;
   cfg.keepClosedEyes = g_quality.keepClosedEyes;
   cfg.sideHold = g_quality.sideHold;
+  cfg.secondDetector = g_quality.secondDetector;
+  cfg.turnedLandmarker = g_quality.turnedLandmarker;
+  cfg.largeParser = g_quality.largeParser;
+  cfg.enhancer512 = g_quality.enhancer512;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -795,6 +801,22 @@ Java_com_facefusion_mobile_NativePipe_setQuality3(JNIEnv*, jclass, jboolean eyes
   FF_PIPE_LOCK;
   g_quality.keepClosedEyes = eyes == JNI_TRUE;
   g_quality.sideHold = side == JNI_TRUE;
+  if (g_pipe) {
+    ffpipe::Config c = g_pipe->config();
+    applyQuality(c);
+    g_pipe->updateConfig(c);
+  }
+}
+
+// The added models: second detector, second landmarker, larger parser, 512 enhancer.
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setModels4(JNIEnv*, jclass, jboolean det, jboolean lm,
+                                                jboolean parser, jboolean enh512) {
+  FF_PIPE_LOCK;
+  g_quality.secondDetector = det == JNI_TRUE;
+  g_quality.turnedLandmarker = lm == JNI_TRUE;
+  g_quality.largeParser = parser == JNI_TRUE;
+  g_quality.enhancer512 = enh512 == JNI_TRUE;
   if (g_pipe) {
     ffpipe::Config c = g_pipe->config();
     applyQuality(c);

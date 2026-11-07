@@ -245,6 +245,12 @@ data class SwapOptions(
     val keepClosedEyes: Boolean = true,
     // A face turned the way one of its photos is turned keeps the swap further round.
     val sideHold: Boolean = true,
+    // 1.0.54 models. The first two only run where a face was lost or its points are unsure,
+    // so normal frames cost the same; the last two are heavier and off by default.
+    val secondDetector: Boolean = true,
+    val turnedLandmarker: Boolean = true,
+    val largeParser: Boolean = false,
+    val enhancer512: Boolean = false,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -377,6 +383,10 @@ data class SwapOptions(
             .putBoolean(K_LOWEST_MEMORY, lowestMemory)
             .putBoolean(K_CLOSED_EYES, keepClosedEyes)
             .putBoolean(K_SIDE_HOLD, sideHold)
+            .putBoolean(K_SECOND_DET, secondDetector)
+            .putBoolean(K_TURNED_LM, turnedLandmarker)
+            .putBoolean(K_LARGE_PARSER, largeParser)
+            .putBoolean(K_ENH512, enhancer512)
             .apply()
     }
 
@@ -424,6 +434,10 @@ data class SwapOptions(
         private const val K_LOWEST_MEMORY = "lowest_memory"
         private const val K_CLOSED_EYES = "keep_closed_eyes"
         private const val K_SIDE_HOLD = "side_hold"
+        private const val K_SECOND_DET = "second_detector"
+        private const val K_TURNED_LM = "turned_landmarker"
+        private const val K_LARGE_PARSER = "large_parser"
+        private const val K_ENH512 = "enhancer_512"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -516,6 +530,10 @@ data class SwapOptions(
                 lowestMemory = p.getBoolean(K_LOWEST_MEMORY, d.lowestMemory),
                 keepClosedEyes = p.getBoolean(K_CLOSED_EYES, d.keepClosedEyes),
                 sideHold = p.getBoolean(K_SIDE_HOLD, d.sideHold),
+                secondDetector = p.getBoolean(K_SECOND_DET, d.secondDetector),
+                turnedLandmarker = p.getBoolean(K_TURNED_LM, d.turnedLandmarker),
+                largeParser = p.getBoolean(K_LARGE_PARSER, d.largeParser),
+                enhancer512 = p.getBoolean(K_ENH512, d.enhancer512),
             )
         }
     }

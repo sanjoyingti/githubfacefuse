@@ -359,6 +359,12 @@ fun RealismCard(
         OptionSwitch(stringResource(R.string.opt_side_hold), opts.sideHold,
                      { onChange(opts.copy(sideHold = it)) },
                      hint = stringResource(R.string.opt_side_hold_hint))
+        OptionSwitch(stringResource(R.string.opt_second_detector), opts.secondDetector,
+                     { onChange(opts.copy(secondDetector = it)) },
+                     hint = stringResource(R.string.opt_second_detector_hint))
+        OptionSwitch(stringResource(R.string.opt_turned_landmarker), opts.turnedLandmarker,
+                     { onChange(opts.copy(turnedLandmarker = it)) },
+                     hint = stringResource(R.string.opt_turned_landmarker_hint))
         OptionSwitch(stringResource(R.string.opt_lowest_memory), opts.lowestMemory,
                      { onChange(opts.copy(lowestMemory = it)) },
                      hint = stringResource(R.string.opt_lowest_memory_hint))
@@ -491,6 +497,9 @@ fun FaceMaskerCard(
         OptionSwitch(stringResource(R.string.opt_region), opts.regionMask,
                      { onChange(opts.copy(regionMask = it)) },
                      hint = stringResource(R.string.opt_region_hint))
+        OptionSwitch(stringResource(R.string.opt_large_parser), opts.largeParser,
+                     { onChange(opts.copy(largeParser = it)) },
+                     hint = stringResource(R.string.opt_large_parser_hint))
         OptionSwitch(stringResource(R.string.opt_keep_mouth), opts.keepMouth,
                      { onChange(opts.copy(keepMouth = it)) },
                      hint = stringResource(R.string.opt_keep_mouth_hint))

@@ -232,6 +232,15 @@
     <string name="opt_closed_eyes_hint">While an eye is shut, its own lids and lashes stay as filmed, so they do not smear. Each eye on its own (winks too).</string>
     <string name="opt_side_hold">Swap turned faces with side photos</string>
     <string name="opt_side_hold_hint">If this person has a photo turned the same way (Faces tab), a face turned sideways keeps the swap 15 degrees further round before fading.</string>
+    <!-- 1.0.54: added models -->
+    <string name="opt_second_detector">Second face detector (SCRFD)</string>
+    <string name="opt_second_detector_hint">When a face that was on screen a moment ago is lost (turned, half hidden, blurred), or no face is found at all, a second detector looks too. Frames where every face is found cost nothing extra.</string>
+    <string name="opt_turned_landmarker">Second face-point model for turned faces (PEPPA-Wutz)</string>
+    <string name="opt_turned_landmarker_hint">For a face the normal face-point model is unsure of (turned, tilted, blurred), a second one places the eyes, nose and mouth too, and the more confident one is used. Faces it is sure of cost nothing extra.</string>
+    <string name="opt_large_parser">Larger face parser (BiSeNet ResNet-34)</string>
+    <string name="opt_large_parser_hint">A more exact outline of skin, hair and ears for the face parser mask. About 1.2 times the parser\'s work; off keeps the speed as before.</string>
+    <string name="opt_enhancer_512">Sharper enhancer at 512 px (GPEN-BFR 512)</string>
+    <string name="opt_enhancer_512_hint">Restores the face at 512 px instead of 256: twice the detail on close-ups, but several times the enhancer\'s work, so swaps are slower and use more battery. Needs the phone\'s NPU; off keeps everything as before.</string>
     <!-- 1.0.52: find everyone in the video (Assign per person) -->
     <string name="vpeople_find">Find everyone in the video</string>
     <string name="vpeople_rescan">Scan the video again</string>

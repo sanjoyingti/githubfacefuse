@@ -75,7 +75,15 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
-          Version 1.0.53 (one picture per person):
+          Version 1.0.54 (more models; same speed, memory and battery with the default settings):
+          - Second face detector (SCRFD, on): when a face that was on screen a moment ago is lost (turned, half hidden, blurred), or no face is found at all, a second detector looks too. Only a face where the lost one was is added, so posters and pictures stay out. Frames where every face is found cost nothing extra.
+          - Second face-point model for turned faces (PEPPA-Wutz, on): for a face the normal face-point model is unsure of, a second one places the eyes, nose and mouth too, and the more confident one is used. On the NPU; about 1 face in 12 on a dance clip, a few milliseconds each.
+          - Larger face parser (BiSeNet ResNet-34, off): a more exact outline of skin, hair and ears. Gear > Face Masker.
+          - Sharper enhancer at 512 px (GPEN-BFR 512, off): twice the detail on close-ups, on the NPU; slower when on. Face enhancer settings.
+          - The big optional models are only unpacked on the phone while their switch is on; nothing is loaded into memory until it is used.
+          - All converted models checked against the originals: the NPU builds agree within 0.07 of 255 (enhancer), 99.86% of pixels (parser), 1.65 px (face points).
+          - The APK is larger (about 440 MB) because these models are inside it.
+
           - Find everyone in the video now lists each person ONCE: 3 people in the video, 3 pictures; 10 people, 10 pictures. Before, the same person seen from another side, in other light or with another expression could be listed several times.
           - How: full side views (head turned past 50 degrees) are no longer used to decide who is who; each person is compared through several different-looking pictures of them, not only their average; one person cannot be two faces at the same moment; and at the end, groups that are clearly one person (and never on screen together) are joined.
           - Tested on real faces from two clips (a dance clip with 3 girls, a TikTok clip with 2 people) and on a "film" where both clips play twice: every person once, also when they come back later. The old way listed the same 5 people as 5 to 11 entries.

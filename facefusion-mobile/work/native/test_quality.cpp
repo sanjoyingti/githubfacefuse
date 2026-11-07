@@ -175,6 +175,11 @@ int main(int argc, char** argv) {
     else if (a == "--sidehold") cfg.sideHold = v() == "1";
     else if (a == "--weight") cfg.swapperWeight = (float)atof(v().c_str());
     else if (a == "--likeness") likeness = v() == "1";
+    else if (a == "--enhance") { cfg.faceEnhance = true; cfg.faceEnhancerBlend = (float)atof(v().c_str()); }
+    else if (a == "--enh512") cfg.enhancer512 = v() == "1";
+    else if (a == "--peppa") cfg.turnedLandmarker = v() == "1";
+    else if (a == "--large-parser") cfg.largeParser = v() == "1";
+    else if (a == "--second-det") cfg.secondDetector = v() == "1";
     else if (a == "--dump-emb") dumpEmb = v();
     else if (a == "--assign-test") assignTest = v() == "1";
     else if (a == "--eyes") cfg.keepClosedEyes = v() == "1";   // another photo of the source person
@@ -285,6 +290,7 @@ int main(int argc, char** argv) {
       printf("\n");
     }
     if (!detectOnly && !pipe.swapAll(fr, faces)) { fprintf(stderr, "swap: %s\n", pipe.error().c_str()); return 5; }
+    if (!detectOnly && cfg.faceEnhance && !pipe.enhance(fr, faces)) { fprintf(stderr, "enhance: %s\n", pipe.error().c_str()); return 6; }
     char name[64];
     snprintf(name, sizeof(name), "/out_%03d.ppm", idx++);
     if (!detectOnly) writePpm(out + name, fr);
@@ -313,6 +319,7 @@ int main(int argc, char** argv) {
   }
   if (assignTest) printf("ASSIGN two-faces-same-person frames %d; person1 clear faces %d missed %d; others clear %d wrongly swapped %d\n", assignBad2, assignA, assignMissA, assignOther, assignWrongB);
   if (likeN) printf("LIKENESS mean %.3f over %d faces\n", likeSum / likeN, likeN);
+  printf("SECOND DETECTOR added %d faces; SECOND LANDMARKER used for %d faces\n", pipe.secondDetectorHits(), pipe.turnedLandmarkerUsed());
   printf("%s\n", ffpipe::Pipeline::maskStatus().c_str());
   {
     // Thread count at the end: a leak per frame shows here.

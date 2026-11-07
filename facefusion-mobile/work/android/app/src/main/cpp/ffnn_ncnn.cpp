@@ -365,13 +365,23 @@ bool ncnnExecute(Handle h, const std::vector<std::string>& names,
     }
   }
 
-  ncnn::Mat out;
-  if (ex.extract(m->spec->out, out) != 0) {
-    g_err = "ncnn: extract " + std::string(m->spec->out) + " failed";
-    return false;
+  // One output, or several named in a comma-separated list (SCRFD has nine).
+  outs.clear();
+  const std::string outNames = m->spec->out;
+  size_t at = 0;
+  while (at <= outNames.size()) {
+    const size_t comma = outNames.find(',', at);
+    const std::string blob = outNames.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+    ncnn::Mat out;
+    if (ex.extract(blob.c_str(), out) != 0) {
+      g_err = "ncnn: extract " + blob + " failed";
+      return false;
+    }
+    outs.emplace_back();
+    flattenMat(out, outs.back());
+    if (comma == std::string::npos) break;
+    at = comma + 1;
   }
-  outs.assign(1, std::vector<float>());
-  flattenMat(out, outs[0]);
   return true;
 }
 
@@ -447,6 +457,15 @@ const std::map<std::string, Spec>& auxSpecs() {
   static const std::map<std::string, Spec> m = {
       {"xseg",    {"xseg_3_nchw",          {{"input", 256, 256, 3}}, "out0"}},
       {"bisenet", {"bisenet_resnet_18_b1", {{"input", 512, 512, 3}}, "out0"}},
+      // BiSeNet ResNet-34 (FaceFusion, MIT): the same input and 19 labels, larger.
+      {"bisenet34", {"bisenet_resnet_34_b1", {{"input", 512, 512, 3}}, "out0"}},
+      // PEPPA-Wutz (FaceFusion, MIT): the 256 landmarker crop, BGR /255; out0 is
+      // [294,64,64] -- 98 heatmaps, then their x and y offsets (decoded in ffpipe).
+      {"peppa",   {"peppa", {{"input", 256, 256, 3}}, "out0"}},
+      // SCRFD 2.5G (InsightFace, MIT): 640x640 BGR, (x-127.5)/128; nine outputs --
+      // scores, box distances and five points for strides 8, 16 and 32.
+      {"scrfd",   {"scrfd_2.5g", {{"input", 640, 640, 3}},
+                   "out0,out1,out2,out3,out4,out5,out6,out7,out8"}},
   };
   return m;
 }

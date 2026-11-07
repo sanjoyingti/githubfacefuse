@@ -75,7 +75,22 @@ struct Nets {
   // per frame.
   ffnn::Handle occ = nullptr, parse = nullptr;
   bool occTried = false, parseTried = false;
+  // The second face detector (Config::secondDetector), opened on first use like the masks.
+  ffnn::Handle scrfd = nullptr;
+  bool scrfdTried = false;
+  // Which face parser `parse` holds (Config::largeParser), so a change reloads it.
+  bool parseLarge = false;
+  // The second landmarker (Config::turnedLandmarker).
+  ffnn::Handle peppa = nullptr;
+  bool peppaTried = false;
+  // GPEN-BFR 512 (Config::enhancer512), NPU only.
+  ffnn::Handle enh512 = nullptr;
+  bool enh512Tried = false;
 };
+
+// PEPPA-Wutz's 98 WFLW points -> the 68-point layout: each of the 68 is one of the 98 or the
+// mean of two (measured from the model's own post-processing graph, exact to 3e-6).
+static const int kPeppa68[68][2] = {{0,0}, {2,2}, {4,4}, {6,6}, {8,8}, {10,10}, {12,12}, {14,14}, {16,16}, {18,18}, {20,20}, {22,22}, {24,24}, {26,26}, {28,28}, {30,30}, {32,32}, {33,33}, {34,34}, {35,35}, {36,36}, {37,37}, {42,42}, {43,43}, {44,44}, {45,45}, {46,46}, {51,51}, {52,52}, {53,53}, {54,54}, {55,55}, {56,56}, {57,57}, {58,58}, {59,59}, {60,60}, {61,62}, {62,63}, {64,64}, {65,66}, {66,67}, {68,68}, {69,70}, {70,71}, {72,72}, {73,74}, {74,75}, {76,76}, {77,77}, {78,78}, {79,79}, {80,80}, {81,81}, {82,82}, {83,83}, {84,84}, {85,85}, {86,86}, {87,87}, {88,88}, {89,89}, {90,90}, {91,91}, {92,92}, {93,93}, {94,94}, {95,95}};
 
 // One clip's audio, reduced to what the lip syncer eats: a mel window per OUTPUT frame.
 // Held here rather than handed across JNI per frame, for the same reason the source
@@ -490,6 +505,122 @@ struct Pipeline::Impl {
     return nullptr;
   }
   void applyToSelected(int sourceIndex, bool keepOriginal);
+  // ---- second face detector (SCRFD 2.5G, ncnn, bundled in assets/masks)
+  int secondDetectorHits = 0;
+  int peppaUsed = 0;
+  /** GPEN-BFR 512 on the NPU, opened when first wanted; null where there is no NPU build. */
+  ffnn::Handle enh512Net() {
+    if (!n.enh512Tried) { n.enh512Tried = true; n.enh512 = ffnn::openAuxNpu("gpen512"); }
+    return n.enh512;
+  }
+  /**
+   * PEPPA-Wutz, opened on first use: the NPU build when it places the points where the CPU
+   * does (within 3 px of the 256 crop on a fixed probe; fp16 on the simulated HTP was 1.65 px
+   * from the original on a turned face), else the CPU.
+   */
+  ffnn::Handle peppaNet() {
+    if (n.peppaTried) return n.peppa;
+    n.peppaTried = true;
+    ffnn::Handle cpu = ffnn::openAux("peppa", ffnn::Placement::Cpu);
+    if (!cpu) return nullptr;
+    if (ffnn::Handle npu = ffnn::openAuxNpu("peppa")) {
+      std::vector<float> probe((size_t)3 * 256 * 256);
+      for (size_t i = 0; i < probe.size(); ++i) probe[i] = (float)((i * 2654435761u) % 1000) / 1000.f;
+      float a[136], b[136], sa = 0, sb = 0;
+      if (runPeppa(cpu, probe, a, &sa) && runPeppa(npu, probe, b, &sb)) {
+        float worst = 0;
+        for (int k = 0; k < 136; ++k) worst = std::max(worst, std::fabs(a[k] - b[k]));
+        if (worst <= 3.f) { ffnn::release(cpu); n.peppa = npu; return npu; }
+      }
+      ffnn::release(npu);
+    }
+    n.peppa = cpu;
+    return cpu;
+  }
+  /** 68 points in the 256 crop and the score (FaceFusion: mean peak / 0.95, clipped). */
+  static bool runPeppa(ffnn::Handle h, const std::vector<float>& in, float* xy, float* score) {
+    std::vector<std::vector<float>> out;
+    if (!ffnn::execute(h, {"input"}, {in.data()}, out) || out.empty() ||
+        out[0].size() < (size_t)294 * 64 * 64) return false;
+    const float* hm = out[0].data();
+    float px[98], py[98], pk[98];
+    for (int i = 0; i < 98; ++i) {
+      const float* c = hm + (size_t)i * 4096;
+      int best = 0;
+      for (int j = 1; j < 4096; ++j) if (c[j] > c[best]) best = j;
+      pk[i] = c[best];
+      px[i] = (float)(best % 64) + hm[(size_t)(98 + i) * 4096 + best];
+      py[i] = (float)(best / 64) + hm[(size_t)(196 + i) * 4096 + best];
+      if (!std::isfinite(px[i]) || !std::isfinite(py[i]) || !std::isfinite(pk[i])) return false;
+    }
+    double s = 0;
+    for (int k = 0; k < 68; ++k) {
+      const int a = kPeppa68[k][0], b = kPeppa68[k][1];
+      xy[2 * k] = (px[a] + px[b]) * 0.5f / 64.f * 256.f;
+      xy[2 * k + 1] = (py[a] + py[b]) * 0.5f / 64.f * 256.f;
+      s += (pk[a] + pk[b]) * 0.5;
+    }
+    *score = (float)std::min(1.0, std::max(0.0, s / 68.0 / 0.95));
+    return true;
+  }
+  ffnn::Handle secondDetectorNet() {
+    if (!n.scrfdTried) { n.scrfdTried = true; n.scrfd = ffnn::openAux("scrfd"); }
+    return n.scrfd;
+  }
+  /**
+   * SCRFD on [frame]: boxes, scores and the five points, in frame pixels, after NMS.
+   * As FaceFusion runs it: BGR, letterboxed into the top-left of 640x640 (zero pad),
+   * (x - 127.5) / 128; three strides (8, 16, 32), two anchors per cell, distances in
+   * stride units.
+   */
+  bool runScrfd(const ffcv::Image& frame, float thr, std::vector<std::array<float, 4>>& ob,
+                std::vector<float>& os, std::vector<std::array<float, 10>>& ol) {
+    constexpr int S = 640;
+    const double scale = std::min(1.0, std::min((double)S / frame.w, (double)S / frame.h));
+    const int tw = std::max(1, (int)(frame.w * scale)), th = std::max(1, (int)(frame.h * scale));
+    const ffcv::Image r = (tw == frame.w && th == frame.h) ? frame : ffcv::resizeLinear(frame, tw, th);
+    std::vector<float> in((size_t)3 * S * S, -127.5f / 128.f);
+    for (int y = 0; y < th; ++y) {
+      const uint8_t* row = r.row(y);
+      for (int x = 0; x < tw; ++x)
+        for (int c = 0; c < 3; ++c)
+          in[(size_t)c * S * S + (size_t)y * S + x] = (row[x * 3 + c] - 127.5f) / 128.f;
+    }
+    std::vector<std::vector<float>> out;
+    if (!ffnn::execute(n.scrfd, {"input"}, {in.data()}, out) || out.size() < 9) return false;
+    const float inv = (float)(1.0 / scale);
+    std::vector<std::array<float, 4>> b; std::vector<float> s; std::vector<std::array<float, 10>> l;
+    const int strides[3] = {8, 16, 32};
+    for (int k = 0; k < 3; ++k) {
+      const int st = strides[k], g = S / st, A = g * g * 2;
+      const auto& sc = out[(size_t)k];
+      const auto& bb = out[(size_t)3 + k];
+      const auto& kp = out[(size_t)6 + k];
+      if ((int)sc.size() < A || (int)bb.size() < A * 4 || (int)kp.size() < A * 10) return false;
+      for (int i = 0; i < A; ++i) {
+        const float v = sc[(size_t)i];
+        if (!(v > thr) || !std::isfinite(v)) continue;
+        const int cell = i / 2;
+        const float cx = (float)((cell % g) * st), cy = (float)((cell / g) * st);
+        const float* d = &bb[(size_t)i * 4];
+        std::array<float, 4> box{(cx - d[0] * st) * inv, (cy - d[1] * st) * inv,
+                                 (cx + d[2] * st) * inv, (cy + d[3] * st) * inv};
+        bool ok = std::isfinite(box[0]) && std::isfinite(box[1]) && std::isfinite(box[2]) &&
+                  std::isfinite(box[3]) && box[2] - box[0] > 1.f && box[3] - box[1] > 1.f;
+        std::array<float, 10> pts{};
+        for (int q = 0; q < 10 && ok; ++q) {
+          pts[(size_t)q] = ((q % 2 == 0 ? cx : cy) + kp[(size_t)i * 10 + q] * st) * inv;
+          ok = std::isfinite(pts[(size_t)q]);
+        }
+        if (!ok) continue;
+        b.push_back(box); s.push_back(v); l.push_back(pts);
+      }
+    }
+    for (int idx : ffcv::nmsBoxes(b, s, thr, 0.4f)) {
+      ob.push_back(b[(size_t)idx]); os.push_back(s[(size_t)idx]); ol.push_back(l[(size_t)idx]);
+    }
+    return true;
+  }
   int sourceForFace(const std::vector<Face>& faces, size_t fi, float refDistance);
   // The source every UNPINNED face keeps while assign mode is on. Captured when the
   // mode is turned on, so flipping the chip afterwards changes nothing on the feed --
@@ -596,7 +727,7 @@ Pipeline::Pipeline() = default;
 Pipeline::~Pipeline() {
   if (p_) {
     for (auto h : {p_->n.det, p_->n.fan, p_->n.fan685, p_->n.arc, p_->n.swap, p_->n.lip, p_->n.nsfw,
-                   p_->n.enh, p_->n.occ, p_->n.parse})
+                   p_->n.enh, p_->n.occ, p_->n.parse, p_->n.scrfd, p_->n.peppa, p_->n.enh512})
       if (h) ffnn::release(h);
   }
 }
@@ -659,11 +790,13 @@ bool Pipeline::init(const std::string& libDir, const std::string& skelDir,
   auto dropNets = [&]() {
     for (ffnn::Handle* h : {&p_->n.det, &p_->n.fan, &p_->n.fan685, &p_->n.arc, &p_->n.lip,
                             &p_->n.swap, &p_->n.nsfw, &p_->n.enh, &p_->n.lpFeat,
-                            &p_->n.lpMotion, &p_->n.lpGen, &p_->n.occ, &p_->n.parse}) {
+                            &p_->n.lpMotion, &p_->n.lpGen, &p_->n.occ, &p_->n.parse,
+                            &p_->n.scrfd, &p_->n.peppa, &p_->n.enh512}) {
       if (*h) ffnn::release(*h);
       *h = nullptr;
     }
-    p_->n.occTried = p_->n.parseTried = false;
+    p_->n.occTried = p_->n.parseTried = p_->n.scrfdTried = p_->n.peppaTried = false;
+    p_->n.enh512Tried = false;
     p_->lpMlps = ffportrait::Mlps();
     nsfwQuantised_ = false;
   };
@@ -1287,6 +1420,43 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
         }
     }
   }
+  // SECOND DETECTOR (SCRFD): a face the sequence saw a moment ago that the main detector
+  // has lost (turned, half hidden, blurred), or a frame with no face at all. Measured on a
+  // 15 s two-person clip: 19 lost faces and 18 of 59 face-less frames found again, all
+  // real faces; frames where every face is found never run it.
+  if (cfg.secondDetector && !boxesOnly) {
+    std::vector<const float*> lost;
+    if (p_->seq.on && !noTrack)
+      for (const auto& sf : p_->seq.faces) {
+        if (sf.miss > 12) continue;
+        if (std::min(sf.box[2] - sf.box[0], sf.box[3] - sf.box[1]) < 48.f) continue;
+        bool found = false;
+        for (int idx : keep)
+          if (ffmotion::iou(boxes[(size_t)idx].data(), sf.box) >= 0.2f) { found = true; break; }
+        if (!found) lost.push_back(sf.box);
+      }
+    const bool none = keep.empty() && (harder || noTrack || !p_->seq.on);
+    if ((!lost.empty() || none) && p_->secondDetectorNet()) {
+      std::vector<std::array<float, 4>> sb; std::vector<float> ss; std::vector<std::array<float, 10>> sl;
+      if (p_->runScrfd(frame, cfg.detectorScore, sb, ss, sl)) {
+        for (size_t k = 0; k < sb.size(); ++k) {
+          bool dup = false;
+          for (int idx : keep)
+            if (ffmotion::iou(boxes[(size_t)idx].data(), sb[k].data()) >= 0.3f) { dup = true; break; }
+          if (dup) continue;
+          bool atLost = false;
+          for (const float* lb : lost)
+            if (ffmotion::iou(lb, sb[k].data()) >= 0.2f) { atLost = true; break; }
+          // With faces on screen only the lost ones come back; with none, any real-sized face.
+          if (!atLost && !(none && keep.empty())) continue;
+          if (!atLost && std::min(sb[k][2] - sb[k][0], sb[k][3] - sb[k][1]) < 32.f) continue;
+          boxes.push_back(sb[k]); scores.push_back(ss[k]); lms.push_back(sl[k]);
+          keep.push_back((int)boxes.size() - 1);
+          ++p_->secondDetectorHits;
+        }
+      }
+    }
+  }
   }  // end of the real-detection path
   if (!noTrack && !boxesOnly) {
     if (keep.empty()) ++p_->noFaceStreak; else p_->noFaceStreak = 0;
@@ -1424,6 +1594,25 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
     // test clip they scored 0.07-0.11, while real faces -- turned, blurred, looking down --
     // never went below 0.36 (median 0.93). Under 0.2 the box is dropped.
     if (cfg.rejectFalseFaces && score68 < 0.2f) continue;
+    // SECOND LANDMARKER on a face 2DFAN4 is unsure of: the more confident one is used
+    // (FaceFusion's "many" landmarker). The NOT-A-FACE test above stays on 2DFAN4's score.
+    if (cfg.turnedLandmarker && score68 < 0.85f) {
+      if (ffnn::Handle pe = p_->peppaNet()) {
+        float pxy[136], psc = 0.f;
+        const double tp = nowMs();
+        if (Impl::runPeppa(pe, fin, pxy, &psc) && psc > score68) {
+          if (angle != 0) {
+            float tmp[136]; ffcv::transformPoints(pxy, 68, ffcv::invertAffine(rot), tmp);
+            std::memcpy(pxy, tmp, sizeof(pxy));
+          }
+          ffcv::transformPoints(pxy, 68, ia, f.landmark68);
+          score68 = psc;
+          f.lmScore = psc;
+          ++p_->peppaUsed;
+        }
+        msLandmark += nowMs() - tp;
+      }
+    }
     if ((size_t)idx < recovered.size() && recovered[(size_t)idx]) {
       // A recovered face must be a confident face of about the size it had.
       float l5[10];
@@ -2071,6 +2260,9 @@ bool Pipeline::restorePersonAssignment(const float* embedding, int sourceIndex,
   p_->rememberAssignment(norm, sourceIndex, keepOriginal, person);
   return true;
 }
+
+int Pipeline::secondDetectorHits() const { return p_ ? p_->secondDetectorHits : 0; }
+int Pipeline::turnedLandmarkerUsed() const { return p_ ? p_->peppaUsed : 0; }
 
 int Pipeline::sourceFor(const std::vector<Face>& faces, size_t fi) {
   return p_ ? p_->sourceForFace(faces, fi, p_->cfg.referenceDistance) : -1;
@@ -2846,7 +3038,7 @@ ffnn::Handle Pipeline::Impl::maskNet(const char* name, int size, ffnn::Handle& h
                                      bool& tried) {
   if (tried) return h;
   tried = true;
-  const bool parser = std::strcmp(name, "bisenet") == 0;
+  const bool parser = std::strncmp(name, "bisenet", 7) == 0;   // bisenet or bisenet34
   const int slot = parser ? 1 : 0;
   const std::vector<float> probe = maskProbe(size, parser);
   auto run = [&](ffnn::Handle x, std::vector<float>& out) {
@@ -2933,7 +3125,15 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
     finishModelMask(om, CS, m);
   }
   if (!skipParser && (cfg.regionMask || cfg.keepMouth || cfg.keepLips) &&
-      maskNet("bisenet", 512, n.parse, n.parseTried)) {
+      [&] {
+        // The parser the settings ask for; switching it drops the loaded one.
+        if (n.parseTried && n.parseLarge != cfg.largeParser) {
+          if (n.parse) ffnn::release(n.parse);
+          n.parse = nullptr; n.parseTried = false;
+        }
+        n.parseLarge = cfg.largeParser;
+        return maskNet(cfg.largeParser ? "bisenet34" : "bisenet", 512, n.parse, n.parseTried) != nullptr;
+      }()) {
     constexpr int PS = 512;
     const ffcv::Image s = ffcv::resizeLinear(crop, PS, PS);
     static const float mean[3] = {0.485f, 0.456f, 0.406f}, stdv[3] = {0.229f, 0.224f, 0.225f};
@@ -3345,9 +3545,15 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
 }
 
 bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
-  if (!p_ || !p_->n.enh) return true;   // absent is not a failure, matches syncLip
+  if (!p_) return true;
   const Config& cfg = p_->cfg;
   if (!cfg.faceEnhance) return true;
+  // The 512 enhancer when chosen and on the NPU; otherwise GPEN 256 exactly as before.
+  // FF_ENH512_TEST (host tests only): the 512 path without the NPU, painting the face red
+  // so where it is pasted can be checked.
+  static const bool paintTest = getenv("FF_ENH512_TEST") != nullptr;
+  const bool use512 = cfg.enhancer512 && (paintTest || p_->enh512Net());
+  if (!p_->n.enh && !use512) return true;   // absent is not a failure, matches syncLip
   // Same rule as swapAll and editFaces: with the swapper off this stage alone changes
   // the frame, so it may not run on a pipeline no check has cleared.
   if (!p_->gateCleared) {
@@ -3357,7 +3563,7 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
   const int SS = cfg.swapSize;
   const int PB = cfg.pixelBoost < 1 ? 1 : cfg.pixelBoost;
   const int CS = SS * PB;
-  if (CS % kEnhSize != 0) return true;
+  if (!use512 && CS % kEnhSize != 0) return true;
 
   float tmpl[10];
   const float* T = ffcv::warpTemplate(1);            // arcface_128, same as swapAll
@@ -3385,6 +3591,11 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
     if (p_->sourceForFace(faces, fi, cfg.referenceDistance) == kNoSource)
       continue;
     if (f.poseFade < 0.02f) continue;   // the swap left this face alone; so does gpen
+
+    if (use512) {
+      if (!enhanceFace512(frame, f, mask, tmpl, CS)) return false;
+      continue;
+    }
 
     double t0 = nowMs();
     ffcv::Affine am = ffcv::umeyama(f.landmark5_68, tmpl, 5);
@@ -3469,6 +3680,91 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
   return true;
 }
 
+
+/**
+ * GPEN-BFR 512 on one face (FaceFusion's gpen_bfr_512): its own ffhq_512 crop, RGB scaled
+ * to [-1, 1], output clipped and blended with the crop by the enhancer blend. The mask is
+ * the swap's own mask for this face (occlusion, parser, head-turn fade) moved from the swap
+ * crop into this crop, times a box mask -- so it never repaints what the swap kept.
+ */
+bool Pipeline::enhanceFace512(ffcv::Image& frame, const Face& f, const ffcv::MatF& boxCS,
+                              const float* tmplCS, int CS) {
+  const Config& cfg = p_->cfg;
+  constexpr int ES = 512;
+  float t512[10];
+  const float* T = ffcv::warpTemplate(2);   // ffhq_512
+  for (int i = 0; i < 10; ++i) t512[i] = T[i] * ES;
+  double t0 = nowMs();
+  const ffcv::Affine am = ffcv::umeyama(f.landmark5_68, t512, 5);
+  const ffcv::Image crop = ffcv::warpAffine(frame, am, ES, ES, ffcv::BORDER_REPLICATE);
+  std::vector<float> in((size_t)3 * ES * ES);
+  for (int y = 0; y < ES; ++y) {
+    const uint8_t* row = crop.row(y);
+    for (int x = 0; x < ES; ++x)
+      for (int c = 0; c < 3; ++c)   // BGR byte c -> RGB plane 2-c
+        in[(size_t)(2 - c) * ES * ES + (size_t)y * ES + x] = (row[x * 3 + c] / 255.f - 0.5f) / 0.5f;
+  }
+  msGeom += nowMs() - t0;
+  t0 = nowMs();
+  std::vector<std::vector<float>> out;
+  static const bool paintTest = getenv("FF_ENH512_TEST") != nullptr;
+  if (paintTest) {
+    out.assign(1, std::vector<float>((size_t)3 * ES * ES, -1.f));
+    std::fill(out[0].begin(), out[0].begin() + (size_t)ES * ES, 1.f);   // R plane
+  } else if (!ffnn::execute(p_->n.enh512, {"input"}, {in.data()}, out) || out.empty() ||
+      out[0].size() < (size_t)3 * ES * ES) {
+    err_ = std::string("enhancer 512: ") + ffnn::lastError();
+    return false;
+  }
+  msEnhance += nowMs() - t0;
+  t0 = nowMs();
+  const float b = cfg.faceEnhancerBlend < 0.f ? 0.f
+                : (cfg.faceEnhancerBlend > 1.f ? 1.f : cfg.faceEnhancerBlend);
+  ffcv::MatF outF(ES, ES, 3);
+  const float* e = out[0].data();
+  for (int y = 0; y < ES; ++y) {
+    const uint8_t* srow = crop.row(y);
+    float* orow = outF.row(y);
+    for (int x = 0; x < ES; ++x)
+      for (int c = 0; c < 3; ++c) {
+        float v = e[(size_t)(2 - c) * ES * ES + (size_t)y * ES + x];
+        v = !std::isfinite(v) ? 0.f : (v < -1.f ? -1.f : (v > 1.f ? 1.f : v));
+        orow[x * 3 + c] = (float)srow[x * 3 + c] * (1.f - b) + (v + 1.f) * 0.5f * 255.f * b;
+      }
+  }
+  if (cfg.enhanceSharpen > 0.f) ffmotion::sharpen(outF, std::fmin(1.f, cfg.enhanceSharpen), 2);
+
+  // The swap's mask for this face, in the SWAP crop: cached when the swap made one, else
+  // built the way the 256 enhancer builds it.
+  const ffcv::Affine amCS = ffcv::umeyama(f.landmark5_68, tmplCS, 5);
+  ffcv::MatF built;
+  const ffcv::MatF* mCS = &boxCS;
+  if (const ffcv::MatF* cached = p_->cachedMask(f)) {
+    mCS = cached;
+  } else if (p_->wantsMaskModels() || f.poseFade < 0.999f) {
+    built = boxCS;
+    if (p_->wantsMaskModels()) {
+      const ffcv::Image cropCS = ffcv::warpAffine(frame, amCS, CS, CS, ffcv::BORDER_REPLICATE);
+      if (!p_->applyMaskModels(cropCS, built, err_)) return false;
+    }
+    if (f.poseFade < 0.999f) for (float& v : built.data) v *= f.poseFade;
+    mCS = &built;
+  }
+  // swap crop -> frame -> 512 crop
+  const ffcv::Affine inv = ffcv::invertAffine(amCS);
+  ffcv::Affine m;
+  for (int r = 0; r < 2; ++r) {
+    m(r, 0) = am(r, 0) * inv(0, 0) + am(r, 1) * inv(1, 0);
+    m(r, 1) = am(r, 0) * inv(0, 1) + am(r, 1) * inv(1, 1);
+    m(r, 2) = am(r, 0) * inv(0, 2) + am(r, 1) * inv(1, 2) + am(r, 2);
+  }
+  ffcv::MatF mask = ffcv::warpAffineF(*mCS, m, ES, ES, ffcv::BORDER_CONSTANT);
+  const ffcv::MatF box = ffcv::createBoxMask(ES, ES, cfg.maskBlur, cfg.maskPadding);
+  for (size_t i = 0; i < mask.data.size() && i < box.data.size(); ++i) mask.data[i] *= box.data[i];
+  ffcv::pasteBack(frame, outF, mask, am);
+  msGeom += nowMs() - t0;
+  return true;
+}
 
 // ------------------------------------------------------------- LivePortrait
 //

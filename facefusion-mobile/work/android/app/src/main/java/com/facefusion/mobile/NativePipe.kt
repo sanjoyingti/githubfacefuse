@@ -118,7 +118,15 @@ object NativePipe {
         setQuality2(opts.autoBoost, opts.seamless, opts.hairAware, opts.temporalSmooth)
         setEnhanceSharpen(if (opts.enhanceSharpen) opts.enhanceSharpenStrength else 0f)
         setQuality3(opts.keepClosedEyes, opts.sideHold)
+        setModels4(opts.secondDetector, opts.turnedLandmarker, opts.largeParser, opts.enhancer512)
     }
+
+    /**
+     * The added models (1.0.54): second face detector (SCRFD), second landmarker
+     * (PEPPA-Wutz), larger face parser (BiSeNet ResNet-34), 512 enhancer (GPEN-BFR 512).
+     */
+    @JvmStatic external fun setModels4(secondDetector: Boolean, turnedLandmarker: Boolean,
+                                       largeParser: Boolean, enhancer512: Boolean)
 
     /** Closed eyes stay as filmed; side photos hold the swap further round (build 50). */
     @JvmStatic external fun setQuality3(keepClosedEyes: Boolean, sideHold: Boolean)
