@@ -237,6 +237,12 @@
     <string name="vpeople_rescan">Scan the video again</string>
     <string name="vpeople_scanning">Looking through the whole video… %1$d%%</string>
     <string name="vpeople_scanning_hint">Every person who appears, from the first second to the last, is listed once. Works for any length of video; a long film takes a few minutes. Keep the app open.</string>
+    <string name="vpeople_range">Scan only part of the video</string>
+    <string name="vpeople_range_from_to">From %1$s to %2$s</string>
+    <string name="vpeople_range_hint">Only this part is searched for people, to save time. Anyone you assign is still swapped everywhere they appear, from the beginning of the video to the end.</string>
+    <string name="vpeople_find_range">Find everyone in this part</string>
+    <string name="vpeople_trim_note">The swap covers only %1$s to %2$s (the trim above). Assigned people are swapped from the beginning to the end of that part.</string>
+    <string name="vpeople_whole_video">Swap the whole video</string>
     <string name="vpeople_left_min">About %1$d min left</string>
     <string name="vpeople_left_sec">About %1$d s left</string>
     <string name="vpeople_cancel">Stop</string>

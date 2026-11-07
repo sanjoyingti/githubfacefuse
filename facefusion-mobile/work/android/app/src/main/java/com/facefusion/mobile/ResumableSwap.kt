@@ -151,6 +151,13 @@ object ResumeStore {
         tmp.renameTo(f)   // atomic: a crash mid-write never leaves a half record
     }
 
+    /**
+     * Who gets which face in the unfinished swap (Assign per person), so Continue -- even
+     * after the app was closed -- swaps each person the same way to the end of the video.
+     * Deleted with the job.
+     */
+    fun assignFile(ctx: Context) = File(dir(ctx), "assign.json")
+
     /** Forget the job and its pieces (and its target handle). */
     fun clear(ctx: Context) {
         dir(ctx).listFiles()?.forEach { it.safeDelete() }

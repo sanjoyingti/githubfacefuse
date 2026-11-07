@@ -208,9 +208,13 @@ object VideoFacePicker {
         onProgress: (Float) -> Unit, cancelled: () -> Boolean,
         maxLooks: Int = 240, cropMax: Int = 1024, maxPeople: Int = MAX_PEOPLE,
         parts: Int = 1, minStepUs: Long = 500_000L, maxGapUs: Long = 0L,
+        rangeFromUs: Long = 0L, rangeToUs: Long = Long.MAX_VALUE,
     ): List<Person> {
         val info = probe(ctx, uri) ?: return emptyList()
-        val durUs = info.durUs
+        // Only [rangeFromUs, rangeToUs) is looked at ("scan only part of the video").
+        val startUs = rangeFromUs.coerceAtLeast(0L)
+        val endUs = if (info.durUs > 0) minOf(rangeToUs, info.durUs) else rangeToUs
+        val durUs = if (endUs == Long.MAX_VALUE) 0L else (endUs - startUs).coerceAtLeast(0L)
         // About two a second; a long clip is spread over at most [maxLooks] looks.
         // maxLooks <= 0: no cap -- one look every [minStepUs] whatever the length.
         val stepUs = if (maxLooks <= 0) minStepUs
@@ -224,8 +228,9 @@ object VideoFacePicker {
         val results = arrayOfNulls<MutableList<Person>>(n)
         val failed = BooleanArray(n)
         val run = { k: Int ->
-            val from = if (n == 1) 0L else durUs * k / n
-            val to = if (n == 1 || k == n - 1) Long.MAX_VALUE else durUs * (k + 1) / n
+            val from = startUs + (if (n == 1) 0L else durUs * k / n)
+            val to = if (k == n - 1) (if (endUs >= info.durUs && info.durUs > 0) Long.MAX_VALUE else endUs)
+                     else startUs + durUs * (k + 1) / n
             val ppl = mutableListOf<Person>()
             try {
                 scanPart(ctx, uri, info, from, to, stepUs, maxGapUs, target, ppl, cropMax, maxPeople,

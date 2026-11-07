@@ -135,6 +135,9 @@ class MainActivity : ComponentActivity() {
     private var videoPeopleScan by mutableStateOf<Float?>(null)
     @Volatile private var videoPeopleCancel = false
     private var videoPeopleStart = 0L
+    /** "Scan only part of the video": on, and the part (ms). */
+    private var videoPeopleRangeOn by mutableStateOf(false)
+    private var videoPeopleRange by mutableStateOf(0f..0f)
 
     /**
      * Time between looks, by length: every second up to 10 minutes, then a little wider so
@@ -1305,6 +1308,8 @@ class MainActivity : ComponentActivity() {
         if (!keepVideoPeople) {
             // Thumbnails are NOT recycled: the screen may still be drawing them this frame.
             videoPeopleCancel = true
+            videoPeopleRangeOn = false
+            videoPeopleRange = 0f..0f
             videoPeople = emptyList()
             videoPeopleChoice = emptyMap()
             videoPeopleScanned = false
@@ -1468,6 +1473,59 @@ class MainActivity : ComponentActivity() {
         return n
     }
 
+    /** Assign per person as JSON, for an unfinished swap to continue with (ResumeStore). */
+    private fun assignSnapshot(): String {
+        fun arr(f: FloatArray) = org.json.JSONArray().apply { f.forEach { put(it.toDouble()) } }
+        val o = org.json.JSONObject()
+        o.put("mode", swapAssignMode); o.put("unknownKeep", assignUnknownKeep)
+        val taps = org.json.JSONArray()
+        for ((person, slot) in swapPersonAssignments) {
+            val id = swapPersonIdentity[person] ?: continue
+            taps.put(org.json.JSONObject().put("person", person).put("slot", slot).put("emb", arr(id)))
+        }
+        o.put("taps", taps)
+        val ppl = org.json.JSONArray()
+        for (vp in videoPeople) {
+            val slot = videoPeopleChoice[vp.id] ?: continue   // only the ones that matter
+            val ids = org.json.JSONArray().apply { vp.ids.forEach { put(arr(it)) } }
+            ppl.put(org.json.JSONObject().put("id", vp.id).put("slot", slot)
+                .put("first", vp.firstUs).put("seen", vp.seen).put("ids", ids))
+        }
+        o.put("people", ppl)
+        return o.toString()
+    }
+
+    /** Put back what [assignSnapshot] saved, when nothing is assigned in memory. */
+    private fun restoreAssignSnapshot(json: String) {
+        if (swapPersonAssignments.isNotEmpty() || videoPeopleChoice.isNotEmpty()) return
+        runCatching {
+            val o = org.json.JSONObject(json)
+            fun floats(a: org.json.JSONArray) = FloatArray(a.length()) { a.getDouble(it).toFloat() }
+            val taps = o.getJSONArray("taps")
+            val tapA = mutableMapOf<Int, Int>(); val tapI = mutableMapOf<Int, FloatArray>()
+            for (i in 0 until taps.length()) {
+                val t = taps.getJSONObject(i)
+                tapA[t.getInt("person")] = t.getInt("slot"); tapI[t.getInt("person")] = floats(t.getJSONArray("emb"))
+            }
+            val ppl = o.getJSONArray("people")
+            val vps = mutableListOf<VideoPerson>(); val ch = mutableMapOf<Int, Int>()
+            for (i in 0 until ppl.length()) {
+                val p = ppl.getJSONObject(i)
+                val ids = p.getJSONArray("ids")
+                vps += VideoPerson(p.getInt("id"), null, p.getLong("first"), p.getInt("seen"),
+                                   (0 until ids.length()).map { floats(ids.getJSONArray(it)) })
+                ch[p.getInt("id")] = p.getInt("slot")
+            }
+            if (tapA.isEmpty() && vps.isEmpty()) return
+            swapAssignMode = o.getBoolean("mode")
+            assignUnknownKeep = o.optBoolean("unknownKeep", true)
+            swapPersonAssignments = tapA; swapPersonIdentity = tapI
+            videoPeople = vps; videoPeopleChoice = ch; videoPeopleScanned = vps.isNotEmpty()
+            NativePipe.setFaceAssignEnabled(swapAssignMode)
+            appendLog("continue: restored ${tapA.size + vps.size} assigned people")
+        }.onFailure { appendLog("continue: could not restore the assigned people: $it") }
+    }
+
     /** Push the assignments again from Kotlin state, exactly (after a change in the list). */
     private fun repushSwapAssignments() {
         if (!previewWarm) return
@@ -1510,6 +1568,15 @@ class MainActivity : ComponentActivity() {
         videoPeopleScan = 0f
         videoPeopleStart = System.currentTimeMillis()
         val forTarget = targetVersion
+        // The part to search: the whole video, or the chosen part. Finding people in a part
+        // only saves time -- whoever is assigned is matched by face in every frame swapped.
+        val partOn = videoPeopleRangeOn && durationMs > 0 &&
+            videoPeopleRange.endInclusive > videoPeopleRange.start
+        val scanFromUs = if (partOn) (videoPeopleRange.start * 1000).toLong() else 0L
+        val scanToUs = if (partOn && videoPeopleRange.endInclusive < durationMs)
+                           (videoPeopleRange.endInclusive * 1000).toLong() else Long.MAX_VALUE
+        val scanSpanMs = if (partOn) (videoPeopleRange.endInclusive - videoPeopleRange.start).toLong()
+                         else durationMs
         // A long film takes minutes: the screen stays on so the phone does not sleep
         // (and stop the scan) half way.
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1542,7 +1609,8 @@ class MainActivity : ComponentActivity() {
                             runOnUiThread { if (videoPeopleScan != null) videoPeopleScan = p }
                         }
                     }, { videoPeopleCancel }, maxLooks = 0, cropMax = 128, maxPeople = 120,
-                       parts = 3, minStepUs = stepFor(durationMs), maxGapUs = 2_500_000L)
+                       parts = 3, minStepUs = stepFor(scanSpanMs), maxGapUs = 2_500_000L,
+                       rangeFromUs = scanFromUs, rangeToUs = scanToUs)
                     found.toMutableList()
                 }
                 if (videoPeopleCancel || forTarget != targetVersion) {
@@ -2441,6 +2509,24 @@ class MainActivity : ComponentActivity() {
                                         isVideo = targetFile != null && targetImage == null,
                                         scanning = videoPeopleScan,
                                         timeLeft = videoPeopleScan?.let { scanTimeLeft(it) },
+                                        durationMs = durationMs,
+                                        rangeOn = videoPeopleRangeOn,
+                                        rangeMs = videoPeopleRange,
+                                        onRangeOn = { on ->
+                                            videoPeopleRangeOn = on
+                                            if (on && videoPeopleRange.endInclusive <= videoPeopleRange.start)
+                                                videoPeopleRange = 0f..durationMs.toFloat()
+                                        },
+                                        onRange = { videoPeopleRange = it },
+                                        trimNote = if (durationMs > 0 && (trimStartMs > 500f ||
+                                                       trimEndMs < durationMs - 500f))
+                                            getString(R.string.vpeople_trim_note,
+                                                com.facefusion.mobile.ui.clockOf(trimStartMs.toLong()),
+                                                com.facefusion.mobile.ui.clockOf(trimEndMs.toLong()))
+                                        else null,
+                                        onWholeVideo = {
+                                            onTrimChanged(0f, durationMs.toFloat(), TrimEdge.Start)
+                                        },
                                         scanned = videoPeopleScanned,
                                         people = videoPeople.map { vp ->
                                             com.facefusion.mobile.ui.VideoPersonRow(
@@ -5319,6 +5405,10 @@ class MainActivity : ComponentActivity() {
         }
         if (fresh.targetPath != job.targetPath) { refreshResume(); return }
         fun go() {
+            // The people assigned when this swap started, so the rest of the video swaps
+            // each of them the same way (also after the app was closed).
+            runCatching { ResumeStore.assignFile(this).readText() }.getOrNull()
+                ?.let { restoreAssignSnapshot(it) }
             trimStartMs = job.startUs / 1000f
             trimEndMs = if (job.toEnd) durationMs.toFloat() else job.endUs / 1000f
             if (opts.outputFps != job.outputFps || opts.outputMaxShortEdge != job.outputMaxShortEdge)
@@ -5671,6 +5761,9 @@ class MainActivity : ComponentActivity() {
                                 outputMaxShortEdge = opts.outputMaxShortEdge,
                                 trackPeriod = opts.trackPeriod,
                             )
+                        }
+                        if (resume == null) runCatching {
+                            ResumeStore.assignFile(this@MainActivity).writeText(assignSnapshot())
                         }
                         if (job.done > 0)
                             appendLog("continuing from %s of %s (%d pieces kept)".format(

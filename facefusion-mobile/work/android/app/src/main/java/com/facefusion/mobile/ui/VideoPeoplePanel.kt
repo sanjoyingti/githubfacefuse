@@ -26,6 +26,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -77,6 +78,16 @@ fun VideoPeoplePanel(
     onUnknownKeep: (Boolean) -> Unit,
     /** "About 3 min left", or null while it cannot tell yet. */
     timeLeft: String? = null,
+    /** The video's length; 0 = unknown (no part-of-the-video choice then). */
+    durationMs: Long = 0L,
+    /** Scan only [rangeMs] instead of the whole video. */
+    rangeOn: Boolean = false,
+    rangeMs: ClosedFloatingPointRange<Float> = 0f..0f,
+    onRangeOn: (Boolean) -> Unit = {},
+    onRange: (ClosedFloatingPointRange<Float>) -> Unit = {},
+    /** Set when the swap's trim does not cover the whole video: what it covers. */
+    trimNote: String? = null,
+    onWholeVideo: () -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (isVideo) {
@@ -98,12 +109,53 @@ fun VideoPeoplePanel(
                      style = MaterialTheme.typography.bodySmall,
                      color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
+                if (durationMs > 0) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.vpeople_range),
+                             style = MaterialTheme.typography.bodySmall,
+                             modifier = Modifier.weight(1f))
+                        Switch(checked = rangeOn, onCheckedChange = onRangeOn, enabled = enabled,
+                               modifier = Modifier.testTag("vpeople_range_on"))
+                    }
+                    if (rangeOn) {
+                        Text(stringResource(R.string.vpeople_range_from_to,
+                                            clockOf(rangeMs.start.toLong()),
+                                            clockOf(rangeMs.endInclusive.toLong())),
+                             style = MaterialTheme.typography.bodyMedium,
+                             modifier = Modifier.testTag("vpeople_range_text"))
+                        RangeSlider(
+                            value = rangeMs,
+                            onValueChange = { r ->
+                                onRange(r.start..maxOf(r.endInclusive,
+                                    minOf(r.start + 1000f, durationMs.toFloat())))
+                            },
+                            valueRange = 0f..durationMs.toFloat(),
+                            enabled = enabled,
+                            modifier = Modifier.testTag("vpeople_range"),
+                        )
+                        Text(stringResource(R.string.vpeople_range_hint),
+                             style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 OutlinedButton(onFind, enabled = enabled,
                                modifier = Modifier.fillMaxWidth().testTag("vpeople_find")) {
                     Icon(Icons.Default.Search, contentDescription = null, Modifier.size(18.dp))
-                    Text(stringResource(if (scanned) R.string.vpeople_rescan else R.string.vpeople_find),
+                    Text(stringResource(when {
+                             rangeOn && durationMs > 0 -> R.string.vpeople_find_range
+                             scanned -> R.string.vpeople_rescan
+                             else -> R.string.vpeople_find }),
                          Modifier.padding(start = 6.dp))
                 }
+            }
+        }
+        trimNote?.let { note ->
+            Text(note, style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.error,
+                 modifier = Modifier.testTag("vpeople_trim_note"))
+            TextButton(onWholeVideo, enabled = enabled,
+                       modifier = Modifier.testTag("vpeople_whole_video")) {
+                Text(stringResource(R.string.vpeople_whole_video))
             }
         }
         if (scanned && scanning == null) {

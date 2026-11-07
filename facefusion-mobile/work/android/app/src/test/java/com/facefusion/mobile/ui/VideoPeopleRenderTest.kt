@@ -62,6 +62,37 @@ class VideoPeopleRenderTest {
         println("VPEOPLE choices=${people.map { it.choice }} unknownKeep=$unknownKeep")
     }
 
+    @Test fun partOfVideoAndTrimNote() {
+        var on by mutableStateOf(false)
+        var range by mutableStateOf(0f..0f)
+        var whole = false
+        rule.setContent {
+            androidx.compose.foundation.layout.Column(
+                androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                VideoPeoplePanel(
+                    isVideo = true, scanning = null, scanned = false, people = emptyList(),
+                    sourceThumbs = emptyList(), unknownKeep = true, enabled = true,
+                    onFind = {}, onCancelScan = {}, onChoose = { _, _ -> }, onRemove = {},
+                    onUnknownKeep = {}, durationMs = 7_200_000L,
+                    rangeOn = on, rangeMs = range,
+                    onRangeOn = { on = it; if (it) range = 1_800_000f..2_700_000f },
+                    onRange = { range = it },
+                    trimNote = "The swap covers only 0:10 to 1:00:00 (the trim above).",
+                    onWholeVideo = { whole = true },
+                )
+            }
+        }
+        rule.onNode(hasText("Find everyone in the video")).assertExists()
+        rule.onNodeWithTag("vpeople_range_on").performScrollTo().performClick()
+        rule.waitForIdle()
+        rule.onNode(hasText("From 30:00 to 45:00")).assertExists()
+        rule.onNode(hasText("Find everyone in this part")).assertExists()
+        rule.onNode(hasText("from the beginning of the video to the end", substring = true)).assertExists()
+        rule.onNodeWithTag("vpeople_whole_video").performScrollTo().performClick()
+        rule.waitForIdle()
+        assertEquals(true, whole)
+    }
+
     @Test fun scanningShowsProgress() {
         rule.setContent {
             VideoPeoplePanel(
