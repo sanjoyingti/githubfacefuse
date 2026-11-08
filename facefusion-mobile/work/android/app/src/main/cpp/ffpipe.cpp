@@ -365,6 +365,11 @@ struct Pipeline::Impl {
     // SMOOTH OVER TIME, swapped face: the last swapped crop (crop-aligned, so it follows
     // the face) for the shimmer filter; and the lips' running colour for Lipstick match.
     std::shared_ptr<ffcv::MatF> prevOut;
+    // STEADY UNDER COVER: the last frame's 68 points (sequence order), and the eyes'
+    // keep-as-filmed amounts, smoothed so they do not flip while fingers cross the eyes.
+    float lm68[136] = {};
+    bool haveLm68 = false;
+    float eyeKeep[2] = {0.f, 0.f};
     float lipEma[6] = {0, 0, 0, 0, 0, 0};   // swapped lips: Y, Cr, Cb, sdCr, sdCb, valid
     // STICKY PERSON (assign per person): which assigned person this face was last
     // recognised as, and for how many more frames that holds while the match is weak
@@ -429,7 +434,8 @@ struct Pipeline::Impl {
   // on `crop`, the TARGET face before any swap. Returns false only on an execution error.
   // `skipParser`: leave the face parser out this time (Smart speed, mouth closed).
   bool applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m, std::string& err,
-                       bool skipParser = false, ffcv::MatF* occOut = nullptr);
+                       bool skipParser = false, ffcv::MatF* occOut = nullptr,
+                       ffcv::MatF* lipOut = nullptr);
   // The parser's only job is "Keep original mouth inside": with the face parser mask and
   // "keep lips" off it changes nothing while the mouth is closed (no inside is visible).
   bool parserOnlyForMouth() const {
@@ -1866,6 +1872,21 @@ void Pipeline::Impl::temporal(std::vector<Face>& faces) {
       else { f.vel[0] = f.vel[1] = 0.f; }
       sf.prevC[0] = cx; sf.prevC[1] = cy; sf.havePrev = true;
     }
+    // STEADY UNDER COVER: a face the landmarker is unsure of (fingers, food or a hand over
+    // it) leans on last frame's points instead of jumping -- the jump redrew the swapped
+    // face (and its eyes) somewhere else for a frame. The surer the landmarker, the less.
+    // Only while the head is nearly still (moving under 4% of its eye span a frame): a fast
+    // move also lowers the score (blur), and leaning on old points would make the swap lag.
+    if (best >= 0 && sf.haveLm68 && sf.miss == 0 && f.lmScore < 0.9f && sf.span > 2.f &&
+        std::hypot(f.vel[0], f.vel[1]) < 0.04f * sf.span) {
+      const float w = std::fmin(0.75f, (0.9f - f.lmScore) / 0.2f);
+      for (int k = 0; k < 136; ++k) f.landmark68[k] += (sf.lm68[k] - f.landmark68[k]) * w;
+      float l5[10];
+      ffcv::toLandmark5(f.landmark68, l5);
+      for (int k = 0; k < 10; ++k) f.landmark5_68[k] += (l5[k] - f.landmark5_68[k]) * w;
+    }
+    std::memcpy(sf.lm68, f.landmark68, sizeof(sf.lm68));
+    sf.haveLm68 = true;
     if (cfg.motionSmooth) sf.filt.apply(f.landmark5_68);
     else sf.filt.reset();
     // The fade follows a turning head over ~3 frames rather than flickering with landmark
@@ -3181,7 +3202,7 @@ ffnn::Handle Pipeline::Impl::maskNet(const char* name, int size, ffnn::Handle& h
 }
 
 bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
-                                     std::string& err, bool skipParser, ffcv::MatF* occOut) {
+                                     std::string& err, bool skipParser, ffcv::MatF* occOut, ffcv::MatF* lipOut) {
   const int CS = crop.w;
   if (cfg.occlusionMask && maskNet("xseg", 256, n.occ, n.occTried)) {
     constexpr int XS = 256;
@@ -3255,6 +3276,8 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
     const float* lg = out[0].data();
     const size_t plane = (size_t)PS * PS;
     ffcv::MatF rm(PS, PS, 1);
+    ffcv::MatF lipsPS;
+    if (lipOut) lipsPS = ffcv::MatF(PS, PS, 1);
     for (size_t i = 0; i < plane; ++i) {
       int best = 0;
       float bv = lg[i];
@@ -3263,7 +3286,10 @@ bool Pipeline::Impl::applyMaskModels(const ffcv::Image& crop, ffcv::MatF& m,
         if (v > bv) { bv = v; best = lab; }
       }
       rm.data[i] = keepLabel[best] ? 1.f : 0.f;
+      if (lipOut) lipsPS.data[i] = (best == kUpperLip || best == kLowerLip) ? 1.f : 0.f;
     }
+    // Where the parser sees LIPS (Lipstick match: lips the occlusion mask took for food).
+    if (lipOut) *lipOut = ffmotion::resizeMask(lipsPS, CS, CS);
     finishModelMask(rm, CS, m);
   }
   // Snap the soft edge to the picture's own edges (hair, jaw, fingers), only shrinking.
@@ -3606,13 +3632,15 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     const bool parallel = runModels && cfg.parallelMasks;
     ffcv::MatF occMap;   // the occlusion alone, when the lips need it (Lips auto, lipstick)
     ffcv::MatF* occPtr = (lipWork && cfg.occlusionMask) ? &occMap : nullptr;
+    ffcv::MatF lipParsed;   // the parser's lips this frame (when the parser ran)
+    ffcv::MatF* lipPtr = (lipWork && cfg.lipstickMatch > 0.f) ? &lipParsed : nullptr;
     if (parallel) {
       faceMask = mask;
       Impl* impl = p_.get();
       join.w = &p_->maskWorker;
-      p_->maskWorker.post([impl, &crop, &faceMask, &maskErr, &maskOk, skipParser, occPtr] {
+      p_->maskWorker.post([impl, &crop, &faceMask, &maskErr, &maskOk, skipParser, occPtr, lipPtr] {
         try {
-          maskOk = impl->applyMaskModels(crop, faceMask, maskErr, skipParser, occPtr);
+          maskOk = impl->applyMaskModels(crop, faceMask, maskErr, skipParser, occPtr, lipPtr);
         } catch (const std::exception& e) {
           maskOk = false;
           maskErr = std::string("mask: ") + e.what();
@@ -3784,6 +3812,14 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       ffmotion::eyeOpenness2(f.landmark68, &oL, &oR);
       auto keepOf = [](float o) { return std::max(0.f, std::min(1.f, (0.20f - o) / 0.07f)); };
       eyeKeepL = keepOf(oL); eyeKeepR = keepOf(oR);
+      // Smoothed over frames: the openness read from the points wobbles while something
+      // crosses the eyes, and the eye then flipped between filmed and swapped.
+      if (Impl::SeqFace* eq = p_->seqFaceAny(f, fi)) {
+        eyeKeepL = eq->eyeKeep[0] = eq->eyeKeep[0] * 0.6f + eyeKeepL * 0.4f;
+        eyeKeepR = eq->eyeKeep[1] = eq->eyeKeep[1] * 0.6f + eyeKeepR * 0.4f;
+        if (eyeKeepL < 0.02f) eyeKeepL = 0.f;
+        if (eyeKeepR < 0.02f) eyeKeepR = 0.f;
+      }
     }
     const bool keepEyes = eyeKeepL > 0.f || eyeKeepR > 0.f;
     if (modelMasks || f.poseFade < 0.999f || !touching.empty() || keepEyes) {
@@ -3797,7 +3833,7 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
         ++sface->maskAge;
       } else {
         faceMask = mask;
-        if (runModels && !p_->applyMaskModels(crop, faceMask, err_, skipParser, occPtr)) return false;
+        if (runModels && !p_->applyMaskModels(crop, faceMask, err_, skipParser, occPtr, lipPtr)) return false;
       }
       if (runModels && sface) {
         sface->mask = std::make_shared<ffcv::MatF>(faceMask);
@@ -3891,9 +3927,32 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       t0 = nowMs();
       float l68c[136];
       ffcv::transformPoints(f.landmark68, 68, am, l68c);
-      const ffcv::MatF lip = lipMask(CS, CS, l68c);
+      ffcv::MatF lip = lipMask(CS, CS, l68c);
       if (useMask != &faceMask) { faceMask = *useMask; useMask = &faceMask; }
       const bool haveOcc = occMap.w == CS && occMap.h == CS;
+      // The parser's lips override the occlusion mask: lips pressed round food are lips.
+      const bool haveLipP = lipParsed.w == CS && lipParsed.h == CS;
+      // Only REDDISH pixels count as the parser's lips: the parser sometimes calls the tip of
+      // a banana or a spoon touching the lips "lips", and food must never be coloured.
+      if (haveLipP)
+        for (int y = 0; y < CS; ++y) {
+          const uint8_t* crow = crop.row(y);
+          for (int x = 0; x < CS; ++x) {
+            float& v = lipParsed.data[(size_t)y * CS + x];
+            if (v <= 0.f) continue;
+            const Ycc c = toYcc(crow[x * 3], crow[x * 3 + 1], crow[x * 3 + 2]);
+            if (c.cr < 136.f || c.cr < c.cb + 6.f) v = 0.f;
+          }
+        }
+      if (haveOcc && haveLipP)
+        for (size_t i = 0; i < occMap.data.size(); ++i)
+          if (lipParsed.data[i] > 0.5f) occMap.data[i] = 1.f;
+      // ...and count as lips (near the mouth only: the landmark lips, grown a little).
+      if (haveLipP) {
+        const ffcv::MatF nearLip = ffcv::gaussianBlur(lip, std::max(2.0, CS / 40.0));
+        for (size_t i = 0; i < lip.data.size(); ++i)
+          if (nearLip.data[i] > 0.05f) lip.data[i] = std::fmax(lip.data[i], lipParsed.data[i]);
+      }
       bool busy = false;
       if (cfg.lipsAuto && !cfg.keepLips && haveOcc) {
         // What is in front of the face, grown a little: the band of lip it touches.

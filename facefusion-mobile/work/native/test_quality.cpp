@@ -312,6 +312,12 @@ int main(int argc, char** argv) {
       }
       printf("\n");
     }
+    if (getenv("FF_DUMP_LIPS"))
+      for (const auto& f : faces) {
+        printf("lips68");
+        for (int k = 48; k < 68; ++k) printf(" %.0f,%.0f", f.landmark68[2 * k], f.landmark68[2 * k + 1]);
+        printf("\n");
+      }
     printf("frame %d faces %zu", idx - 1, faces.size());
     for (const auto& f : faces) {
       ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
