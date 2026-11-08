@@ -53,11 +53,13 @@ class LikenessPresetTest {
         assertTrue(p.lipsAuto); assertTrue(p.lipstickMatch); assertTrue(p.occlusionMask)
         assertTrue(p.mouthFocus); assertTrue(p.autoWeight)
         assertTrue(p.temporalSmooth); assertTrue(p.sideGuard)
+        // The lips follow the filmed mouth, in exactly the source's lip colour.
+        assertTrue(p.lipsFollow); assertEquals(1.0f, p.lipstickStrength, 0f)
         assertFalse(p.lightMatch)                 // measured to cost likeness
         assertTrue(p.weight >= 0.75f)
         // New options are all off by default: speed and results as before.
         val d = SwapOptions()
         assertFalse(d.autoWeight || d.hairOnlyParser || d.lightMatch || d.lipsAuto ||
-                    d.lipstickMatch || d.mouthFocus || d.bestQualityOutput)
+                    d.lipstickMatch || d.mouthFocus || d.bestQualityOutput || d.lipsFollow)
     }
 }

@@ -164,6 +164,10 @@ struct Config {
   // outline against the background, which the swapper can only invent (it draws a front
   // face) -- stays as filmed, fully from 60 degrees. Front faces are unchanged.
   bool sideGuard = true;
+  // LIPS FOLLOW THE VIDEO: the lips and the open mouth keep the video's own shape (always in
+  // line with the filmed mouth); with Lipstick match they take the source photo's lip
+  // colour. The swapped lips never spill onto the skin around the filmed lips.
+  bool lipsFollow = false;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;

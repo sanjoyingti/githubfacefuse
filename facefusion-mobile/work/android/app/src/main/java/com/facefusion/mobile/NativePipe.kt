@@ -123,10 +123,14 @@ object NativePipe {
                      if (opts.lightMatch) opts.lightMatchStrength else 0f, opts.lipsAuto,
                      if (opts.lipstickMatch) opts.lipstickStrength else 0f, opts.mouthFocus)
         setSideGuard(opts.sideGuard)
+        setLipsFollow(opts.lipsFollow)
     }
 
     /** Turned faces keep the swap on their visible half only (no invented far eye). */
     @JvmStatic external fun setSideGuard(on: Boolean)
+
+    /** The lips keep the video's shape (always in line), with the source's lip colour. */
+    @JvmStatic external fun setLipsFollow(on: Boolean)
 
     /**
      * 1.0.56: double swap (measured: no likeness gain, not offered), auto weight per person,

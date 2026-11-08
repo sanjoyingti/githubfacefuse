@@ -176,6 +176,7 @@ int main(int argc, char** argv) {
     else if (a == "--weight") cfg.swapperWeight = (float)atof(v().c_str());
     else if (a == "--likeness") likeness = v() == "1";
     else if (a == "--side-guard") cfg.sideGuard = v() == "1";
+    else if (a == "--lips-follow") cfg.lipsFollow = v() == "1";
     else if (a == "--double") cfg.doubleSwap = v() == "1";
     else if (a == "--autoweight") cfg.autoWeight = v() == "1";
     else if (a == "--hair-only") cfg.hairOnlyParser = v() == "1";

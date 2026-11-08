@@ -248,6 +248,8 @@
     <string name="opt_mouth_focus_hint">The restorer moves the mouth fully like the original (open, chewing, around food) and the rest of the face only lightly, so the face keeps more of the source. Also runs while the mouth is open, not only on blinks.</string>
     <string name="opt_lips_auto">Keep lips: Auto (eating)</string>
     <string name="opt_lips_auto_hint">The lips stay the source\'s, except the band that food, a fork, a spoon or a cup touches, which stays as filmed. Needs the occlusion mask.</string>
+    <string name="opt_lips_follow">Lips follow the video</string>
+    <string name="opt_lips_follow_hint">The lips and the open mouth keep the video\'s own shape, so they are always exactly in line with the filmed mouth, and the swapped lips never spill onto the skin around them. With Lipstick match they take the source photo\'s lip colour.</string>
     <string name="opt_lipstick">Lipstick match</string>
     <string name="opt_lipstick_hint">Lips kept as filmed take the source photo\'s lip colour (lipstick or natural) with their own shading, and swapped lips are brought towards it. Food and teeth are never coloured.</string>
     <string name="opt_hair_only">Face parser: keep hair only</string>

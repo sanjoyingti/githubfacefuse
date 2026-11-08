@@ -448,7 +448,7 @@ struct Pipeline::Impl {
   }
   // ---- 1.0.56 per source slot: lip colour of the source photo, the run's chosen weight
   // (NaN = not decided yet), and the likeness measured on swapped faces.
-  struct LipColor { bool have = false; float y = 0, cr = 0, cb = 0, scr = 1, scb = 1; };
+  struct LipColor { bool have = false; float y = 0, cr = 0, cb = 0, scr = 1, scb = 1, skinY = 0; };
   std::vector<LipColor> slotLip;
   std::vector<float> slotWeight;
   std::vector<double> likeSum;
@@ -1654,7 +1654,11 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
     if (cfg.rejectFalseFaces && score68 < 0.2f) continue;
     // SECOND LANDMARKER on a face 2DFAN4 is unsure of: the more confident one is used
     // (FaceFusion's "many" landmarker). The NOT-A-FACE test above stays on 2DFAN4's score.
-    if (cfg.turnedLandmarker && score68 < 0.85f) {
+    const float fanScore = score68;
+    // Only a face 2DFAN4 itself half-recognises (0.36: the lowest real face measured) may be
+    // rescued: PEPPA places confident points on anything, e.g. the back of a head or an ear,
+    // and the swap then pasted a smeared "face" there.
+    if (cfg.turnedLandmarker && score68 < 0.85f && score68 >= 0.36f) {
       if (ffnn::Handle pe = p_->peppaNet()) {
         float pxy[136], psc = 0.f;
         const double tp = nowMs();
@@ -1677,7 +1681,7 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
       ffcv::toLandmark5(f.landmark68, l5);
       const float span = std::hypot(l5[2] - l5[0], l5[3] - l5[1]);
       const float want = recoverSpan[(size_t)idx];
-      if (score68 < 0.6f || !(span > 0.6f * want && span < 1.6f * want)) continue;
+      if (fanScore < 0.6f || !(span > 0.6f * want && span < 1.6f * want)) continue;
       // ...and not a face already found (the landmarker can lock on the neighbour).
       const float cx = (l5[0] + l5[2] + l5[4] + l5[6] + l5[8]) / 5.f;
       const float cy = (l5[1] + l5[3] + l5[5] + l5[7] + l5[9]) / 5.f;
@@ -1884,10 +1888,14 @@ void Pipeline::Impl::temporal(std::vector<Face>& faces) {
     if (best >= 0 && sf.haveLm68 && sf.miss == 0 && f.lmScore < 0.9f && sf.span > 2.f &&
         std::hypot(f.vel[0], f.vel[1]) < 0.04f * sf.span) {
       const float w = std::fmin(0.75f, (0.9f - f.lmScore) / 0.2f);
-      for (int k = 0; k < 136; ++k) f.landmark68[k] += (sf.lm68[k] - f.landmark68[k]) * w;
+      // Brows, nose and eyes only (points 17-47). The jaw and the lips move with the MOUTH
+      // while the head is still -- talking, chewing, a close-up where the landmarker is
+      // unsure because the eyes are out of the picture -- and leaning those on last frame
+      // made the swapped mouth lag behind the filmed one.
+      for (int k = 34; k < 96; ++k) f.landmark68[k] += (sf.lm68[k] - f.landmark68[k]) * w;
       float l5[10];
       ffcv::toLandmark5(f.landmark68, l5);
-      for (int k = 0; k < 10; ++k) f.landmark5_68[k] += (l5[k] - f.landmark5_68[k]) * w;
+      for (int k = 0; k < 6; ++k) f.landmark5_68[k] += (l5[k] - f.landmark5_68[k]) * w;
     }
     std::memcpy(sf.lm68, f.landmark68, sizeof(sf.lm68));
     sf.haveLm68 = true;
@@ -3439,6 +3447,29 @@ bool sideGuardMask(int CS, const float* l, float farKeep, ffcv::MatF& out) {
 }
 }  // namespace
 
+namespace {
+// The brightness of the cheeks (a small window halfway between the jaw and the side of the
+// nose, both sides), for lips that keep the source's brightness RELATIVE to the face: the
+// same lipstick is darker in a dim room. `Y(x, y)` reads one pixel's luma, -1 outside.
+template <class F>
+float cheekY(const float* l68, F Y) {
+  const float fw = std::hypot(l68[32] - l68[0], l68[33] - l68[1]);
+  const int r = std::max(1, (int)(fw * 0.04f));
+  double s = 0; int n = 0;
+  const int pairs[2][2] = {{2, 31}, {14, 35}};
+  for (const auto& pr : pairs) {
+    const float cx = 0.5f * (l68[2 * pr[0]] + l68[2 * pr[1]]);
+    const float cy = 0.5f * (l68[2 * pr[0] + 1] + l68[2 * pr[1] + 1]);
+    for (int dy = -r; dy <= r; ++dy)
+      for (int dx = -r; dx <= r; ++dx) {
+        const float v = Y((int)cx + dx, (int)cy + dy);
+        if (v >= 0.f) { s += v; ++n; }
+      }
+  }
+  return n ? (float)(s / n) : 0.f;
+}
+}  // namespace
+
 Pipeline::Impl::LipColor Pipeline::Impl::lipColorOf(const ffcv::Image& img, const float* l68) {
   LipColor lc;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
@@ -3460,6 +3491,11 @@ Pipeline::Impl::LipColor Pipeline::Impl::lipColorOf(const ffcv::Image& img, cons
   lc.y = (float)(sy / n); lc.cr = (float)(sr / n); lc.cb = (float)(sb / n);
   lc.scr = (float)std::sqrt(std::max(1.0, qr / n - (sr / n) * (sr / n)));
   lc.scb = (float)std::sqrt(std::max(1.0, qb / n - (sb / n) * (sb / n)));
+  lc.skinY = cheekY(l68, [&](int x, int y) -> float {
+    if (x < 0 || y < 0 || x >= img.w || y >= img.h) return -1.f;
+    const uint8_t* p = img.row(y) + x * 3;
+    return 0.114f * p[0] + 0.587f * p[1] + 0.299f * p[2];
+  });
   return lc;
 }
 
@@ -3609,7 +3645,8 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     bool skipParser = false;
     // Lips auto / lipstick: the occlusion mask is read at the lips, so a mask from a frame
     // with nothing at the mouth is not reused while the mouth is open or busy.
-    const bool lipWork = six >= 0 && ((cfg.lipsAuto && cfg.occlusionMask) || cfg.lipstickMatch > 0.f);
+    const bool lipWork = six >= 0 && ((cfg.lipsAuto && cfg.occlusionMask) ||
+                                      cfg.lipstickMatch > 0.f || cfg.lipsFollow);
     if (sface && p_->parserOnlyForMouth()) {
       if (ffmotion::mouthOpenness(f.landmark68) > 0.05f || sface->mouthBusy > 0) sface->mouthHold = 6;
       else if (sface->mouthHold > 0) --sface->mouthHold;
@@ -3637,7 +3674,8 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     ffcv::MatF occMap;   // the occlusion alone, when the lips need it (Lips auto, lipstick)
     ffcv::MatF* occPtr = (lipWork && cfg.occlusionMask) ? &occMap : nullptr;
     ffcv::MatF lipParsed;   // the parser's lips this frame (when the parser ran)
-    ffcv::MatF* lipPtr = (lipWork && cfg.lipstickMatch > 0.f) ? &lipParsed : nullptr;
+    ffcv::MatF* lipPtr =
+        (lipWork && (cfg.lipstickMatch > 0.f || cfg.lipsFollow)) ? &lipParsed : nullptr;
     if (parallel) {
       faceMask = mask;
       Impl* impl = p_.get();
@@ -3778,11 +3816,30 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
         if (sq->prevOut && sq->prevOut->w == CS && sq->prevOut->h == CS && sq->miss == 0) {
           const float* pv = sq->prevOut->data.data();
           float* ov = outCrop.data.data();
+          // Not on the mouth: lips move a little from frame to frame (talking, chewing), and
+          // blending them with last frame's left a faint second outline of the lips beside
+          // the filmed ones. An ellipse round the lips (points 48-67), soft at its edge.
+          float l68m[136];
+          ffcv::transformPoints(f.landmark68, 68, am, l68m);
+          float mx0 = 1e9f, my0 = 1e9f, mx1 = -1e9f, my1 = -1e9f;
+          for (int k = 48; k < 68; ++k) {
+            mx0 = std::fmin(mx0, l68m[2 * k]); mx1 = std::fmax(mx1, l68m[2 * k]);
+            my0 = std::fmin(my0, l68m[2 * k + 1]); my1 = std::fmax(my1, l68m[2 * k + 1]);
+          }
+          const float mcx = 0.5f * (mx0 + mx1), mcy = 0.5f * (my0 + my1);
+          const float mrx = 0.5f * (mx1 - mx0) + CS / 24.f, mry = 0.5f * (my1 - my0) + CS / 24.f;
+          const bool mouthOk = mx1 > mx0 && my1 > my0 && mrx > 1.f && mry > 1.f;
           for (size_t i = 0, n = (size_t)CS * CS; i < n; ++i) {
             const float d = std::fmax(std::fabs(ov[3 * i] - pv[3 * i]),
                             std::fmax(std::fabs(ov[3 * i + 1] - pv[3 * i + 1]),
                                       std::fabs(ov[3 * i + 2] - pv[3 * i + 2])));
-            const float w = 0.5f * std::fmax(0.f, 1.f - d / 28.f);
+            float w = 0.5f * std::fmax(0.f, 1.f - d / 28.f);
+            if (w > 0.f && mouthOk) {
+              const float ex = ((float)(i % CS) + 0.5f - mcx) / mrx;
+              const float ey = ((float)(i / CS) + 0.5f - mcy) / mry;
+              const float r = ex * ex + ey * ey;      // < 1 inside the ellipse
+              if (r < 1.5f) w *= std::fmax(0.f, std::fmin(1.f, (r - 1.f) / 0.5f));
+            }
             for (int c = 0; c < 3; ++c) ov[3 * i + c] += (pv[3 * i + c] - ov[3 * i + c]) * w;
           }
         }
@@ -3881,7 +3938,8 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     if (cfg.motionBlurMatch) {
       const float vx = (float)(am(0, 0) * f.vel[0] + am(0, 1) * f.vel[1]);
       const float vy = (float)(am(1, 0) * f.vel[0] + am(1, 1) * f.vel[1]);
-      const float len = 0.5f * std::sqrt(vx * vx + vy * vy);
+      // Capped: a jump of the face points (not a real move) must not smear the whole face.
+      const float len = std::fmin(0.5f * std::sqrt(vx * vx + vy * vy), CS / 24.f);
       if (len >= 2.f) {
         t0 = nowMs();
         ffmotion::directionalBlur(outCrop, vx, vy, len);
@@ -3979,6 +4037,62 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
           for (size_t i = 0; i < faceMask.data.size(); ++i)
             faceMask.data[i] = std::fmin(faceMask.data[i], 1.f - lip.data[i] * near.data[i]);
       }
+      // The swapped face's own cheeks: its brightness and skin colour, which the lips are
+      // measured against below.
+      auto outAt = [&](int x, int y, int what) -> float {
+        if (x < 0 || y < 0 || x >= CS || y >= CS) return -1.f;
+        const float* o = outCrop.row(y) + x * 3;
+        if (what == 0) return 0.114f * o[0] + 0.587f * o[1] + 0.299f * o[2];
+        return toYcc(o[0], o[1], o[2]).cr;
+      };
+      const float skinOutY = cheekY(l68c, [&](int x, int y) { return outAt(x, y, 0); });
+      // LIPS FOLLOW THE VIDEO: the lips and the open mouth are the filmed ones -- always in
+      // line with the video's mouth -- and Lipstick match below gives them the source's
+      // colour. Swapped lips reaching past the filmed lips (a wider or higher mouth drawn by
+      // the swapper) would show as lip colour on the skin: that ring shows the video's skin.
+      if (cfg.lipsFollow) {
+        ffcv::MatF inner(CS, CS, 1);
+        std::fill(inner.data.begin(), inner.data.end(), 0.f);
+        float ix0 = 1e9f, iy0 = 1e9f, ix1 = -1e9f, iy1 = -1e9f;
+        for (int k = 60; k < 68; ++k) {
+          ix0 = std::fmin(ix0, l68c[2 * k]); ix1 = std::fmax(ix1, l68c[2 * k]);
+          iy0 = std::fmin(iy0, l68c[2 * k + 1]); iy1 = std::fmax(iy1, l68c[2 * k + 1]);
+        }
+        for (int y = std::max(0, (int)iy0 - 1); y <= std::min(CS - 1, (int)iy1 + 1); ++y)
+          for (int x = std::max(0, (int)ix0 - 1); x <= std::min(CS - 1, (int)ix1 + 1); ++x)
+            if (inPoly(l68c, 60, 8, x + 0.5f, y + 0.5f)) inner.data[(size_t)y * CS + x] = 1.f;
+        inner = ffcv::gaussianBlur(inner, std::max(1.0, CS / 256.0));
+        ffcv::MatF T(CS, CS, 1);
+        for (size_t i = 0; i < T.data.size(); ++i) T.data[i] = std::fmax(lip.data[i], inner.data[i]);
+        // The ring round the filmed lips (about a tenth of the face wide). Where the swap
+        // there differs clearly from the video -- the swapper's own, wider lips: their colour,
+        // their gloss, their outline -- the video's skin shows instead. The swapped skin is
+        // matched to the video's (Match skin tone), so plain skin differs little and keeps the
+        // swap; lip colour on the swapped side counts double.
+        const ffcv::MatF near = ffcv::gaussianBlur(T, std::max(2.0, CS / 24.0));
+        const float skinCr = cheekY(l68c, [&](int x, int y) { return outAt(x, y, 1); });
+        ffcv::MatF spill(CS, CS, 1);
+        std::fill(spill.data.begin(), spill.data.end(), 0.f);
+        for (int y = 0; y < CS; ++y) {
+          const float* orow = outCrop.row(y);
+          const uint8_t* crow = crop.row(y);
+          for (int x = 0; x < CS; ++x) {
+            const size_t i = (size_t)y * CS + x;
+            if (near.data[i] < 0.01f || T.data[i] > 0.5f) continue;
+            const Ycc o = toYcc(orow[x * 3], orow[x * 3 + 1], orow[x * 3 + 2]);
+            const Ycc v = toYcc(crow[x * 3], crow[x * 3 + 1], crow[x * 3 + 2]);
+            const float d = std::fabs(o.y - v.y) * 0.5f + std::fabs(o.cr - v.cr) * 1.5f +
+                            std::fabs(o.cb - v.cb);
+            float w = std::fmax(0.f, std::fmin(1.f, (d - 8.f) / 12.f));
+            if (skinCr > 0.f) w = std::fmax(w, std::fmin(1.f, (o.cr - skinCr - 2.f) / 5.f));
+            spill.data[i] = w * std::fmin(1.f, near.data[i] * 8.f);
+          }
+        }
+        spill = ffcv::gaussianBlur(spill, std::max(1.0, CS / 96.0));
+        for (size_t i = 0; i < faceMask.data.size(); ++i)
+          faceMask.data[i] = std::fmin(faceMask.data[i],
+                                       1.f - std::fmax(T.data[i], std::fmin(1.f, spill.data[i] * 1.5f)));
+      }
       // This face's sequence state whatever Smart speed is set to.
       Impl::SeqFace* lsq = p_->seqFaceAny(f, fi);
       if (lsq) {
@@ -4027,6 +4141,18 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
           e[5] = 1.f;
           smy = e[0]; smr = e[1]; smb = e[2]; ssr = e[3]; ssb = e[4];
         }
+        // EXACTLY the source's lip colour -- not brighter, not paler: its chroma, and its
+        // brightness relative to the face (the source's lips-to-cheeks ratio applied to this
+        // face's cheeks, so a dim scene keeps dim lips). The spread of colour across the lips
+        // is the source's too, within limits, so a pale swapped lip is not blown up.
+        const float wantY = (lc.skinY > 8.f && skinOutY > 8.f)
+            ? std::fmin(240.f, skinOutY * lc.y / lc.skinY) : lc.y;
+        auto ratio = [](float a, float b) { return std::fmax(0.6f, std::fmin(1.4f, a / b)); };
+        if (getenv("FF_DUMP_LIPCOL"))
+          fprintf(stdout, "lipcol src y%.0f cr%.0f cb%.0f skin%.0f | out skin%.0f want%.0f | kept n%d y%.0f cr%.0f | swapped n%d y%.0f cr%.0f\n",
+                  lc.y, lc.cr, lc.cb, lc.skinY, skinOutY, wantY, kn, kmy, kmr, sn, smy, smr);
+        ssr = ratio(lc.scr, ssr); ssb = ratio(lc.scb, ssb);
+        const float ksrR = ratio(lc.scr, ksr), ksbR = ratio(lc.scb, ksb);
         for (int y = 0; y < CS; ++y) {
           const uint8_t* crow = crop.row(y);
           float* orow = outCrop.row(y);
@@ -4040,8 +4166,8 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
             // on lips wrapped round food), with the lips' own shading.
             if (doSwapped && m > 0.f) {
               const Ycc o = toYcc(orow[x * 3], orow[x * 3 + 1], orow[x * 3 + 2]);
-              Ycc t{o.y + (lc.y - smy) * 0.5f, lc.cr + (o.cr - smr) * (lc.scr / ssr),
-                    lc.cb + (o.cb - smb) * (lc.scb / ssb)};
+              Ycc t{o.y + (wantY - smy), lc.cr + (o.cr - smr) * ssr,
+                    lc.cb + (o.cb - smb) * ssb};
               float rec[3];
               fromYcc(t, rec);
               const float k = amt * L;
@@ -4052,8 +4178,8 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
             // the same blend the paste would make, so no more of the original shows.
             if (m < 0.999f && !object && doKept) {
               const Ycc o = toYcc(crow[x * 3], crow[x * 3 + 1], crow[x * 3 + 2]);
-              Ycc t{o.y + (lc.y - kmy) * 0.4f, lc.cr + (o.cr - kmr) * (lc.scr / ksr),
-                    lc.cb + (o.cb - kmb) * (lc.scb / ksb)};
+              Ycc t{o.y + (wantY - kmy), lc.cr + (o.cr - kmr) * ksrR,
+                    lc.cb + (o.cb - kmb) * ksbR};
               float rec[3];
               fromYcc(t, rec);
               const float mm = std::fmax(m, L);   // the paste weight from here on

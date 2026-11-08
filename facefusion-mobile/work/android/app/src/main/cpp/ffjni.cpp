@@ -160,6 +160,7 @@ struct Quality {
   bool doubleSwap = false, autoWeight = false, hairOnly = false, lipsAuto = false, mouthFocus = false;
   float lightMatch = 0.f, lipstick = 0.f;
   bool sideGuard = true;
+  bool lipsFollow = false;
 };
 Quality g_quality;
 // Whether the caller is feeding consecutive frames (setSequence). Re-applied at initEx so a
@@ -197,6 +198,7 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.lightMatch = g_quality.lightMatch;
   cfg.lipstickMatch = g_quality.lipstick;
   cfg.sideGuard = g_quality.sideGuard;
+  cfg.lipsFollow = g_quality.lipsFollow;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -863,6 +865,18 @@ JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setSideGuard(JNIEnv*, jclass, jboolean on) {
   FF_PIPE_LOCK;
   g_quality.sideGuard = on == JNI_TRUE;
+  if (g_pipe) {
+    ffpipe::Config c = g_pipe->config();
+    applyQuality(c);
+    g_pipe->updateConfig(c);
+  }
+}
+
+// Lips follow the video: the filmed lip shape, the source's lip colour.
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setLipsFollow(JNIEnv*, jclass, jboolean on) {
+  FF_PIPE_LOCK;
+  g_quality.lipsFollow = on == JNI_TRUE;
   if (g_pipe) {
     ffpipe::Config c = g_pipe->config();
     applyQuality(c);

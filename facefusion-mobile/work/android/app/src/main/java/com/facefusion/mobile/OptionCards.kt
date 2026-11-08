@@ -535,6 +535,9 @@ fun FaceMaskerCard(
         OptionSwitch(stringResource(R.string.opt_lips_auto), opts.lipsAuto,
                      { onChange(opts.copy(lipsAuto = it, keepLips = if (it) false else opts.keepLips)) },
                      hint = stringResource(R.string.opt_lips_auto_hint))
+        OptionSwitch(stringResource(R.string.opt_lips_follow), opts.lipsFollow,
+                     { onChange(opts.copy(lipsFollow = it)) },
+                     hint = stringResource(R.string.opt_lips_follow_hint))
         OptionSwitch(stringResource(R.string.opt_lipstick), opts.lipstickMatch,
                      { onChange(opts.copy(lipstickMatch = it)) },
                      hint = stringResource(R.string.opt_lipstick_hint))

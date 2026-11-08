@@ -75,6 +75,14 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.59 (lips in line with the video, exact lipstick, no blurred boxes):
+          - Lips follow the video (new, Face Masker; on in Strongest likeness): the lips and the open mouth keep the video's own shape, so they are always exactly in line with the filmed mouth, chewing and pouting included. The swapper's own, wider lips no longer show around them (tested on the eating clip: the second, pale lip outline is gone).
+          - Lipstick match now gives exactly the source photo's lip colour: its colour and its darkness relative to the face (not brighter, not paler), so a dim scene keeps dim lips. Strongest likeness sets it to full strength.
+          - The swapped mouth no longer lags behind the filmed one in close-ups: "steady under cover" now holds only the brows, eyes and nose, never the mouth and jaw.
+          - Smooth over time no longer blends the lips with the previous frame (it left a faint second outline beside moving lips).
+          - No more blurred box: the back of a head or an ear is no longer taken for a turned face by the second face-point model, the motion-blur match can no longer smear a whole face, and no swap can ever end in a hard-edged rectangle (normal faces are unchanged, byte for byte).
+          - Press Strongest likeness once again (Gear > Realism) to turn on Lips follow the video with full Lipstick match.
+
           Version 1.0.58 (same speed in the background):
           - A swap left running in the background (another app open, or the screen off) no longer slows down. Off screen Android takes away the speed boost it gives the app on screen; the app now asks Android for the pace the swap had on screen, and no more. On screen nothing changes, so battery and memory use stay as before.
           - The swap's working threads keep their turn when another app is busy.

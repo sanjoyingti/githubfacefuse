@@ -264,6 +264,9 @@ data class SwapOptions(
     // 1.0.57: turned faces keep the swap on the visible half (on: it removes the invented
     // far eye and nose outline; front faces are unchanged).
     val sideGuard: Boolean = true,
+    // 1.0.59: the lips and the open mouth keep the video's own shape, so they are always in
+    // line with the filmed mouth; with Lipstick match they take the source's lip colour.
+    val lipsFollow: Boolean = false,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -317,7 +320,9 @@ data class SwapOptions(
         keepLips = false,
         lipsAuto = true,
         lipstickMatch = true,
-        lipstickStrength = 0.8f,
+        // Exactly the source's lip colour on the lips, which follow the video's mouth.
+        lipstickStrength = 1.0f,
+        lipsFollow = true,
         // Smooth over time: also the swapped face's shimmer filter (no flicker when hands or
         // food pass in front of the face).
         temporalSmooth = true,
@@ -452,6 +457,7 @@ data class SwapOptions(
             .putBoolean(K_MOUTH_FOCUS, mouthFocus)
             .putBoolean(K_BEST_OUT, bestQualityOutput)
             .putBoolean(K_SIDE_GUARD, sideGuard)
+            .putBoolean(K_LIPS_FOLLOW, lipsFollow)
             .apply()
     }
 
@@ -513,6 +519,7 @@ data class SwapOptions(
         private const val K_MOUTH_FOCUS = "mouth_focus"
         private const val K_BEST_OUT = "best_quality_output"
         private const val K_SIDE_GUARD = "side_guard"
+        private const val K_LIPS_FOLLOW = "lips_follow"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -619,6 +626,7 @@ data class SwapOptions(
                 mouthFocus = p.getBoolean(K_MOUTH_FOCUS, d.mouthFocus),
                 bestQualityOutput = p.getBoolean(K_BEST_OUT, d.bestQualityOutput),
                 sideGuard = p.getBoolean(K_SIDE_GUARD, d.sideGuard),
+                lipsFollow = p.getBoolean(K_LIPS_FOLLOW, d.lipsFollow),
             )
         }
     }
