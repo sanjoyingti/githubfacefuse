@@ -2231,6 +2231,8 @@ class MainActivity : ComponentActivity() {
         }
         // The optional NPU models the saved settings use (none, unless turned on).
         ModelPaths.syncOptionalNpu(this, opts)
+        VideoSwapper.lowMemory = opts.lowestMemory
+        VideoSwapper.bestQuality = opts.bestQualityOutput
         // STRONGER LIKENESS, once (build 51): a swapper weight still at the old default 0.5
         // moves to 0.65, which keeps more of the source photo's face. A value the user set is kept.
         run {
@@ -3413,6 +3415,7 @@ class MainActivity : ComponentActivity() {
         opts = fixed
         fixed.save(this)
         VideoSwapper.lowMemory = fixed.lowestMemory
+        VideoSwapper.bestQuality = fixed.bestQualityOutput
         // The big optional NPU models (larger parser, 512 enhancer) are only unpacked while
         // their setting is on.
         ModelPaths.syncOptionalNpu(this, fixed)

@@ -337,6 +337,28 @@ fun RealismCard(
              style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
              color = MaterialTheme.colorScheme.onSurfaceVariant,
              modifier = Modifier.padding(top = 4.dp))
+        val likeness = opts.likenessPreset()
+        Button(onClick = { onChange(likeness) }, enabled = opts != likeness,
+               modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+            Text(stringResource(R.string.opt_likeness_preset))
+        }
+        Text(stringResource(R.string.opt_likeness_preset_hint),
+             style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(top = 4.dp))
+        OptionSwitch(stringResource(R.string.opt_auto_weight), opts.autoWeight,
+                     { onChange(opts.copy(autoWeight = it)) },
+                     hint = stringResource(R.string.opt_auto_weight_hint))
+        OptionSwitch(stringResource(R.string.opt_light_match), opts.lightMatch,
+                     { onChange(opts.copy(lightMatch = it)) },
+                     hint = stringResource(R.string.opt_light_match_hint))
+        if (opts.lightMatch)
+            OptionSlider(stringResource(R.string.opt_strength), opts.lightMatchStrength,
+                         { onChange(opts.copy(lightMatchStrength = it)) },
+                         format = { "${(it * 100).roundToInt()}" })
+        OptionSwitch(stringResource(R.string.opt_best_output), opts.bestQualityOutput,
+                     { onChange(opts.copy(bestQualityOutput = it)) },
+                     hint = stringResource(R.string.opt_best_output_hint))
 
         OptionSwitch(stringResource(R.string.opt_smart_speed), opts.smartSpeed,
                      { onChange(opts.copy(smartSpeed = it)) },
@@ -383,6 +405,10 @@ fun RealismCard(
             OptionSlider(stringResource(R.string.opt_strength), opts.expressionFactor,
                          { onChange(opts.copy(expressionFactor = it)) },
                          format = { "${(it * 100).roundToInt()}" })
+        if (opts.expressionRestore)
+            OptionSwitch(stringResource(R.string.opt_mouth_focus), opts.mouthFocus,
+                         { onChange(opts.copy(mouthFocus = it)) },
+                         hint = stringResource(R.string.opt_mouth_focus_hint))
     }
 }
 
@@ -504,8 +530,21 @@ fun FaceMaskerCard(
                      { onChange(opts.copy(keepMouth = it)) },
                      hint = stringResource(R.string.opt_keep_mouth_hint))
         OptionSwitch(stringResource(R.string.opt_keep_lips), opts.keepLips,
-                     { onChange(opts.copy(keepLips = it)) },
+                     { onChange(opts.copy(keepLips = it, lipsAuto = if (it) false else opts.lipsAuto)) },
                      hint = stringResource(R.string.opt_keep_lips_hint))
+        OptionSwitch(stringResource(R.string.opt_lips_auto), opts.lipsAuto,
+                     { onChange(opts.copy(lipsAuto = it, keepLips = if (it) false else opts.keepLips)) },
+                     hint = stringResource(R.string.opt_lips_auto_hint))
+        OptionSwitch(stringResource(R.string.opt_lipstick), opts.lipstickMatch,
+                     { onChange(opts.copy(lipstickMatch = it)) },
+                     hint = stringResource(R.string.opt_lipstick_hint))
+        if (opts.lipstickMatch)
+            OptionSlider(stringResource(R.string.opt_strength), opts.lipstickStrength,
+                         { onChange(opts.copy(lipstickStrength = it)) },
+                         format = { "${(it * 100).roundToInt()}" })
+        OptionSwitch(stringResource(R.string.opt_hair_only), opts.hairOnlyParser,
+                     { onChange(opts.copy(hairOnlyParser = it)) },
+                     hint = stringResource(R.string.opt_hair_only_hint))
         OptionSwitch(stringResource(R.string.opt_parallel_masks), opts.parallelMasks,
                      { onChange(opts.copy(parallelMasks = it)) },
                      hint = stringResource(R.string.opt_parallel_masks_hint))

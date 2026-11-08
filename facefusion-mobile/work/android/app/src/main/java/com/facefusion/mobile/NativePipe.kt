@@ -119,7 +119,18 @@ object NativePipe {
         setEnhanceSharpen(if (opts.enhanceSharpen) opts.enhanceSharpenStrength else 0f)
         setQuality3(opts.keepClosedEyes, opts.sideHold)
         setModels4(opts.secondDetector, opts.turnedLandmarker, opts.largeParser, opts.enhancer512)
+        setLikeness5(false, opts.autoWeight, opts.hairOnlyParser,
+                     if (opts.lightMatch) opts.lightMatchStrength else 0f, opts.lipsAuto,
+                     if (opts.lipstickMatch) opts.lipstickStrength else 0f, opts.mouthFocus)
     }
+
+    /**
+     * 1.0.56: double swap (measured: no likeness gain, not offered), auto weight per person,
+     * hair-only face parser, light match, lips auto, lipstick match, mouth-focused restorer.
+     */
+    @JvmStatic external fun setLikeness5(doubleSwap: Boolean, autoWeight: Boolean,
+                                         hairOnly: Boolean, lightMatch: Float, lipsAuto: Boolean,
+                                         lipstick: Float, mouthFocus: Boolean)
 
     /**
      * The added models (1.0.54): second face detector (SCRFD), second landmarker

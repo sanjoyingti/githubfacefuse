@@ -456,7 +456,7 @@ void editKeypoints(const Motion& m, const float* s, const float* lm68, const Mlp
 
 
 void restoreKeypoints(const Motion& sw, const Motion& orig, float factor, float* source,
-                      float* target) {
+                      float* target, float otherFactor) {
   constexpr int N = kKeypoints * 3;
   float r[9], tmp[N], e[N];
   rotation(sw.pitch, sw.yaw, sw.roll, r);
@@ -464,8 +464,12 @@ void restoreKeypoints(const Motion& sw, const Motion& orig, float factor, float*
   std::memcpy(e, orig.expression, sizeof(e));
   for (int k : {0, 4, 5, 8, 9})
     for (int a = 0; a < 3; ++a) e[k * 3 + a] = sw.expression[k * 3 + a];
+  // Mouth focus: the lip keypoints at `factor`, the others at `otherFactor`.
+  bool lip[kKeypoints] = {};
+  for (int k : kLipKeypoints) lip[k] = true;
   for (int i = 0; i < N; ++i) {
-    const float ex = e[i] * factor + sw.expression[i] * (1.f - factor);
+    const float fk = (otherFactor >= 0.f && !lip[i / 3]) ? otherFactor : factor;
+    const float ex = e[i] * fk + sw.expression[i] * (1.f - fk);
     source[i] = sw.scale * (tmp[i] + ex) + sw.translation[i % 3];
     target[i] = sw.scale * (tmp[i] + sw.expression[i]) + sw.translation[i % 3];
   }

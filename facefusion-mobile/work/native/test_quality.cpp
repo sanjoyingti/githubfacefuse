@@ -175,6 +175,12 @@ int main(int argc, char** argv) {
     else if (a == "--sidehold") cfg.sideHold = v() == "1";
     else if (a == "--weight") cfg.swapperWeight = (float)atof(v().c_str());
     else if (a == "--likeness") likeness = v() == "1";
+    else if (a == "--double") cfg.doubleSwap = v() == "1";
+    else if (a == "--autoweight") cfg.autoWeight = v() == "1";
+    else if (a == "--hair-only") cfg.hairOnlyParser = v() == "1";
+    else if (a == "--light") cfg.lightMatch = (float)atof(v().c_str());
+    else if (a == "--lips-auto") cfg.lipsAuto = v() == "1";
+    else if (a == "--lipstick") cfg.lipstickMatch = (float)atof(v().c_str());
     else if (a == "--enhance") { cfg.faceEnhance = true; cfg.faceEnhancerBlend = (float)atof(v().c_str()); }
     else if (a == "--enh512") cfg.enhancer512 = v() == "1";
     else if (a == "--peppa") cfg.turnedLandmarker = v() == "1";
@@ -319,6 +325,7 @@ int main(int argc, char** argv) {
   }
   if (assignTest) printf("ASSIGN two-faces-same-person frames %d; person1 clear faces %d missed %d; others clear %d wrongly swapped %d\n", assignBad2, assignA, assignMissA, assignOther, assignWrongB);
   if (likeN) printf("LIKENESS mean %.3f over %d faces\n", likeSum / likeN, likeN);
+  { std::string r = pipe.swapReport(true); if (!r.empty()) printf("REPORT %s\n", r.c_str()); }
   printf("SECOND DETECTOR added %d faces; SECOND LANDMARKER used for %d faces\n", pipe.secondDetectorHits(), pipe.turnedLandmarkerUsed());
   printf("%s\n", ffpipe::Pipeline::maskStatus().c_str());
   {

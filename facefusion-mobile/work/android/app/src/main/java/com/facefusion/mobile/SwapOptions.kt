@@ -251,6 +251,16 @@ data class SwapOptions(
     val turnedLandmarker: Boolean = true,
     val largeParser: Boolean = false,
     val enhancer512: Boolean = false,
+    // 1.0.56 likeness, mouth and light. All off by default (speed as before).
+    val autoWeight: Boolean = false,
+    val hairOnlyParser: Boolean = false,
+    val lightMatch: Boolean = false,
+    val lightMatchStrength: Float = 0.6f,
+    val lipsAuto: Boolean = false,
+    val lipstickMatch: Boolean = false,
+    val lipstickStrength: Float = 0.8f,
+    val mouthFocus: Boolean = false,
+    val bestQualityOutput: Boolean = false,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -283,6 +293,44 @@ data class SwapOptions(
         colorMatchStrength = 0.6f,
         expressionRestore = false,
         faceEnhance = false,
+    )
+
+    /**
+     * "Strongest likeness": everything that keeps the swap closest to the source photo.
+     * The face parser only keeps hair (it no longer cuts the swap to the original's skin
+     * outline), the mouth stays the source's (Lips auto keeps only where food touches,
+     * in the source's lip colour), the expression restorer works on the mouth only.
+     */
+    fun likenessPreset(): SwapOptions = copy(
+        weight = 0.8f,
+        pixelBoost = 2,
+        maskBlur = 0.25f,
+        maskPadding = listOf(0, 0, 0, 0),
+        occlusionMask = true,
+        regionMask = false,
+        hairOnlyParser = true,
+        hairAware = false,
+        keepMouth = true,
+        keepLips = false,
+        lipsAuto = true,
+        lipstickMatch = true,
+        lipstickStrength = 0.8f,
+        autoWeight = true,
+        colorMatch = true,
+        colorMatchStrength = 0.5f,
+        // Match lighting stays as it is: it brings in the original's shading, which costs a
+        // little likeness (measured 0.688 -> 0.668), so it is a realism choice, not this one.
+        expressionRestore = true,
+        expressionFactor = 0.8f,
+        mouthFocus = true,
+        faceEnhance = true,
+        enhanceBlend = 0.3f,
+        poseFade = true,
+        poseFadeStart = 55f,
+        keepClosedEyes = true,
+        sideHold = true,
+        secondDetector = true,
+        turnedLandmarker = true,
     )
 
     fun realisticPreset(): SwapOptions = copy(
@@ -387,6 +435,15 @@ data class SwapOptions(
             .putBoolean(K_TURNED_LM, turnedLandmarker)
             .putBoolean(K_LARGE_PARSER, largeParser)
             .putBoolean(K_ENH512, enhancer512)
+            .putBoolean(K_AUTO_WEIGHT, autoWeight)
+            .putBoolean(K_HAIR_ONLY, hairOnlyParser)
+            .putBoolean(K_LIGHT, lightMatch)
+            .putFloat(K_LIGHT_S, lightMatchStrength)
+            .putBoolean(K_LIPS_AUTO, lipsAuto)
+            .putBoolean(K_LIPSTICK, lipstickMatch)
+            .putFloat(K_LIPSTICK_S, lipstickStrength)
+            .putBoolean(K_MOUTH_FOCUS, mouthFocus)
+            .putBoolean(K_BEST_OUT, bestQualityOutput)
             .apply()
     }
 
@@ -438,6 +495,15 @@ data class SwapOptions(
         private const val K_TURNED_LM = "turned_landmarker"
         private const val K_LARGE_PARSER = "large_parser"
         private const val K_ENH512 = "enhancer_512"
+        private const val K_AUTO_WEIGHT = "auto_weight"
+        private const val K_HAIR_ONLY = "hair_only_parser"
+        private const val K_LIGHT = "light_match"
+        private const val K_LIGHT_S = "light_match_strength"
+        private const val K_LIPS_AUTO = "lips_auto"
+        private const val K_LIPSTICK = "lipstick_match"
+        private const val K_LIPSTICK_S = "lipstick_strength"
+        private const val K_MOUTH_FOCUS = "mouth_focus"
+        private const val K_BEST_OUT = "best_quality_output"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -534,6 +600,15 @@ data class SwapOptions(
                 turnedLandmarker = p.getBoolean(K_TURNED_LM, d.turnedLandmarker),
                 largeParser = p.getBoolean(K_LARGE_PARSER, d.largeParser),
                 enhancer512 = p.getBoolean(K_ENH512, d.enhancer512),
+                autoWeight = p.getBoolean(K_AUTO_WEIGHT, d.autoWeight),
+                hairOnlyParser = p.getBoolean(K_HAIR_ONLY, d.hairOnlyParser),
+                lightMatch = p.getBoolean(K_LIGHT, d.lightMatch),
+                lightMatchStrength = p.getFloat(K_LIGHT_S, d.lightMatchStrength),
+                lipsAuto = p.getBoolean(K_LIPS_AUTO, d.lipsAuto),
+                lipstickMatch = p.getBoolean(K_LIPSTICK, d.lipstickMatch),
+                lipstickStrength = p.getFloat(K_LIPSTICK_S, d.lipstickStrength),
+                mouthFocus = p.getBoolean(K_MOUTH_FOCUS, d.mouthFocus),
+                bestQualityOutput = p.getBoolean(K_BEST_OUT, d.bestQualityOutput),
             )
         }
     }

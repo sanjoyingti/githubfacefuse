@@ -156,6 +156,9 @@ struct Quality {
   bool sideHold = true;
   // 1.0.54: the added models (see ffpipe::Config).
   bool secondDetector = true, turnedLandmarker = true, largeParser = false, enhancer512 = false;
+  // 1.0.56
+  bool doubleSwap = false, autoWeight = false, hairOnly = false, lipsAuto = false, mouthFocus = false;
+  float lightMatch = 0.f, lipstick = 0.f;
 };
 Quality g_quality;
 // Whether the caller is feeding consecutive frames (setSequence). Re-applied at initEx so a
@@ -185,6 +188,13 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.turnedLandmarker = g_quality.turnedLandmarker;
   cfg.largeParser = g_quality.largeParser;
   cfg.enhancer512 = g_quality.enhancer512;
+  cfg.doubleSwap = g_quality.doubleSwap;
+  cfg.autoWeight = g_quality.autoWeight;
+  cfg.hairOnlyParser = g_quality.hairOnly;
+  cfg.lipsAuto = g_quality.lipsAuto;
+  cfg.restoreMouthFocus = g_quality.mouthFocus;
+  cfg.lightMatch = g_quality.lightMatch;
+  cfg.lipstickMatch = g_quality.lipstick;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -817,6 +827,28 @@ Java_com_facefusion_mobile_NativePipe_setModels4(JNIEnv*, jclass, jboolean det, 
   g_quality.turnedLandmarker = lm == JNI_TRUE;
   g_quality.largeParser = parser == JNI_TRUE;
   g_quality.enhancer512 = enh512 == JNI_TRUE;
+  if (g_pipe) {
+    ffpipe::Config c = g_pipe->config();
+    applyQuality(c);
+    g_pipe->updateConfig(c);
+  }
+}
+
+// 1.0.56: likeness, mouth and light options (see ffpipe::Config).
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setLikeness5(JNIEnv*, jclass, jboolean doubleSwap,
+                                                  jboolean autoWeight, jboolean hairOnly,
+                                                  jfloat light, jboolean lipsAuto,
+                                                  jfloat lipstick, jboolean mouthFocus) {
+  FF_PIPE_LOCK;
+  auto unit = [](float v) { return std::isfinite(v) ? std::fmin(1.f, std::fmax(0.f, v)) : 0.f; };
+  g_quality.doubleSwap = doubleSwap == JNI_TRUE;
+  g_quality.autoWeight = autoWeight == JNI_TRUE;
+  g_quality.hairOnly = hairOnly == JNI_TRUE;
+  g_quality.lightMatch = unit(light);
+  g_quality.lipsAuto = lipsAuto == JNI_TRUE;
+  g_quality.lipstick = unit(lipstick);
+  g_quality.mouthFocus = mouthFocus == JNI_TRUE;
   if (g_pipe) {
     ffpipe::Config c = g_pipe->config();
     applyQuality(c);

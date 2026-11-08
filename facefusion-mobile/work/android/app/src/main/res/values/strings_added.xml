@@ -232,13 +232,30 @@
     <string name="opt_closed_eyes_hint">While an eye is shut, its own lids and lashes stay as filmed, so they do not smear. Each eye on its own (winks too).</string>
     <string name="opt_side_hold">Swap turned faces with side photos</string>
     <string name="opt_side_hold_hint">If this person has a photo turned the same way (Faces tab), a face turned sideways keeps the swap 15 degrees further round before fading.</string>
+    <!-- 1.0.56: likeness, mouth, light, output -->
+    <string name="opt_likeness_preset">Strongest likeness</string>
+    <string name="opt_likeness_preset_hint">Makes the face look as much like the source photo as possible: stronger weight, the face parser only keeps hair (it no longer cuts the swap to the original face outline), the source\'s mouth with Lips auto and Lipstick match, and the expression restorer on the mouth only. Slower than the default.</string>
+    <string name="opt_auto_weight">Auto weight per person</string>
+    <string name="opt_auto_weight_hint">The first clear view of each person is swapped at your weight and at +0.1 and +0.2, and the lowest one that looks most like the source is used for that person for the whole video. A few extra swaps per person, once.</string>
+    <string name="opt_light_match">Match lighting</string>
+    <string name="opt_light_match_hint">The swapped face takes the video\'s light and shadow direction (one side brighter, the other darker), not only its overall colour. More natural in side light, but the original\'s shading also carries a little of their face shape, so likeness drops slightly. Cheap.</string>
+    <string name="opt_best_output">Best quality output</string>
+    <string name="opt_best_output_hint">Saves the swapped video at twice the bitrate, so fine detail (skin, lashes, the enhancer\'s sharpness) survives the compression. Bigger files; no extra processing.</string>
+    <string name="opt_mouth_focus">Mouth focus</string>
+    <string name="opt_mouth_focus_hint">The restorer moves the mouth fully like the original (open, chewing, around food) and the rest of the face only lightly, so the face keeps more of the source. Also runs while the mouth is open, not only on blinks.</string>
+    <string name="opt_lips_auto">Keep lips: Auto (eating)</string>
+    <string name="opt_lips_auto_hint">The lips stay the source\'s, except the band that food, a fork, a spoon or a cup touches, which stays as filmed. Needs the occlusion mask.</string>
+    <string name="opt_lipstick">Lipstick match</string>
+    <string name="opt_lipstick_hint">Lips kept as filmed take the source photo\'s lip colour (lipstick or natural) with their own shading, and swapped lips are brought towards it. Food and teeth are never coloured.</string>
+    <string name="opt_hair_only">Face parser: keep hair only</string>
+    <string name="opt_hair_only_hint">The face parser keeps only hair and hats as filmed and does not cut the swap down to the original face outline, so hair edges stay clean and the face keeps more of the source.</string>
     <!-- 1.0.54: added models -->
     <string name="opt_second_detector">Second face detector (SCRFD)</string>
     <string name="opt_second_detector_hint">When a face that was on screen a moment ago is lost (turned, half hidden, blurred), or no face is found at all, a second detector looks too. Frames where every face is found cost nothing extra.</string>
     <string name="opt_turned_landmarker">Second face-point model for turned faces (PEPPA-Wutz)</string>
     <string name="opt_turned_landmarker_hint">For a face the normal face-point model is unsure of (turned, tilted, blurred), a second one places the eyes, nose and mouth too, and the more confident one is used. Faces it is sure of cost nothing extra.</string>
     <string name="opt_large_parser">Larger face parser (BiSeNet ResNet-34)</string>
-    <string name="opt_large_parser_hint">A more exact outline of skin, hair and ears for the face parser mask. About 1.2 times the parser\'s work; off keeps the speed as before.</string>
+    <string name="opt_large_parser_hint">A more exact outline of skin, hair and ears for the face parser mask. About twice the parser\'s work (measured); off keeps the speed as before.</string>
     <string name="opt_enhancer_512">Sharper enhancer at 512 px (GPEN-BFR 512)</string>
     <string name="opt_enhancer_512_hint">Restores the face at 512 px instead of 256: twice the detail on close-ups, but several times the enhancer\'s work, so swaps are slower and use more battery. Needs the phone\'s NPU; off keeps everything as before.</string>
     <!-- 1.0.52: find everyone in the video (Assign per person) -->

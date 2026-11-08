@@ -338,7 +338,8 @@ class VideoSwapper(
         // size is: a value outside the range is refused at start(), in the same empty
         // CodecException, and 0.25 bits per pixel of a big frame is a number some parts do
         // not go up to. Long arithmetic -- width * height * fps overflows Int at 8K.
-        val bitrate = (encW.toLong() * encH * fps / 4L)
+        // 0.25 bits per pixel, or 0.5 with "Best quality output" (fine detail survives).
+        val bitrate = (encW.toLong() * encH * fps / (if (bestQuality) 2L else 4L))
             .coerceIn(64_000L, Int.MAX_VALUE.toLong()).toInt()
             .coerceIn(vcaps.bitrateRange.lower, vcaps.bitrateRange.upper)
         val encFormat = MediaFormat.createVideoFormat(
@@ -939,6 +940,8 @@ class VideoSwapper(
     companion object {
         /** Set from SwapOptions.lowestMemory before a run. */
         @Volatile @JvmStatic var lowMemory: Boolean = false
+        /** "Best quality output": twice the video bitrate (still clamped to the encoder). */
+        @Volatile @JvmStatic var bestQuality: Boolean = false
     }
 
     private fun durationUs(f: MediaFormat) =

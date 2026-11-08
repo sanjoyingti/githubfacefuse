@@ -75,7 +75,19 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
-          Version 1.0.55 (Continue no longer closes the app):
+          Version 1.0.56 (likeness, mouth, lighting, output):
+          - "Strongest likeness" button (Gear > Realism): weight 0.8, the face parser keeps only hair (it no longer cuts the swap to the original face outline), the source's mouth with Lips auto and Lipstick match, Auto weight, and the expression restorer on the mouth only.
+          - Face parser: keep hair only (Face Masker): clean hair edges without losing likeness (measured: no change in likeness).
+          - Keep lips: Auto (eating) (Face Masker): lips stay the source's except the narrow band food, a fork, a spoon or a finger touches, which stays as filmed. Measured with a finger on the lips: likeness 0.685 vs 0.688 without.
+          - Lipstick match (Face Masker): lips kept as filmed take the source photo's lip colour (lipstick or natural) with their own shading; swapped lips are brought towards it. Food and teeth are never coloured.
+          - Mouth focus (Expression restorer): the mouth moves fully like the original (open, chewing, around food), the rest of the face only lightly; also runs while the mouth is open.
+          - Auto weight per person: the first clear view of each person is swapped at the weight and +0.1/+0.2, and the lowest one that looks most like the source is kept.
+          - Match lighting (Realism): the video's light and shadow direction on the swapped face. More natural in side light; costs a little likeness (0.688 -> 0.668), so it is not in Strongest likeness.
+          - Best quality output (Realism): twice the video bitrate, so fine detail survives compression.
+          - The log now shows the likeness to the source photo per person after a swap (the face recogniser's score; about 0.66 is what two photos of the same person score).
+          - Measured, not added: a "double swap" (swapping twice) gave no likeness gain (0.682 -> 0.684) for twice the time. Raising the weight from 0.5 to 0.95 only moves likeness 0.650 -> 0.664: the swapped face is already recognised as the source person about as strongly as a second photo of her; what still differs is hair, face shape, lips and light.
+          - All new options are off by default: speed, memory, battery and your settings are unchanged unless you turn them on.
+
           - Pressing Continue while the app was still loading its models froze the screen while it waited (up to two minutes), and Android closed the app as "not responding". The wait now happens in the background; the screen stays usable and says it is waiting for the models.
           - The same fix everywhere the app waits for the models: preview, Live, player, Find everyone, batch.
           - Releasing the preview, reading the assigned people and reopening the video no longer run on the screen thread. A double tap on Continue starts one swap.

@@ -112,6 +112,8 @@ void animateKeypoints(const Motion& photo, const Motion& driverFirst, const Moti
  * swapped face as it is and `source` the restored one, in the generator's naming.
  */
 void restoreKeypoints(const Motion& swapped, const Motion& original, float factor,
-                      float* source, float* target);
+                      float* source, float* target, float otherFactor = -1.f);
+// LivePortrait's lip keypoints (its retargeting uses these for the mouth).
+constexpr int kLipKeypoints[6] = {6, 12, 14, 17, 19, 20};
 
 }  // namespace ffportrait

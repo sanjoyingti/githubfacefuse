@@ -44,3 +44,19 @@ class PipeGuardTest {
         main.close()
     }
 }
+
+class LikenessPresetTest {
+    @Test fun strongestLikenessKeepsTheSourcesFace() {
+        val p = SwapOptions().likenessPreset()
+        // The parser only keeps hair; the mouth stays the source's with eating handled.
+        assertTrue(p.hairOnlyParser); assertFalse(p.regionMask); assertFalse(p.keepLips)
+        assertTrue(p.lipsAuto); assertTrue(p.lipstickMatch); assertTrue(p.occlusionMask)
+        assertTrue(p.mouthFocus); assertTrue(p.autoWeight)
+        assertFalse(p.lightMatch)                 // measured to cost likeness
+        assertTrue(p.weight >= 0.75f)
+        // New options are all off by default: speed and results as before.
+        val d = SwapOptions()
+        assertFalse(d.autoWeight || d.hairOnlyParser || d.lightMatch || d.lipsAuto ||
+                    d.lipstickMatch || d.mouthFocus || d.bestQualityOutput)
+    }
+}

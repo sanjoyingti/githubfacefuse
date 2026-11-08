@@ -136,6 +136,29 @@ struct Config {
   // at 512 px on its own FFHQ crop instead of GPEN 256 on the swap crop. Twice the detail on
   // close-ups; slower. Off by default; without the NPU build the 256 one runs as before.
   bool enhancer512 = false;
+  // ---- 1.0.56: likeness, mouth and light (all off by default; see ffpipe.cpp)
+  // DOUBLE SWAP: the swapped face is swapped once more from the same source -- closer to
+  // the source photo; twice the swapper's time.
+  bool doubleSwap = false;
+  // AUTO WEIGHT: the first clear view of each person is swapped at the chosen weight and at
+  // +0.1 and +0.2; the lowest weight within 0.02 of the best likeness is used for the run.
+  bool autoWeight = false;
+  // HAIR ONLY: the face parser keeps only hair and hats as filmed and cuts nothing else, so
+  // hair edges stay clean without the swap shrinking to the skin outline.
+  bool hairOnlyParser = false;
+  // LIGHT MATCH (0..1): the swapped face takes the target face's shading -- which side is
+  // lit, which is in shadow -- not only its overall colour (Match skin tone).
+  float lightMatch = 0.f;
+  // LIPS AUTO: lips stay swapped, except the band where something (food, a fork, a cup)
+  // touches them, which stays as filmed. Needs the occlusion mask.
+  bool lipsAuto = false;
+  // LIPSTICK MATCH (0..1): lips kept as filmed are recoloured to the source photo's lip
+  // colour (lipstick or natural), keeping their own shading; swapped lips are brought
+  // halfway towards it.
+  float lipstickMatch = 0.f;
+  // MOUTH FOCUS: the expression restorer works fully on the mouth (open, chewing, around
+  // food) and only lightly on the rest of the face, for more likeness.
+  bool restoreMouthFocus = false;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;
