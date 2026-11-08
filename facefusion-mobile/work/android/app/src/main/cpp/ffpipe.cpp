@@ -3810,7 +3810,11 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     if (cfg.keepClosedEyes) {
       float oL = 1.f, oR = 1.f;
       ffmotion::eyeOpenness2(f.landmark68, &oL, &oR);
-      auto keepOf = [](float o) { return std::max(0.f, std::min(1.f, (0.20f - o) / 0.07f)); };
+      // Only a REAL blink or closed eye (openness under 0.12, fully at 0.07). Eyelids lowered
+      // to look down read 0.13-0.20 (measured over 111 frames of an eating clip, 44 of
+      // them); from 0.20 those kept 30-70% of the ORIGINAL eyes and the face switched back
+      // and forth between the source and the original as the eyes hovered round 0.2.
+      auto keepOf = [](float o) { return std::max(0.f, std::min(1.f, (0.12f - o) / 0.05f)); };
       eyeKeepL = keepOf(oL); eyeKeepR = keepOf(oR);
       // Smoothed over frames: the openness read from the points wobbles while something
       // crosses the eyes, and the eye then flipped between filmed and swapped.
