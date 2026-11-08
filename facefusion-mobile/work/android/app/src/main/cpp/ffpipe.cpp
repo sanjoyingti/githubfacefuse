@@ -4079,6 +4079,20 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       msGeom += nowMs() - t0;
     }
 
+    // FF_DUMP_MASK (host tests only): the final swap mask as a 6x6 grid of means over the
+    // crop, plus the pose fade -- what was swapped, and what went back to the original.
+    if (getenv("FF_DUMP_MASK")) {
+      const ffcv::MatF& mm = *useMask;
+      fprintf(stdout, "mask%zu fade %.2f grid", fi, f.poseFade);
+      for (int gy = 0; gy < 6; ++gy)
+        for (int gx = 0; gx < 6; ++gx) {
+          double sum = 0; int cnt = 0;
+          for (int y = gy * CS / 6; y < (gy + 1) * CS / 6; y += 4)
+            for (int x = gx * CS / 6; x < (gx + 1) * CS / 6; x += 4) { sum += mm.data[(size_t)y * CS + x]; ++cnt; }
+          fprintf(stdout, " %.2f", cnt ? sum / cnt : 0.0);
+        }
+      fprintf(stdout, "\n");
+    }
     t0 = nowMs();
     ffcv::pasteBack(frame, outCrop, *useMask, am);
     msGeom += nowMs() - t0;
