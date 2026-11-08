@@ -2209,6 +2209,7 @@ class MainActivity : ComponentActivity() {
         SafeFiles.init(this)
         ModelPaths.apply(this)
         Thermal.init(this)
+        RunBoost.init(this)
         reportLastExit()
         forcedBackend = ModelPaths.forcedBackend(this)
         ncnnGpu = ModelPaths.ncnnGpu(this)
@@ -4528,6 +4529,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         appVisible = true
+        RunBoost.visible = true
         if (releasedInBackground) {
             releasedInBackground = false
             // Back in front: load the models again for the preview of what is on screen.
@@ -4538,6 +4540,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         appVisible = false
+        RunBoost.visible = false
         if (liveRunning) stopLive()
         // IDLE in the background: give the models' memory back. With ~600 MB of models
         // loaded the app is one of the first Android stops when another app needs memory

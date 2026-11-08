@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include "ffpipe.h"
 
 #include "ffaudio.h"
@@ -516,6 +517,9 @@ struct Pipeline::Impl {
       cv.wait(l, [&] { return !busy; });
     }
     void loop() {
+      // Named so the app's performance hint can find it (RunBoost.kt); the CPU model
+      // threads it starts inherit the name.
+      pthread_setname_np(pthread_self(), "ff-mask");
       for (;;) {
         std::function<void()> j;
         {

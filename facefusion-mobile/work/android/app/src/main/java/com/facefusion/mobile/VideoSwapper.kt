@@ -490,7 +490,13 @@ class VideoSwapper(
             return false
         }
 
+        val decodeTid = java.util.concurrent.atomic.AtomicInteger(0)
+        val encodeTid = java.util.concurrent.atomic.AtomicInteger(0)
+        val stagesUp = java.util.concurrent.CountDownLatch(2)
         val decodeThread = Thread({
+            decodeTid.set(android.os.Process.myTid())
+            RunBoost.raiseCurrentThread()
+            stagesUp.countDown()
             try {
                 val info = MediaCodec.BufferInfo()
                 var sawInputEOS = false
@@ -559,6 +565,9 @@ class VideoSwapper(
         }, "ff-decode")
 
         val encodeThread = Thread({
+            encodeTid.set(android.os.Process.myTid())
+            RunBoost.raiseCurrentThread()
+            stagesUp.countDown()
             var m = false
             try {
                 while (true) {
@@ -584,6 +593,14 @@ class VideoSwapper(
 
         decodeThread.start()
         encodeThread.start()
+        // BACKGROUND SPEED: off screen Android drops the app's boost and the run slowed
+        // down. Off screen only, the performance hint asks for the pace the run had on
+        // screen -- no more (RunBoost). On screen nothing changes.
+        // A pooled thread, so its own priority is put back when the run ends.
+        val oldPriority = RunBoost.raiseCurrentThread()
+        runCatching { stagesUp.await(2, java.util.concurrent.TimeUnit.SECONDS) }
+        val boost = RunBoost.start(intArrayOf(android.os.Process.myTid(),
+                                              decodeTid.get(), encodeTid.get()))
         var stagesJoined = false
         fun joinStages() {
             if (stagesJoined) return
@@ -638,8 +655,10 @@ class VideoSwapper(
                     break
                 }
                 // `swapped` is the OUTPUT frame index: it already accounts for decimation.
+                val workT0 = System.nanoTime()
                 val faces = NativePipe.processFrameAt(f.bgr, outW, outH,
                                                       if (syncing) swapped else -1)
+                boost.report(System.nanoTime() - workT0)
                 if (faces < 0) error("native: ${NativePipe.lastError()}")
                 if (faces == 0) {
                     noFaceFrames++
@@ -655,6 +674,8 @@ class VideoSwapper(
             }
         } finally {
             joinStages()
+            boost.close()
+            RunBoost.restoreCurrentThread(oldPriority)
         }
         encodeError.get()?.let { throw it }
         muxing = encMuxing.get()
