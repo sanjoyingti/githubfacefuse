@@ -318,6 +318,10 @@ data class SwapOptions(
         lipsAuto = true,
         lipstickMatch = true,
         lipstickStrength = 0.8f,
+        // Smooth over time: also the swapped face's shimmer filter (no flicker when hands or
+        // food pass in front of the face).
+        temporalSmooth = true,
+        sideGuard = true,
         autoWeight = true,
         colorMatch = true,
         colorMatchStrength = 0.5f,

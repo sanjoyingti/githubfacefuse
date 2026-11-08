@@ -62,7 +62,7 @@
     <string name="opt_auto_boost">More detail on close-ups</string>
     <string name="opt_auto_boost_hint">A face shown big in the frame is swapped at 1024 pixels instead of being stretched, so its edges stay clean. Takes longer on close-ups only.</string>
     <string name="opt_temporal">Smooth over time</string>
-    <string name="opt_temporal_hint">Videos: the skin tone and the edge of the swap change gently from frame to frame instead of flickering.</string>
+    <string name="opt_temporal_hint">Videos: the skin tone, the edge of the swap and the swapped face itself change gently from frame to frame instead of flickering, also while hands or food pass in front of the face. Real movement (the mouth opening, a turn) is not smoothed.</string>
     <string name="status_recommended_applied">Recommended settings are on: face parser with hair-aware and seamless edges, close-up detail, occlusion mask, real mouth inside, skin tone, expression restorer 80, enhancer 50, smoothing, 30 fps and 1080p for 4K. Change anything in the gear on face_swapper.</string>
 
     <!-- The Faces tab -->

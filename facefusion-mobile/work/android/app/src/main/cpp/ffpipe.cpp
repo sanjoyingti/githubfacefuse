@@ -362,6 +362,10 @@ struct Pipeline::Impl {
     // MOUTH: frames left during which something was touching the lips (Lips auto), so
     // Smart speed recomputes the masks and the restorer keeps working on the mouth.
     int mouthBusy = 0;
+    // SMOOTH OVER TIME, swapped face: the last swapped crop (crop-aligned, so it follows
+    // the face) for the shimmer filter; and the lips' running colour for Lipstick match.
+    std::shared_ptr<ffcv::MatF> prevOut;
+    float lipEma[6] = {0, 0, 0, 0, 0, 0};   // swapped lips: Y, Cr, Cb, sdCr, sdCb, valid
     // STICKY PERSON (assign per person): which assigned person this face was last
     // recognised as, and for how many more frames that holds while the match is weak
     // (blink, turned head, looking down). -1 = nobody.
@@ -3732,6 +3736,28 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     const std::vector<float> src = makeSrc(weight);
     if (!swapFace(src, outCrop)) return false;
 
+    // SHIMMER FILTER (Smooth over time): where this frame's swapped face differs only a
+    // little from the last one -- the swapper redrawing the same face slightly differently,
+    // e.g. while fingers or food pass in front of it -- the two are blended; real changes
+    // (the mouth opening, a turn, an object) are larger and pass through untouched.
+    {
+      Impl::SeqFace* sq = p_->seqFaceAny(f, fi);
+      if (cfg.temporalSmooth && sq) {
+        if (sq->prevOut && sq->prevOut->w == CS && sq->prevOut->h == CS && sq->miss == 0) {
+          const float* pv = sq->prevOut->data.data();
+          float* ov = outCrop.data.data();
+          for (size_t i = 0, n = (size_t)CS * CS; i < n; ++i) {
+            const float d = std::fmax(std::fabs(ov[3 * i] - pv[3 * i]),
+                            std::fmax(std::fabs(ov[3 * i + 1] - pv[3 * i + 1]),
+                                      std::fabs(ov[3 * i + 2] - pv[3 * i + 2])));
+            const float w = 0.5f * std::fmax(0.f, 1.f - d / 28.f);
+            for (int c = 0; c < 3; ++c) ov[3 * i + c] += (pv[3 * i + c] - ov[3 * i + c]) * w;
+          }
+        }
+        sq->prevOut = std::make_shared<ffcv::MatF>(outCrop);
+      }
+    }
+
     // The enhancer used to run HERE, fused into the swap crop. It no longer does -- see
     // `enhance()`, always called as its own pass now, after this and after `syncLip`
     // when the caller has one. Measured: fusing it here meant edtalk's whole-face
@@ -3886,9 +3912,11 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
           for (size_t i = 0; i < faceMask.data.size(); ++i)
             faceMask.data[i] = std::fmin(faceMask.data[i], 1.f - lip.data[i] * near.data[i]);
       }
-      if (sface) {
-        if (busy) sface->mouthBusy = 8;
-        else if (sface->mouthBusy > 0) --sface->mouthBusy;
+      // This face's sequence state whatever Smart speed is set to.
+      Impl::SeqFace* lsq = p_->seqFaceAny(f, fi);
+      if (lsq) {
+        if (busy) lsq->mouthBusy = 8;
+        else if (lsq->mouthBusy > 0) --lsq->mouthBusy;
       }
       const Impl::LipColor& lc = p_->slotLip[(size_t)six];
       if (cfg.lipstickMatch > 0.f && lc.have) {
@@ -3920,9 +3948,18 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
         const float kmy = doKept ? (float)(ky / kn) : 0.f, kmr = doKept ? (float)(kr / kn) : 0.f,
                     kmb = doKept ? (float)(kb / kn) : 0.f;
         const float ksr = doKept ? sd(kqr, kr, kn) : 1.f, ksb = doKept ? sd(kqb, kb, kn) : 1.f;
-        const float smy = doSwapped ? (float)(sy / sn) : 0.f, smr = doSwapped ? (float)(sr / sn) : 0.f,
-                    smb = doSwapped ? (float)(sb / sn) : 0.f;
-        const float ssr = doSwapped ? sd(sqr, sr, sn) : 1.f, ssb = doSwapped ? sd(sqb, sb, sn) : 1.f;
+        float smy = doSwapped ? (float)(sy / sn) : 0.f, smr = doSwapped ? (float)(sr / sn) : 0.f,
+              smb = doSwapped ? (float)(sb / sn) : 0.f;
+        float ssr = doSwapped ? sd(sqr, sr, sn) : 1.f, ssb = doSwapped ? sd(sqb, sb, sn) : 1.f;
+        // Smoothed over frames: a colour measured afresh on every frame shifts with the
+        // lips' shape (a bite) and the recolour then flickers.
+        if (doSwapped && lsq) {
+          float* e = lsq->lipEma;
+          const float cur[5] = {smy, smr, smb, ssr, ssb};
+          for (int k = 0; k < 5; ++k) e[k] = e[5] > 0 ? e[k] * 0.8f + cur[k] * 0.2f : cur[k];
+          e[5] = 1.f;
+          smy = e[0]; smr = e[1]; smb = e[2]; ssr = e[3]; ssb = e[4];
+        }
         for (int y = 0; y < CS; ++y) {
           const uint8_t* crow = crop.row(y);
           float* orow = outCrop.row(y);
@@ -3932,14 +3969,15 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
             if (L < 0.05f) continue;
             const bool object = haveOcc && occMap.data[i] < 0.5f;
             const float m = faceMask.data[i];   // how much of the swap shows here
-            // Swapped lip: halfway towards the source's lip colour (in proportion to m).
+            // Swapped lip: the source's lip colour (the swapper pales lipstick, most of all
+            // on lips wrapped round food), with the lips' own shading.
             if (doSwapped && m > 0.f) {
               const Ycc o = toYcc(orow[x * 3], orow[x * 3 + 1], orow[x * 3 + 2]);
-              Ycc t{o.y + (lc.y - smy) * 0.2f, lc.cr + (o.cr - smr) * (lc.scr / ssr),
+              Ycc t{o.y + (lc.y - smy) * 0.5f, lc.cr + (o.cr - smr) * (lc.scr / ssr),
                     lc.cb + (o.cb - smb) * (lc.scb / ssb)};
               float rec[3];
               fromYcc(t, rec);
-              const float k = 0.5f * amt * L;
+              const float k = amt * L;
               for (int c = 0; c < 3; ++c) orow[x * 3 + c] = orow[x * 3 + c] * (1.f - k) + rec[c] * k;
             }
             // Kept lip: exactly the part (1 - m) that shows as filmed is replaced by the

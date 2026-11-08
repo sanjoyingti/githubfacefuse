@@ -52,6 +52,7 @@ class LikenessPresetTest {
         assertTrue(p.hairOnlyParser); assertFalse(p.regionMask); assertFalse(p.keepLips)
         assertTrue(p.lipsAuto); assertTrue(p.lipstickMatch); assertTrue(p.occlusionMask)
         assertTrue(p.mouthFocus); assertTrue(p.autoWeight)
+        assertTrue(p.temporalSmooth); assertTrue(p.sideGuard)
         assertFalse(p.lightMatch)                 // measured to cost likeness
         assertTrue(p.weight >= 0.75f)
         // New options are all off by default: speed and results as before.
