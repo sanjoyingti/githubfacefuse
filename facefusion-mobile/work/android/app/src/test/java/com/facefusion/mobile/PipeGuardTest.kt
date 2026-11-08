@@ -51,7 +51,9 @@ class EatingPresetTest {
         assertTrue(p.lipsFollow); assertTrue(p.lipsAuto); assertTrue(p.lipstickMatch)
         assertEquals(1.0f, p.lipstickStrength, 0f)
         assertTrue(p.occlusionMask); assertTrue(p.keepMouth); assertFalse(p.keepLips)
-        assertEquals(1, p.trackPeriod); assertFalse(p.smartSpeed)
+        // As fast as Strongest likeness: no every-frame detection, Smart speed stays on.
+        assertEquals(SwapOptions().likenessPreset().trackPeriod, p.trackPeriod)
+        assertTrue(p.smartSpeed)
         assertTrue(p.temporalSmooth); assertTrue(p.sideGuard); assertTrue(p.mouthFocus)
         assertFalse(p.lightMatch)
         assertTrue(p.weight >= 0.75f)
