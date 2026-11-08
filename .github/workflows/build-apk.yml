@@ -75,7 +75,14 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
-          Version 1.0.56 (likeness, mouth, lighting, output):
+          Version 1.0.57 (side views, no flicker, lipstick through bites):
+          - Side guard (Face Masker, on): on a face turned 35 degrees or more the swapper draws a front face and invents the far eye and the nose outline (an eye on the cheek, a nose edge). The swap is now kept on the visible half, up to the nose line; the far side stays as filmed, fully from 60 degrees. The mouth and the visible cheek and eye keep the swap; front faces are unchanged (pixel-identical). Measured at a 53 degree turn: the invented far eye is gone (12.5 -> 1.5 from the real one).
+          - No more switching between the source and the original: Natural closed eyes now keeps the original eyes only on a real blink. Eyes lowered to look down (eating, reading) were taken for closing and brought back 30-70% of the original eyes, so the face flipped back and forth as the person looked up and down.
+          - Steady under cover: while fingers or food pass in front of the face, the face points lean on the previous frame instead of jumping (the swapped eyes no longer flash open for a frame), and the closed-eye switch changes gradually.
+          - Smooth over time also steadies the swapped face itself (small frame-to-frame redraws); real movement is not smoothed.
+          - Lipstick through bites: lips pressed round food were taken for the food and kept as filmed (pale); the face parser now tells lips from food, and they get the source's lip colour (measured: 15-30 darker and redder at the upper lip). Food is never coloured (only reddish pixels count as lips).
+          - Strongest likeness now also turns on Smooth over time and Side guard.
+
           - "Strongest likeness" button (Gear > Realism): weight 0.8, the face parser keeps only hair (it no longer cuts the swap to the original face outline), the source's mouth with Lips auto and Lipstick match, Auto weight, and the expression restorer on the mouth only.
           - Face parser: keep hair only (Face Masker): clean hair edges without losing likeness (measured: no change in likeness).
           - Keep lips: Auto (eating) (Face Masker): lips stay the source's except the narrow band food, a fork, a spoon or a finger touches, which stays as filmed. Measured with a finger on the lips: likeness 0.685 vs 0.688 without.
