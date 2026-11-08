@@ -75,6 +75,10 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.58 (same speed in the background):
+          - A swap left running in the background (another app open, or the screen off) no longer slows down. Off screen Android takes away the speed boost it gives the app on screen; the app now asks Android for the pace the swap had on screen, and no more. On screen nothing changes, so battery and memory use stay as before.
+          - The swap's working threads keep their turn when another app is busy.
+
           Version 1.0.57 (side views, no flicker, lipstick through bites):
           - Side guard (Face Masker, on): on a face turned 35 degrees or more the swapper draws a front face and invents the far eye and the nose outline (an eye on the cheek, a nose edge). The swap is now kept on the visible half, up to the nose line; the far side stays as filmed, fully from 60 degrees. The mouth and the visible cheek and eye keep the swap; front faces are unchanged (pixel-identical). Measured at a 53 degree turn: the invented far eye is gone (12.5 -> 1.5 from the real one).
           - No more switching between the source and the original: Natural closed eyes now keeps the original eyes only on a real blink. Eyes lowered to look down (eating, reading) were taken for closing and brought back 30-70% of the original eyes, so the face flipped back and forth as the person looked up and down.
