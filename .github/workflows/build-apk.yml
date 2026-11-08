@@ -75,6 +75,11 @@ jobs:
 
           To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
 
+          Version 1.0.60 (Eating scenes button):
+          - New one-tap "Eating scenes" button (Gear > Realism, under Strongest likeness): everything set for food, spoons, forks and fingers at the mouth. Strongest likeness, plus: Lips follow the video with full Lipstick match (lips in line while biting and chewing, exactly the source's lipstick), Lips auto and the occlusion mask (food and hands stay as filmed), Keep original mouth inside (real teeth, tongue and food), the face and every mask worked out again on every frame (Fast video 1, Smart speed off), mask blur 0.3, weight 0.8 with Auto weight, Smooth over time, motion smoothing, seamless edges, side guard, rotated faces, the expression restorer on the mouth, and a light enhancer (0.3) that does not repaint the lips. Slower than the default.
+          - Lipstick colour now only goes on pixels clearly redder than the person's own skin: a fingertip or food pressed on the lips is not coloured.
+          - Right against the lips the video's own pixels win where the swap differs (the swapper's wider lips and gloss).
+
           Version 1.0.59 (lips in line with the video, exact lipstick, no blurred boxes):
           - Lips follow the video (new, Face Masker; on in Strongest likeness): the lips and the open mouth keep the video's own shape, so they are always exactly in line with the filmed mouth, chewing and pouting included. The swapper's own, wider lips no longer show around them (tested on the eating clip: the second, pale lip outline is gone).
           - Lipstick match now gives exactly the source photo's lip colour: its colour and its darkness relative to the face (not brighter, not paler), so a dim scene keeps dim lips. Strongest likeness sets it to full strength.

@@ -45,6 +45,21 @@ class PipeGuardTest {
     }
 }
 
+class EatingPresetTest {
+    @Test fun eatingScenesSetsUpTheMouth() {
+        val p = SwapOptions().eatingPreset()
+        assertTrue(p.lipsFollow); assertTrue(p.lipsAuto); assertTrue(p.lipstickMatch)
+        assertEquals(1.0f, p.lipstickStrength, 0f)
+        assertTrue(p.occlusionMask); assertTrue(p.keepMouth); assertFalse(p.keepLips)
+        assertEquals(1, p.trackPeriod); assertFalse(p.smartSpeed)
+        assertTrue(p.temporalSmooth); assertTrue(p.sideGuard); assertTrue(p.mouthFocus)
+        assertFalse(p.lightMatch)
+        assertTrue(p.weight >= 0.75f)
+        // Applying it twice changes nothing (the button greys out once applied).
+        assertEquals(p, p.eatingPreset())
+    }
+}
+
 class LikenessPresetTest {
     @Test fun strongestLikenessKeepsTheSourcesFace() {
         val p = SwapOptions().likenessPreset()

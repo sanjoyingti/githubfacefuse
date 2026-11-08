@@ -4083,9 +4083,12 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
             const Ycc v = toYcc(crow[x * 3], crow[x * 3 + 1], crow[x * 3 + 2]);
             const float d = std::fabs(o.y - v.y) * 0.5f + std::fabs(o.cr - v.cr) * 1.5f +
                             std::fabs(o.cb - v.cb);
-            float w = std::fmax(0.f, std::fmin(1.f, (d - 8.f) / 12.f));
+            float w = std::fmax(0.f, std::fmin(1.f, (d - 6.f) / 10.f));
             if (skinCr > 0.f) w = std::fmax(w, std::fmin(1.f, (o.cr - skinCr - 2.f) / 5.f));
-            spill.data[i] = w * std::fmin(1.f, near.data[i] * 8.f);
+            // Right against the lips (where food and fingers press on them, and the
+            // occlusion mask's coarse edge misses a sliver) the video's own pixels win.
+            if (near.data[i] > 0.25f) w = std::fmax(w, std::fmin(1.f, (near.data[i] - 0.25f) * 4.f));
+            spill.data[i] = w * std::fmin(1.f, near.data[i] * 12.f);
           }
         }
         spill = ffcv::gaussianBlur(spill, std::max(1.0, CS / 96.0));
@@ -4153,6 +4156,13 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
                   lc.y, lc.cr, lc.cb, lc.skinY, skinOutY, wantY, kn, kmy, kmr, sn, smy, smr);
         ssr = ratio(lc.scr, ssr); ssb = ratio(lc.scb, ssb);
         const float ksrR = ratio(lc.scr, ksr), ksbR = ratio(lc.scb, ksb);
+        // The VIDEO's skin colour: only filmed pixels clearly redder than it are lips to
+        // colour -- a fingertip or food pressed on the lips is not (it stays as filmed).
+        const float tgtSkinCr = cheekY(l68c, [&](int x, int y) -> float {
+          if (x < 0 || y < 0 || x >= CS || y >= CS) return -1.f;
+          const uint8_t* q = crop.row(y) + x * 3;
+          return toYcc(q[0], q[1], q[2]).cr;
+        });
         for (int y = 0; y < CS; ++y) {
           const uint8_t* crow = crop.row(y);
           float* orow = outCrop.row(y);
@@ -4176,15 +4186,19 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
             // Kept lip: exactly the part (1 - m) that shows as filmed is replaced by the
             // filmed pixel in the source's lip colour, with its own shading; the result is
             // the same blend the paste would make, so no more of the original shows.
-            if (m < 0.999f && !object && doKept) {
-              const Ycc o = toYcc(crow[x * 3], crow[x * 3 + 1], crow[x * 3 + 2]);
+            const Ycc ko = toYcc(crow[x * 3], crow[x * 3 + 1], crow[x * 3 + 2]);
+            const float lipLike = tgtSkinCr > 0.f
+                ? std::fmax(0.f, std::fmin(1.f, (ko.cr - tgtSkinCr - 2.f) / 6.f)) : 1.f;
+            if (m < 0.999f && !object && doKept && lipLike > 0.f) {
+              const Ycc o = ko;
               Ycc t{o.y + (wantY - kmy), lc.cr + (o.cr - kmr) * ksrR,
                     lc.cb + (o.cb - kmb) * ksbR};
               float rec[3];
               fromYcc(t, rec);
               const float mm = std::fmax(m, L);   // the paste weight from here on
               for (int c = 0; c < 3; ++c) {
-                const float orig = crow[x * 3 + c] * (1.f - amt) + rec[c] * amt;
+                const float a2 = amt * lipLike;
+                const float orig = crow[x * 3 + c] * (1.f - a2) + rec[c] * a2;
                 const float want = orow[x * 3 + c] * m + orig * (1.f - m);
                 // pasted: out*mm + frame*(1-mm) == want  ->  out = (want - frame*(1-mm)) / mm
                 orow[x * 3 + c] = mm > 1e-3f

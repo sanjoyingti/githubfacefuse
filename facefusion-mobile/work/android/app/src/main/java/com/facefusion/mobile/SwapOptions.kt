@@ -345,6 +345,43 @@ data class SwapOptions(
         turnedLandmarker = true,
     )
 
+    /**
+     * "Eating scenes": Strongest likeness, set up for food, spoons, forks and fingers at the
+     * mouth. The lips follow the filmed mouth (always in line while biting and chewing) in
+     * exactly the source's lip colour; what is in front of the face stays as filmed, the
+     * real teeth, tongue and food stay inside the mouth; the face is found again on EVERY
+     * frame and every mask is computed on every frame (food moves fast), so it is slower.
+     * Tested on an eating clip: lips in line in every frame, no second lip outline.
+     */
+    fun eatingPreset(): SwapOptions = likenessPreset().copy(
+        // A slightly softer edge where the chin meets food and hands.
+        maskBlur = 0.3f,
+        occlusionMask = true,
+        keepMouth = true,
+        keepLips = false,
+        lipsAuto = true,
+        lipsFollow = true,
+        lipstickMatch = true,
+        lipstickStrength = 1.0f,
+        // Every frame: no reused face position or masks while food and hands move.
+        trackPeriod = 1,
+        smartSpeed = false,
+        parallelMasks = true,
+        motionSmooth = true,
+        temporalSmooth = true,
+        seamless = true,
+        detectRotated = true,
+        sideGuard = true,
+        // The expression restorer keeps the filmed mouth movement (chewing) fully.
+        expressionRestore = true,
+        expressionFactor = 0.8f,
+        mouthFocus = true,
+        // A light enhancer: a strong one repaints the lips' colour and gloss.
+        faceEnhance = true,
+        enhanceBlend = 0.3f,
+        lightMatch = false,
+    )
+
     fun realisticPreset(): SwapOptions = copy(
         weight = 0.65f,
         pixelBoost = 2,

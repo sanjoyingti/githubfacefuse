@@ -346,6 +346,15 @@ fun RealismCard(
              style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
              color = MaterialTheme.colorScheme.onSurfaceVariant,
              modifier = Modifier.padding(top = 4.dp))
+        val eating = opts.eatingPreset()
+        Button(onClick = { onChange(eating) }, enabled = opts != eating,
+               modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+            Text(stringResource(R.string.opt_eating_preset))
+        }
+        Text(stringResource(R.string.opt_eating_preset_hint),
+             style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(top = 4.dp))
         OptionSwitch(stringResource(R.string.opt_auto_weight), opts.autoWeight,
                      { onChange(opts.copy(autoWeight = it)) },
                      hint = stringResource(R.string.opt_auto_weight_hint))
