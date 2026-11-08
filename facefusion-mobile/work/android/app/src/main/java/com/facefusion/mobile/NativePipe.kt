@@ -122,7 +122,11 @@ object NativePipe {
         setLikeness5(false, opts.autoWeight, opts.hairOnlyParser,
                      if (opts.lightMatch) opts.lightMatchStrength else 0f, opts.lipsAuto,
                      if (opts.lipstickMatch) opts.lipstickStrength else 0f, opts.mouthFocus)
+        setSideGuard(opts.sideGuard)
     }
+
+    /** Turned faces keep the swap on their visible half only (no invented far eye). */
+    @JvmStatic external fun setSideGuard(on: Boolean)
 
     /**
      * 1.0.56: double swap (measured: no likeness gain, not offered), auto weight per person,

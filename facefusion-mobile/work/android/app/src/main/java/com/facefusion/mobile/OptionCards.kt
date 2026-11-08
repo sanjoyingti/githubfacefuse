@@ -563,6 +563,9 @@ fun FaceMaskerCard(
                  modifier = Modifier.padding(top = 6.dp))
 
         // ---- big head turns
+        OptionSwitch(stringResource(R.string.opt_side_guard), opts.sideGuard,
+                     { onChange(opts.copy(sideGuard = it)) },
+                     hint = stringResource(R.string.opt_side_guard_hint))
         OptionSwitch(stringResource(R.string.opt_pose_fade), opts.poseFade,
                      { onChange(opts.copy(poseFade = it)) },
                      hint = stringResource(R.string.opt_pose_fade_hint))

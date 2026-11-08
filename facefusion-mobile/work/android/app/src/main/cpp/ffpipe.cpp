@@ -550,6 +550,7 @@ struct Pipeline::Impl {
   void applyToSelected(int sourceIndex, bool keepOriginal);
   // ---- second face detector (SCRFD 2.5G, ncnn, bundled in assets/masks)
   int secondDetectorHits = 0;
+  int sideGuarded = 0;
   int peppaUsed = 0;
   /** GPEN-BFR 512 on the NPU, opened when first wanted; null where there is no NPU build. */
   ffnn::Handle enh512Net() {
@@ -3352,6 +3353,58 @@ void matchLight(const ffcv::Image& tgt, ffcv::MatF& out, const ffcv::MatF& mask,
 }
 }  // namespace
 
+namespace {
+// SIDE GUARD (Config::sideGuard). In crop space: 1 on the visible side of the nose line
+// (27 -> 30 -> 33 -> far mouth corner -> 8: the ridge, the tip, under the nose, round the
+// mouth, the chin), falling to `farKeep`
+// beyond it over a soft band; the far eye (the shorter of the two eyes) is always on the far
+// side. Returns false when the points do not describe a usable line.
+bool sideGuardMask(int CS, const float* l, float farKeep, ffcv::MatF& out) {
+  auto P = [&](int k) { return std::array<float, 2>{l[2 * k], l[2 * k + 1]}; };
+  const auto eyeW = [&](int a, int b) { return std::hypot(l[2 * a] - l[2 * b], l[2 * a + 1] - l[2 * b + 1]); };
+  // The far eye looks shorter (foreshortened). Its centre says which side is far.
+  const float wl = eyeW(36, 39), wr = eyeW(42, 45);       // points 36-41 vs 42-47
+  // Only when the eyes clearly differ: a wrong guess would un-swap the VISIBLE side.
+  if (std::min(wl, wr) > 0.85f * std::max(wl, wr)) return false;
+  const bool farIsLeft = wl < wr;
+  float fx = 0, fy = 0;
+  for (int k = farIsLeft ? 36 : 42, e = k + 6; k < e; ++k) { fx += l[2 * k]; fy += l[2 * k + 1]; }
+  fx /= 6.f; fy /= 6.f;
+  // Ridge, tip, under the nose, then round the FAR mouth corner to the chin: the eyes and
+  // the nose (where the swapper invents) are guarded; the whole mouth stays swapped.
+  const int farCorner = farIsLeft ? 48 : 54;
+  const int line[5] = {27, 30, 33, farCorner, 8};
+  // Signed distance to the polyline; sign chosen so the far eye is negative.
+  auto sdist = [&](float x, float y) {
+    float best = 1e9f, sgn = 1.f;
+    for (int s = 0; s < 4; ++s) {
+      const auto a = P(line[s]), b = P(line[s + 1]);
+      const float vx = b[0] - a[0], vy = b[1] - a[1], L2 = vx * vx + vy * vy;
+      if (L2 < 1e-3f) continue;
+      float t = ((x - a[0]) * vx + (y - a[1]) * vy) / L2;
+      t = std::fmax(0.f, std::fmin(1.f, t));
+      const float px = a[0] + t * vx - x, py = a[1] + t * vy - y;
+      const float d = std::sqrt(px * px + py * py);
+      if (d < best) { best = d; sgn = (vx * (y - a[1]) - vy * (x - a[0])) >= 0 ? 1.f : -1.f; }
+    }
+    return best * sgn;
+  };
+  const float farSign = sdist(fx, fy) < 0 ? -1.f : 1.f;
+  if (std::fabs(sdist(fx, fy)) < 1.f) return false;
+  // The band: from a little inside the visible side to a little beyond the line.
+  const float band = std::max(2.f, CS / 40.f);
+  out = ffcv::MatF(CS, CS, 1);
+  for (int y = 0; y < CS; ++y)
+    for (int x = 0; x < CS; ++x) {
+      const float d = sdist(x + 0.5f, y + 0.5f) * farSign;   // > 0: towards the far side
+      float w = 1.f;                                          // visible side
+      if (d > -band) w = d >= band ? 0.f : 0.5f - 0.5f * d / band;
+      out.data[(size_t)y * CS + x] = w + (1.f - w) * farKeep;
+    }
+  return true;
+}
+}  // namespace
+
 Pipeline::Impl::LipColor Pipeline::Impl::lipColorOf(const ffcv::Image& img, const float* l68) {
   LipColor lc;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
@@ -3773,6 +3826,29 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       ffmotion::matchColor(crop, outCrop, *useMask, cfg.colorMatch,
                            (cfg.temporalSmooth && sface) ? &sface->color : nullptr);
       msGeom += nowMs() - t0;
+    }
+
+    // SIDE GUARD: a turned face keeps the swap on its visible half only.
+    if (cfg.sideGuard) {
+      const ffmotion::Pose po = ffmotion::estimatePose(f.landmark5_68);
+      const float ay = po.ok ? std::fabs(po.yaw) : 0.f;
+      if (ay > 35.f) {
+        t0 = nowMs();
+        // How much of the swap the far side keeps: all of it at 35 degrees, none at 60.
+        const float farKeep = std::fmax(0.f, std::fmin(1.f, (60.f - ay) / 25.f));
+        float l68c[136];
+        ffcv::transformPoints(f.landmark68, 68, am, l68c);
+        ffcv::MatF side;
+        if (sideGuardMask(CS, l68c, farKeep, side)) {
+          if (useMask != &faceMask) { faceMask = *useMask; useMask = &faceMask; }
+          for (size_t i = 0; i < faceMask.data.size(); ++i) faceMask.data[i] *= side.data[i];
+          if (!p_->maskCache.empty() &&
+              std::memcmp(p_->maskCache.back().lm5, f.landmark5_68, sizeof(float) * 10) == 0)
+            p_->maskCache.back().mask = faceMask;
+          ++p_->sideGuarded;
+        }
+        msGeom += nowMs() - t0;
+      }
     }
 
     // LIGHT MATCH: the target face's shading direction onto the swapped face.

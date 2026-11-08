@@ -159,6 +159,11 @@ struct Config {
   // MOUTH FOCUS: the expression restorer works fully on the mouth (open, chewing, around
   // food) and only lightly on the rest of the face, for more likeness.
   bool restoreMouthFocus = false;
+  // SIDE GUARD: on a turned face (35 degrees and more) the swap is kept only on the visible
+  // half, up to the nose line; the far side -- the hidden eye, the far cheek and the nose
+  // outline against the background, which the swapper can only invent (it draws a front
+  // face) -- stays as filmed, fully from 60 degrees. Front faces are unchanged.
+  bool sideGuard = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;

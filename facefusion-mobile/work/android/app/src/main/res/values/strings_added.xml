@@ -232,6 +232,9 @@
     <string name="opt_closed_eyes_hint">While an eye is shut, its own lids and lashes stay as filmed, so they do not smear. Each eye on its own (winks too).</string>
     <string name="opt_side_hold">Swap turned faces with side photos</string>
     <string name="opt_side_hold_hint">If this person has a photo turned the same way (Faces tab), a face turned sideways keeps the swap 15 degrees further round before fading.</string>
+    <!-- 1.0.57: side views -->
+    <string name="opt_side_guard">Side guard (turned faces)</string>
+    <string name="opt_side_guard_hint">On a turned face the swapper draws a front face, so it invents the far eye and the nose outline (an eye on the cheek, a nose edge). From 35 degrees of turn the swap is kept on the visible half only, up to the nose line; the far side stays as filmed, fully from 60 degrees. The mouth and the visible cheek and eye keep the swap; front faces are unchanged.</string>
     <!-- 1.0.56: likeness, mouth, light, output -->
     <string name="opt_likeness_preset">Strongest likeness</string>
     <string name="opt_likeness_preset_hint">Makes the face look as much like the source photo as possible: stronger weight, the face parser only keeps hair (it no longer cuts the swap to the original face outline), the source\'s mouth with Lips auto and Lipstick match, and the expression restorer on the mouth only. Slower than the default.</string>

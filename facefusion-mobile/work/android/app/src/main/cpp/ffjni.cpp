@@ -159,6 +159,7 @@ struct Quality {
   // 1.0.56
   bool doubleSwap = false, autoWeight = false, hairOnly = false, lipsAuto = false, mouthFocus = false;
   float lightMatch = 0.f, lipstick = 0.f;
+  bool sideGuard = true;
 };
 Quality g_quality;
 // Whether the caller is feeding consecutive frames (setSequence). Re-applied at initEx so a
@@ -195,6 +196,7 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.restoreMouthFocus = g_quality.mouthFocus;
   cfg.lightMatch = g_quality.lightMatch;
   cfg.lipstickMatch = g_quality.lipstick;
+  cfg.sideGuard = g_quality.sideGuard;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -849,6 +851,18 @@ Java_com_facefusion_mobile_NativePipe_setLikeness5(JNIEnv*, jclass, jboolean dou
   g_quality.lipsAuto = lipsAuto == JNI_TRUE;
   g_quality.lipstick = unit(lipstick);
   g_quality.mouthFocus = mouthFocus == JNI_TRUE;
+  if (g_pipe) {
+    ffpipe::Config c = g_pipe->config();
+    applyQuality(c);
+    g_pipe->updateConfig(c);
+  }
+}
+
+// Side guard: a turned face keeps the swap on its visible half only.
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setSideGuard(JNIEnv*, jclass, jboolean on) {
+  FF_PIPE_LOCK;
+  g_quality.sideGuard = on == JNI_TRUE;
   if (g_pipe) {
     ffpipe::Config c = g_pipe->config();
     applyQuality(c);

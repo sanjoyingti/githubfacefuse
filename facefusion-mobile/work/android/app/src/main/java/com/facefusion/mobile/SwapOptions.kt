@@ -261,6 +261,9 @@ data class SwapOptions(
     val lipstickStrength: Float = 0.8f,
     val mouthFocus: Boolean = false,
     val bestQualityOutput: Boolean = false,
+    // 1.0.57: turned faces keep the swap on the visible half (on: it removes the invented
+    // far eye and nose outline; front faces are unchanged).
+    val sideGuard: Boolean = true,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -444,6 +447,7 @@ data class SwapOptions(
             .putFloat(K_LIPSTICK_S, lipstickStrength)
             .putBoolean(K_MOUTH_FOCUS, mouthFocus)
             .putBoolean(K_BEST_OUT, bestQualityOutput)
+            .putBoolean(K_SIDE_GUARD, sideGuard)
             .apply()
     }
 
@@ -504,6 +508,7 @@ data class SwapOptions(
         private const val K_LIPSTICK_S = "lipstick_strength"
         private const val K_MOUTH_FOCUS = "mouth_focus"
         private const val K_BEST_OUT = "best_quality_output"
+        private const val K_SIDE_GUARD = "side_guard"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -609,6 +614,7 @@ data class SwapOptions(
                 lipstickStrength = p.getFloat(K_LIPSTICK_S, d.lipstickStrength),
                 mouthFocus = p.getBoolean(K_MOUTH_FOCUS, d.mouthFocus),
                 bestQualityOutput = p.getBoolean(K_BEST_OUT, d.bestQualityOutput),
+                sideGuard = p.getBoolean(K_SIDE_GUARD, d.sideGuard),
             )
         }
     }
