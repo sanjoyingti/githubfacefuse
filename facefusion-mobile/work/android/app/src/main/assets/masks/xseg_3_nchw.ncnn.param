@@ -9,7 +9,7 @@ Pooling                  gap_0                    1 1 6 7 0=1 4=1
 MemoryData               Reshape_31:0             0 1 8 0=1 1=1 2=32
 MemoryData               const_fold_opt__1405     0 1 9 0=1 1=1 2=32
 MemoryData               const_fold_opt__1414     0 1 10 0=1 1=1 2=32
-Reshape                  reshape_82               1 1 7 11 12=0 13=0 6="1,1,//(32,0n),0n"
+Reshape                  reshape_82               1 1 7 11 0=1 1=1 2=32
 BinaryOp                 add_2                    1 1 11 12 0=0 1=1 2=4.88137128e-4
 UnaryOp                  sqrt_3                   1 1 12 13 0=5
 UnaryOp                  reciprocal_4             1 1 13 14 0=15
@@ -25,7 +25,7 @@ Pooling                  gap_1                    1 1 24 25 0=1 4=1
 MemoryData               Reshape_35:0             0 1 26 0=1 1=1 2=32
 MemoryData               const_fold_opt__1466     0 1 27 0=1 1=1 2=32
 MemoryData               const_fold_opt__1343     0 1 28 0=1 1=1 2=32
-Reshape                  reshape_83               1 1 25 29 12=0 13=0 6="1,1,//(32,0n),0n"
+Reshape                  reshape_83               1 1 25 29 0=1 1=1 2=32
 BinaryOp                 add_11                   1 1 29 30 0=0 1=1 2=1.86030176e-2
 UnaryOp                  sqrt_12                  1 1 30 31 0=5
 UnaryOp                  reciprocal_13            1 1 31 32 0=15
@@ -43,7 +43,7 @@ Pooling                  gap_2                    1 1 45 46 0=1 4=1
 MemoryData               Reshape_39:0             0 1 47 0=1 1=1 2=64
 MemoryData               const_fold_opt__1361     0 1 48 0=1 1=1 2=64
 MemoryData               const_fold_opt__1427     0 1 49 0=1 1=1 2=64
-Reshape                  reshape_84               1 1 46 50 12=0 13=0 6="1,1,//(64,0n),0n"
+Reshape                  reshape_84               1 1 46 50 0=1 1=1 2=64
 BinaryOp                 add_20                   1 1 50 51 0=0 1=1 2=2.46561714e-4
 UnaryOp                  sqrt_21                  1 1 51 52 0=5
 UnaryOp                  reciprocal_22            1 1 52 53 0=15
@@ -59,7 +59,7 @@ Pooling                  gap_3                    1 1 63 64 0=1 4=1
 MemoryData               Reshape_43:0             0 1 65 0=1 1=1 2=64
 MemoryData               const_fold_opt__1432     0 1 66 0=1 1=1 2=64
 MemoryData               const_fold_opt__1417     0 1 67 0=1 1=1 2=64
-Reshape                  reshape_85               1 1 64 68 12=0 13=0 6="1,1,//(64,0n),0n"
+Reshape                  reshape_85               1 1 64 68 0=1 1=1 2=64
 BinaryOp                 add_29                   1 1 68 69 0=0 1=1 2=1.40327141e-2
 UnaryOp                  sqrt_30                  1 1 69 70 0=5
 UnaryOp                  reciprocal_31            1 1 70 71 0=15
@@ -77,7 +77,7 @@ Pooling                  gap_4                    1 1 84 85 0=1 4=1
 MemoryData               Reshape_47:0             0 1 86 0=1 1=1 2=128
 MemoryData               const_fold_opt__1387     0 1 87 0=1 1=1 2=128
 MemoryData               const_fold_opt__1412     0 1 88 0=1 1=1 2=128
-Reshape                  reshape_86               1 1 85 89 12=0 13=0 6="1,1,//(128,0n),0n"
+Reshape                  reshape_86               1 1 85 89 0=1 1=1 2=128
 BinaryOp                 add_38                   1 1 89 90 0=0 1=1 2=1.10467225e-2
 UnaryOp                  sqrt_39                  1 1 90 91 0=5
 UnaryOp                  reciprocal_40            1 1 91 92 0=15
@@ -93,7 +93,7 @@ Pooling                  gap_5                    1 1 102 103 0=1 4=1
 MemoryData               Reshape_51:0             0 1 104 0=1 1=1 2=128
 MemoryData               const_fold_opt__1467     0 1 105 0=1 1=1 2=128
 MemoryData               const_fold_opt__1358     0 1 106 0=1 1=1 2=128
-Reshape                  reshape_87               1 1 103 107 12=0 13=0 6="1,1,//(128,0n),0n"
+Reshape                  reshape_87               1 1 103 107 0=1 1=1 2=128
 BinaryOp                 add_47                   1 1 107 108 0=0 1=1 2=1.86794326e-2
 UnaryOp                  sqrt_48                  1 1 108 109 0=5
 UnaryOp                  reciprocal_49            1 1 109 110 0=15
@@ -111,7 +111,7 @@ Pooling                  gap_6                    1 1 123 124 0=1 4=1
 MemoryData               Reshape_55:0             0 1 125 0=1 1=1 2=256
 MemoryData               const_fold_opt__1395     0 1 126 0=1 1=1 2=256
 MemoryData               const_fold_opt__1390     0 1 127 0=1 1=1 2=256
-Reshape                  reshape_88               1 1 124 128 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_88               1 1 124 128 0=1 1=1 2=256
 BinaryOp                 add_56                   1 1 128 129 0=0 1=1 2=0.02446514
 UnaryOp                  sqrt_57                  1 1 129 130 0=5
 UnaryOp                  reciprocal_58            1 1 130 131 0=15
@@ -127,7 +127,7 @@ Pooling                  gap_7                    1 1 141 142 0=1 4=1
 MemoryData               Reshape_59:0             0 1 143 0=1 1=1 2=256
 MemoryData               const_fold_opt__1406     0 1 144 0=1 1=1 2=256
 MemoryData               const_fold_opt__1394     0 1 145 0=1 1=1 2=256
-Reshape                  reshape_89               1 1 142 146 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_89               1 1 142 146 0=1 1=1 2=256
 BinaryOp                 add_65                   1 1 146 147 0=0 1=1 2=2.48676185e-2
 UnaryOp                  sqrt_66                  1 1 147 148 0=5
 UnaryOp                  reciprocal_67            1 1 148 149 0=15
@@ -143,7 +143,7 @@ Pooling                  gap_8                    1 1 159 160 0=1 4=1
 MemoryData               Reshape_63:0             0 1 161 0=1 1=1 2=256
 MemoryData               const_fold_opt__1362     0 1 162 0=1 1=1 2=256
 MemoryData               const_fold_opt__1430     0 1 163 0=1 1=1 2=256
-Reshape                  reshape_90               1 1 160 164 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_90               1 1 160 164 0=1 1=1 2=256
 BinaryOp                 add_74                   1 1 164 165 0=0 1=1 2=0.01140696
 UnaryOp                  sqrt_75                  1 1 165 166 0=5
 UnaryOp                  reciprocal_76            1 1 166 167 0=15
@@ -161,7 +161,7 @@ Pooling                  gap_9                    1 1 180 181 0=1 4=1
 MemoryData               Reshape_67:0             0 1 182 0=1 1=1 2=256
 MemoryData               const_fold_opt__1477     0 1 183 0=1 1=1 2=256
 MemoryData               const_fold_opt__1346     0 1 184 0=1 1=1 2=256
-Reshape                  reshape_91               1 1 181 185 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_91               1 1 181 185 0=1 1=1 2=256
 BinaryOp                 add_83                   1 1 185 186 0=0 1=1 2=2.55009849e-2
 UnaryOp                  sqrt_84                  1 1 186 187 0=5
 UnaryOp                  reciprocal_85            1 1 187 188 0=15
@@ -177,7 +177,7 @@ Pooling                  gap_10                   1 1 198 199 0=1 4=1
 MemoryData               Reshape_71:0             0 1 200 0=1 1=1 2=256
 MemoryData               const_fold_opt__1376     0 1 201 0=1 1=1 2=256
 MemoryData               const_fold_opt__1402     0 1 202 0=1 1=1 2=256
-Reshape                  reshape_92               1 1 199 203 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_92               1 1 199 203 0=1 1=1 2=256
 BinaryOp                 add_92                   1 1 203 204 0=0 1=1 2=3.03301439e-2
 UnaryOp                  sqrt_93                  1 1 204 205 0=5
 UnaryOp                  reciprocal_94            1 1 205 206 0=15
@@ -193,7 +193,7 @@ Pooling                  gap_11                   1 1 216 217 0=1 4=1
 MemoryData               Reshape_75:0             0 1 218 0=1 1=1 2=256
 MemoryData               const_fold_opt__1434     0 1 219 0=1 1=1 2=256
 MemoryData               const_fold_opt__1354     0 1 220 0=1 1=1 2=256
-Reshape                  reshape_93               1 1 217 221 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_93               1 1 217 221 0=1 1=1 2=256
 BinaryOp                 add_101                  1 1 221 222 0=0 1=1 2=1.13821104e-2
 UnaryOp                  sqrt_102                 1 1 222 223 0=5
 UnaryOp                  reciprocal_103           1 1 223 224 0=15
@@ -211,7 +211,7 @@ Pooling                  gap_12                   1 1 237 238 0=1 4=1
 MemoryData               Reshape_79:0             0 1 239 0=1 1=1 2=256
 MemoryData               const_fold_opt__1339     0 1 240 0=1 1=1 2=256
 MemoryData               const_fold_opt__1375     0 1 241 0=1 1=1 2=256
-Reshape                  reshape_94               1 1 238 242 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_94               1 1 238 242 0=1 1=1 2=256
 BinaryOp                 add_110                  1 1 242 243 0=0 1=1 2=0.026820248
 UnaryOp                  sqrt_111                 1 1 243 244 0=5
 UnaryOp                  reciprocal_112           1 1 244 245 0=15
@@ -227,7 +227,7 @@ Pooling                  gap_13                   1 1 255 256 0=1 4=1
 MemoryData               Reshape_83:0             0 1 257 0=1 1=1 2=256
 MemoryData               const_fold_opt__1460     0 1 258 0=1 1=1 2=256
 MemoryData               const_fold_opt__1338     0 1 259 0=1 1=1 2=256
-Reshape                  reshape_95               1 1 256 260 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_95               1 1 256 260 0=1 1=1 2=256
 BinaryOp                 add_119                  1 1 260 261 0=0 1=1 2=2.46261433e-2
 UnaryOp                  sqrt_120                 1 1 261 262 0=5
 UnaryOp                  reciprocal_121           1 1 262 263 0=15
@@ -243,7 +243,7 @@ Pooling                  gap_14                   1 1 273 274 0=1 4=1
 MemoryData               Reshape_87:0             0 1 275 0=1 1=1 2=256
 MemoryData               const_fold_opt__1335     0 1 276 0=1 1=1 2=256
 MemoryData               const_fold_opt__1333     0 1 277 0=1 1=1 2=256
-Reshape                  reshape_96               1 1 274 278 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_96               1 1 274 278 0=1 1=1 2=256
 BinaryOp                 add_128                  1 1 278 279 0=0 1=1 2=4.72641690e-3
 UnaryOp                  sqrt_129                 1 1 279 280 0=5
 UnaryOp                  reciprocal_130           1 1 280 281 0=15
@@ -272,7 +272,7 @@ Pooling                  gap_15                   1 1 305 306 0=1 4=1
 MemoryData               Reshape_95:0             0 1 307 0=1 1=1 2=128
 MemoryData               const_fold_opt__1397     0 1 308 0=1 1=1 2=128
 MemoryData               const_fold_opt__1457     0 1 309 0=1 1=1 2=128
-Reshape                  reshape_99               1 1 306 310 12=0 13=0 6="1,1,//(128,0n),0n"
+Reshape                  reshape_99               1 1 306 310 0=1 1=1 2=128
 BinaryOp                 add_140                  1 1 310 311 0=0 1=1 2=0.007697728
 UnaryOp                  sqrt_141                 1 1 311 312 0=5
 UnaryOp                  reciprocal_142           1 1 312 313 0=15
@@ -289,7 +289,7 @@ Pooling                  gap_16                   1 1 324 325 0=1 4=1
 MemoryData               Reshape_99:0             0 1 326 0=1 1=1 2=256
 MemoryData               const_fold_opt__1365     0 1 327 0=1 1=1 2=256
 MemoryData               const_fold_opt__1399     0 1 328 0=1 1=1 2=256
-Reshape                  reshape_100              1 1 325 329 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_100              1 1 325 329 0=1 1=1 2=256
 BinaryOp                 add_149                  1 1 329 330 0=0 1=1 2=2.289524e-5
 UnaryOp                  sqrt_150                 1 1 330 331 0=5
 UnaryOp                  reciprocal_151           1 1 331 332 0=15
@@ -305,7 +305,7 @@ Pooling                  gap_17                   1 1 342 343 0=1 4=1
 MemoryData               Reshape_103:0            0 1 344 0=1 1=1 2=256
 MemoryData               const_fold_opt__1379     0 1 345 0=1 1=1 2=256
 MemoryData               const_fold_opt__1356     0 1 346 0=1 1=1 2=256
-Reshape                  reshape_101              1 1 343 347 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_101              1 1 343 347 0=1 1=1 2=256
 BinaryOp                 add_158                  1 1 347 348 0=0 1=1 2=1.10357132e-6
 UnaryOp                  sqrt_159                 1 1 348 349 0=5
 UnaryOp                  reciprocal_160           1 1 349 350 0=15
@@ -321,7 +321,7 @@ Pooling                  gap_18                   1 1 360 361 0=1 4=1
 MemoryData               Reshape_107:0            0 1 362 0=1 1=1 2=256
 MemoryData               const_fold_opt__1413     0 1 363 0=1 1=1 2=256
 MemoryData               const_fold_opt__1369     0 1 364 0=1 1=1 2=256
-Reshape                  reshape_102              1 1 361 365 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_102              1 1 361 365 0=1 1=1 2=256
 BinaryOp                 add_167                  1 1 365 366 0=0 1=1 2=1.713134e-5
 UnaryOp                  sqrt_168                 1 1 366 367 0=5
 UnaryOp                  reciprocal_169           1 1 367 368 0=15
@@ -340,7 +340,7 @@ Pooling                  gap_19                   1 1 381 382 0=1 4=1
 MemoryData               Reshape_111:0            0 1 383 0=1 1=1 2=128
 MemoryData               const_fold_opt__1400     0 1 384 0=1 1=1 2=128
 MemoryData               const_fold_opt__1436     0 1 385 0=1 1=1 2=128
-Reshape                  reshape_103              1 1 382 386 12=0 13=0 6="1,1,//(128,0n),0n"
+Reshape                  reshape_103              1 1 382 386 0=1 1=1 2=128
 BinaryOp                 add_177                  1 1 386 387 0=0 1=1 2=1.66954451e-5
 UnaryOp                  sqrt_178                 1 1 387 388 0=5
 UnaryOp                  reciprocal_179           1 1 388 389 0=15
@@ -357,7 +357,7 @@ Pooling                  gap_20                   1 1 400 401 0=1 4=1
 MemoryData               Reshape_115:0            0 1 402 0=1 1=1 2=256
 MemoryData               const_fold_opt__1345     0 1 403 0=1 1=1 2=256
 MemoryData               const_fold_opt__1341     0 1 404 0=1 1=1 2=256
-Reshape                  reshape_104              1 1 401 405 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_104              1 1 401 405 0=1 1=1 2=256
 BinaryOp                 add_186                  1 1 405 406 0=0 1=1 2=2.93605626e-6
 UnaryOp                  sqrt_187                 1 1 406 407 0=5
 UnaryOp                  reciprocal_188           1 1 407 408 0=15
@@ -373,7 +373,7 @@ Pooling                  gap_21                   1 1 418 419 0=1 4=1
 MemoryData               Reshape_119:0            0 1 420 0=1 1=1 2=256
 MemoryData               const_fold_opt__1454     0 1 421 0=1 1=1 2=256
 MemoryData               const_fold_opt__1423     0 1 422 0=1 1=1 2=256
-Reshape                  reshape_105              1 1 419 423 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_105              1 1 419 423 0=1 1=1 2=256
 BinaryOp                 add_195                  1 1 423 424 0=0 1=1 2=8.48734453e-6
 UnaryOp                  sqrt_196                 1 1 424 425 0=5
 UnaryOp                  reciprocal_197           1 1 425 426 0=15
@@ -389,7 +389,7 @@ Pooling                  gap_22                   1 1 436 437 0=1 4=1
 MemoryData               Reshape_123:0            0 1 438 0=1 1=1 2=256
 MemoryData               const_fold_opt__1435     0 1 439 0=1 1=1 2=256
 MemoryData               const_fold_opt__1433     0 1 440 0=1 1=1 2=256
-Reshape                  reshape_106              1 1 437 441 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_106              1 1 437 441 0=1 1=1 2=256
 BinaryOp                 add_204                  1 1 441 442 0=0 1=1 2=4.803917e-6
 UnaryOp                  sqrt_205                 1 1 442 443 0=5
 UnaryOp                  reciprocal_206           1 1 443 444 0=15
@@ -408,7 +408,7 @@ Pooling                  gap_23                   1 1 457 458 0=1 4=1
 MemoryData               Reshape_127:0            0 1 459 0=1 1=1 2=128
 MemoryData               const_fold_opt__1340     0 1 460 0=1 1=1 2=128
 MemoryData               const_fold_opt__1393     0 1 461 0=1 1=1 2=128
-Reshape                  reshape_107              1 1 458 462 12=0 13=0 6="1,1,//(128,0n),0n"
+Reshape                  reshape_107              1 1 458 462 0=1 1=1 2=128
 BinaryOp                 add_214                  1 1 462 463 0=0 1=1 2=8.396845e-6
 UnaryOp                  sqrt_215                 1 1 463 464 0=5
 UnaryOp                  reciprocal_216           1 1 464 465 0=15
@@ -425,7 +425,7 @@ Pooling                  gap_24                   1 1 476 477 0=1 4=1
 MemoryData               Reshape_131:0            0 1 478 0=1 1=1 2=256
 MemoryData               const_fold_opt__1465     0 1 479 0=1 1=1 2=256
 MemoryData               const_fold_opt__1420     0 1 480 0=1 1=1 2=256
-Reshape                  reshape_108              1 1 477 481 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_108              1 1 477 481 0=1 1=1 2=256
 BinaryOp                 add_223                  1 1 481 482 0=0 1=1 2=4.186715e-6
 UnaryOp                  sqrt_224                 1 1 482 483 0=5
 UnaryOp                  reciprocal_225           1 1 483 484 0=15
@@ -441,7 +441,7 @@ Pooling                  gap_25                   1 1 494 495 0=1 4=1
 MemoryData               Reshape_135:0            0 1 496 0=1 1=1 2=256
 MemoryData               const_fold_opt__1428     0 1 497 0=1 1=1 2=256
 MemoryData               const_fold_opt__1363     0 1 498 0=1 1=1 2=256
-Reshape                  reshape_109              1 1 495 499 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_109              1 1 495 499 0=1 1=1 2=256
 BinaryOp                 add_232                  1 1 499 500 0=0 1=1 2=3.05858612e-6
 UnaryOp                  sqrt_233                 1 1 500 501 0=5
 UnaryOp                  reciprocal_234           1 1 501 502 0=15
@@ -457,7 +457,7 @@ Pooling                  gap_26                   1 1 512 513 0=1 4=1
 MemoryData               Reshape_139:0            0 1 514 0=1 1=1 2=256
 MemoryData               const_fold_opt__1449     0 1 515 0=1 1=1 2=256
 MemoryData               const_fold_opt__1485     0 1 516 0=1 1=1 2=256
-Reshape                  reshape_110              1 1 513 517 12=0 13=0 6="1,1,//(256,0n),0n"
+Reshape                  reshape_110              1 1 513 517 0=1 1=1 2=256
 BinaryOp                 add_241                  1 1 517 518 0=0 1=1 2=1.59979024e-7
 UnaryOp                  sqrt_242                 1 1 518 519 0=5
 UnaryOp                  reciprocal_243           1 1 519 520 0=15
@@ -476,7 +476,7 @@ Pooling                  gap_27                   1 1 533 534 0=1 4=1
 MemoryData               Reshape_143:0            0 1 535 0=1 1=1 2=128
 MemoryData               const_fold_opt__1418     0 1 536 0=1 1=1 2=128
 MemoryData               const_fold_opt__1348     0 1 537 0=1 1=1 2=128
-Reshape                  reshape_111              1 1 534 538 12=0 13=0 6="1,1,//(128,0n),0n"
+Reshape                  reshape_111              1 1 534 538 0=1 1=1 2=128
 BinaryOp                 add_251                  1 1 538 539 0=0 1=1 2=1.21187613e-5
 UnaryOp                  sqrt_252                 1 1 539 540 0=5
 UnaryOp                  reciprocal_253           1 1 540 541 0=15
@@ -493,7 +493,7 @@ Pooling                  gap_28                   1 1 552 553 0=1 4=1
 MemoryData               Reshape_147:0            0 1 554 0=1 1=1 2=128
 MemoryData               const_fold_opt__1398     0 1 555 0=1 1=1 2=128
 MemoryData               const_fold_opt__1426     0 1 556 0=1 1=1 2=128
-Reshape                  reshape_112              1 1 553 557 12=0 13=0 6="1,1,//(128,0n),0n"
+Reshape                  reshape_112              1 1 553 557 0=1 1=1 2=128
 BinaryOp                 add_260                  1 1 557 558 0=0 1=1 2=2.15040654e-6
 UnaryOp                  sqrt_261                 1 1 558 559 0=5
 UnaryOp                  reciprocal_262           1 1 559 560 0=15
@@ -509,7 +509,7 @@ Pooling                  gap_29                   1 1 570 571 0=1 4=1
 MemoryData               Reshape_151:0            0 1 572 0=1 1=1 2=128
 MemoryData               const_fold_opt__1441     0 1 573 0=1 1=1 2=128
 MemoryData               const_fold_opt__1349     0 1 574 0=1 1=1 2=128
-Reshape                  reshape_113              1 1 571 575 12=0 13=0 6="1,1,//(128,0n),0n"
+Reshape                  reshape_113              1 1 571 575 0=1 1=1 2=128
 BinaryOp                 add_269                  1 1 575 576 0=0 1=1 2=2.18166620e-3
 UnaryOp                  sqrt_270                 1 1 576 577 0=5
 UnaryOp                  reciprocal_271           1 1 577 578 0=15
@@ -528,7 +528,7 @@ Pooling                  gap_30                   1 1 591 592 0=1 4=1
 MemoryData               Reshape_155:0            0 1 593 0=1 1=1 2=64
 MemoryData               const_fold_opt__1355     0 1 594 0=1 1=1 2=64
 MemoryData               const_fold_opt__1364     0 1 595 0=1 1=1 2=64
-Reshape                  reshape_114              1 1 592 596 12=0 13=0 6="1,1,//(64,0n),0n"
+Reshape                  reshape_114              1 1 592 596 0=1 1=1 2=64
 BinaryOp                 add_279                  1 1 596 597 0=0 1=1 2=7.456807e-6
 UnaryOp                  sqrt_280                 1 1 597 598 0=5
 UnaryOp                  reciprocal_281           1 1 598 599 0=15
@@ -545,7 +545,7 @@ Pooling                  gap_31                   1 1 610 611 0=1 4=1
 MemoryData               Reshape_159:0            0 1 612 0=1 1=1 2=64
 MemoryData               const_fold_opt__1425     0 1 613 0=1 1=1 2=64
 MemoryData               const_fold_opt__1404     0 1 614 0=1 1=1 2=64
-Reshape                  reshape_115              1 1 611 615 12=0 13=0 6="1,1,//(64,0n),0n"
+Reshape                  reshape_115              1 1 611 615 0=1 1=1 2=64
 BinaryOp                 add_288                  1 1 615 616 0=0 1=1 2=5.58871652e-5
 UnaryOp                  sqrt_289                 1 1 616 617 0=5
 UnaryOp                  reciprocal_290           1 1 617 618 0=15
@@ -561,7 +561,7 @@ Pooling                  gap_32                   1 1 628 629 0=1 4=1
 MemoryData               Reshape_163:0            0 1 630 0=1 1=1 2=64
 MemoryData               const_fold_opt__1424     0 1 631 0=1 1=1 2=64
 MemoryData               const_fold_opt__1352     0 1 632 0=1 1=1 2=64
-Reshape                  reshape_116              1 1 629 633 12=0 13=0 6="1,1,//(64,0n),0n"
+Reshape                  reshape_116              1 1 629 633 0=1 1=1 2=64
 BinaryOp                 add_297                  1 1 633 634 0=0 1=1 2=2.14266165e-5
 UnaryOp                  sqrt_298                 1 1 634 635 0=5
 UnaryOp                  reciprocal_299           1 1 635 636 0=15
@@ -580,7 +580,7 @@ Pooling                  gap_33                   1 1 649 650 0=1 4=1
 MemoryData               Reshape_167:0            0 1 651 0=1 1=1 2=32
 MemoryData               const_fold_opt__1444     0 1 652 0=1 1=1 2=32
 MemoryData               const_fold_opt__1360     0 1 653 0=1 1=1 2=32
-Reshape                  reshape_117              1 1 650 654 12=0 13=0 6="1,1,//(32,0n),0n"
+Reshape                  reshape_117              1 1 650 654 0=1 1=1 2=32
 BinaryOp                 add_307                  1 1 654 655 0=0 1=1 2=1.87849832e-6
 UnaryOp                  sqrt_308                 1 1 655 656 0=5
 UnaryOp                  reciprocal_309           1 1 656 657 0=15
@@ -597,7 +597,7 @@ Pooling                  gap_34                   1 1 668 669 0=1 4=1
 MemoryData               Reshape_171:0            0 1 670 0=1 1=1 2=32
 MemoryData               const_fold_opt__1429     0 1 671 0=1 1=1 2=32
 MemoryData               const_fold_opt__1347     0 1 672 0=1 1=1 2=32
-Reshape                  reshape_118              1 1 669 673 12=0 13=0 6="1,1,//(32,0n),0n"
+Reshape                  reshape_118              1 1 669 673 0=1 1=1 2=32
 BinaryOp                 add_316                  1 1 673 674 0=0 1=1 2=5.37900951e-6
 UnaryOp                  sqrt_317                 1 1 674 675 0=5
 UnaryOp                  reciprocal_318           1 1 675 676 0=15
@@ -613,7 +613,7 @@ Pooling                  gap_35                   1 1 686 687 0=1 4=1
 MemoryData               Reshape_175:0            0 1 688 0=1 1=1 2=32
 MemoryData               const_fold_opt__1421     0 1 689 0=1 1=1 2=32
 MemoryData               const_fold_opt__1389     0 1 690 0=1 1=1 2=32
-Reshape                  reshape_119              1 1 687 691 12=0 13=0 6="1,1,//(32,0n),0n"
+Reshape                  reshape_119              1 1 687 691 0=1 1=1 2=32
 BinaryOp                 add_325                  1 1 691 692 0=0 1=1 2=2.17249850e-4
 UnaryOp                  sqrt_326                 1 1 692 693 0=5
 UnaryOp                  reciprocal_327           1 1 693 694 0=15

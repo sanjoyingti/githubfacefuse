@@ -300,6 +300,133 @@ fun OptionSwitch(
 
 // ---------------------------------------------------------------- the groups
 
+/**
+ * Realism: the one-tap preset, skin-tone matching and the expression restorer. First in the
+ * face_swapper dialog because the preset is the one thing most people want from it.
+ */
+@Composable
+fun RealismCard(
+    opts: SwapOptions,
+    onChange: (SwapOptions) -> Unit,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    val summary = listOf(
+        if (opts.colorMatch) stringResource(R.string.opt_color_match_short) else null,
+        if (opts.expressionRestore) stringResource(R.string.opt_expression_short) else null,
+    ).filterNotNull().joinToString(" · ").ifEmpty { stringResource(R.string.opt_realism_off) }
+    OptionCard(stringResource(R.string.opt_realism), summary, expanded, onToggle) {
+        val preset = opts.realisticPreset()
+        val fast = opts.fastPreset()
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { onChange(fast) }, enabled = opts != fast,
+                           modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.opt_fast_preset))
+            }
+            Button(onClick = { onChange(preset) }, enabled = opts != preset,
+                   modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.opt_realistic_preset))
+            }
+        }
+        Text(stringResource(R.string.opt_fast_preset_hint),
+             style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(top = 4.dp))
+        Text(stringResource(R.string.opt_realistic_preset_hint),
+             style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(top = 4.dp))
+        val likeness = opts.likenessPreset()
+        Button(onClick = { onChange(likeness) }, enabled = opts != likeness,
+               modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+            Text(stringResource(R.string.opt_likeness_preset))
+        }
+        Text(stringResource(R.string.opt_likeness_preset_hint),
+             style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(top = 4.dp))
+        val eating = opts.eatingPreset()
+        Button(onClick = { onChange(eating) }, enabled = opts != eating,
+               modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+            Text(stringResource(R.string.opt_eating_preset))
+        }
+        Text(stringResource(R.string.opt_eating_preset_hint),
+             style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.padding(top = 4.dp))
+        OptionSwitch(stringResource(R.string.opt_texture_match), opts.textureMatch,
+                     { onChange(opts.copy(textureMatch = it)) },
+                     hint = stringResource(R.string.opt_texture_match_hint))
+        OptionSwitch(stringResource(R.string.opt_gap_fill), opts.gapFill,
+                     { onChange(opts.copy(gapFill = it)) },
+                     hint = stringResource(R.string.opt_gap_fill_hint))
+        OptionSwitch(stringResource(R.string.opt_auto_weight), opts.autoWeight,
+                     { onChange(opts.copy(autoWeight = it)) },
+                     hint = stringResource(R.string.opt_auto_weight_hint))
+        OptionSwitch(stringResource(R.string.opt_light_match), opts.lightMatch,
+                     { onChange(opts.copy(lightMatch = it)) },
+                     hint = stringResource(R.string.opt_light_match_hint))
+        if (opts.lightMatch)
+            OptionSlider(stringResource(R.string.opt_strength), opts.lightMatchStrength,
+                         { onChange(opts.copy(lightMatchStrength = it)) },
+                         format = { "${(it * 100).roundToInt()}" })
+        OptionSwitch(stringResource(R.string.opt_best_output), opts.bestQualityOutput,
+                     { onChange(opts.copy(bestQualityOutput = it)) },
+                     hint = stringResource(R.string.opt_best_output_hint))
+
+        OptionSwitch(stringResource(R.string.opt_smart_speed), opts.smartSpeed,
+                     { onChange(opts.copy(smartSpeed = it)) },
+                     hint = stringResource(R.string.opt_smart_speed_hint))
+        OptionSwitch(stringResource(R.string.opt_hair_aware), opts.hairAware,
+                     { onChange(opts.copy(hairAware = it)) },
+                     hint = stringResource(R.string.opt_hair_aware_hint))
+        OptionSwitch(stringResource(R.string.opt_seamless), opts.seamless,
+                     { onChange(opts.copy(seamless = it)) },
+                     hint = stringResource(R.string.opt_seamless_hint))
+        OptionSwitch(stringResource(R.string.opt_auto_boost), opts.autoBoost,
+                     { onChange(opts.copy(autoBoost = it)) },
+                     hint = stringResource(R.string.opt_auto_boost_hint))
+        OptionSwitch(stringResource(R.string.opt_temporal), opts.temporalSmooth,
+                     { onChange(opts.copy(temporalSmooth = it)) },
+                     hint = stringResource(R.string.opt_temporal_hint))
+        OptionSwitch(stringResource(R.string.opt_closed_eyes), opts.keepClosedEyes,
+                     { onChange(opts.copy(keepClosedEyes = it)) },
+                     hint = stringResource(R.string.opt_closed_eyes_hint))
+        OptionSwitch(stringResource(R.string.opt_side_hold), opts.sideHold,
+                     { onChange(opts.copy(sideHold = it)) },
+                     hint = stringResource(R.string.opt_side_hold_hint))
+        OptionSwitch(stringResource(R.string.opt_second_detector), opts.secondDetector,
+                     { onChange(opts.copy(secondDetector = it)) },
+                     hint = stringResource(R.string.opt_second_detector_hint))
+        OptionSwitch(stringResource(R.string.opt_turned_landmarker), opts.turnedLandmarker,
+                     { onChange(opts.copy(turnedLandmarker = it)) },
+                     hint = stringResource(R.string.opt_turned_landmarker_hint))
+        OptionSwitch(stringResource(R.string.opt_lowest_memory), opts.lowestMemory,
+                     { onChange(opts.copy(lowestMemory = it)) },
+                     hint = stringResource(R.string.opt_lowest_memory_hint))
+
+        OptionSwitch(stringResource(R.string.opt_color_match), opts.colorMatch,
+                     { onChange(opts.copy(colorMatch = it)) },
+                     hint = stringResource(R.string.opt_color_match_hint))
+        if (opts.colorMatch)
+            OptionSlider(stringResource(R.string.opt_strength), opts.colorMatchStrength,
+                         { onChange(opts.copy(colorMatchStrength = it)) })
+
+        OptionSwitch(stringResource(R.string.opt_expression), opts.expressionRestore,
+                     { onChange(opts.copy(expressionRestore = it)) },
+                     hint = stringResource(R.string.opt_expression_hint))
+        if (opts.expressionRestore)
+            OptionSlider(stringResource(R.string.opt_strength), opts.expressionFactor,
+                         { onChange(opts.copy(expressionFactor = it)) },
+                         format = { "${(it * 100).roundToInt()}" })
+        if (opts.expressionRestore)
+            OptionSwitch(stringResource(R.string.opt_mouth_focus), opts.mouthFocus,
+                         { onChange(opts.copy(mouthFocus = it)) },
+                         hint = stringResource(R.string.opt_mouth_focus_hint))
+    }
+}
+
 @Composable
 fun FaceSwapperCard(
     opts: SwapOptions,
@@ -411,11 +538,52 @@ fun FaceMaskerCard(
         OptionSwitch(stringResource(R.string.opt_region), opts.regionMask,
                      { onChange(opts.copy(regionMask = it)) },
                      hint = stringResource(R.string.opt_region_hint))
+        OptionSwitch(stringResource(R.string.opt_large_parser), opts.largeParser,
+                     { onChange(opts.copy(largeParser = it)) },
+                     hint = stringResource(R.string.opt_large_parser_hint))
         OptionSwitch(stringResource(R.string.opt_keep_mouth), opts.keepMouth,
                      { onChange(opts.copy(keepMouth = it)) },
                      hint = stringResource(R.string.opt_keep_mouth_hint))
+        OptionSwitch(stringResource(R.string.opt_keep_lips), opts.keepLips,
+                     { onChange(opts.copy(keepLips = it, lipsAuto = if (it) false else opts.lipsAuto)) },
+                     hint = stringResource(R.string.opt_keep_lips_hint))
+        OptionSwitch(stringResource(R.string.opt_lips_auto), opts.lipsAuto,
+                     { onChange(opts.copy(lipsAuto = it, keepLips = if (it) false else opts.keepLips)) },
+                     hint = stringResource(R.string.opt_lips_auto_hint))
+        OptionSwitch(stringResource(R.string.opt_lips_follow), opts.lipsFollow,
+                     { onChange(opts.copy(lipsFollow = it)) },
+                     hint = stringResource(R.string.opt_lips_follow_hint))
+        OptionSwitch(stringResource(R.string.opt_lipstick), opts.lipstickMatch,
+                     { onChange(opts.copy(lipstickMatch = it)) },
+                     hint = stringResource(R.string.opt_lipstick_hint))
+        if (opts.lipstickMatch)
+            OptionSlider(stringResource(R.string.opt_strength), opts.lipstickStrength,
+                         { onChange(opts.copy(lipstickStrength = it)) },
+                         format = { "${(it * 100).roundToInt()}" })
+        OptionSwitch(stringResource(R.string.opt_hair_only), opts.hairOnlyParser,
+                     { onChange(opts.copy(hairOnlyParser = it)) },
+                     hint = stringResource(R.string.opt_hair_only_hint))
+        OptionSwitch(stringResource(R.string.opt_parallel_masks), opts.parallelMasks,
+                     { onChange(opts.copy(parallelMasks = it)) },
+                     hint = stringResource(R.string.opt_parallel_masks_hint))
+        // What the native side actually did with the switches above, refreshed every second:
+        // a mask that silently is not running looks exactly like a mask that does not work.
+        var maskStatus by remember { mutableStateOf("") }
+        LaunchedEffect(Unit) {
+            while (true) {
+                maskStatus = runCatching { NativePipe.maskModelStatus() }.getOrDefault("")
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+        if (maskStatus.isNotEmpty())
+            Text(maskStatus, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
+                 color = MaterialTheme.colorScheme.primary,
+                 modifier = Modifier.padding(top = 6.dp))
 
         // ---- big head turns
+        OptionSwitch(stringResource(R.string.opt_side_guard), opts.sideGuard,
+                     { onChange(opts.copy(sideGuard = it)) },
+                     hint = stringResource(R.string.opt_side_guard_hint))
         OptionSwitch(stringResource(R.string.opt_pose_fade), opts.poseFade,
                      { onChange(opts.copy(poseFade = it)) },
                      hint = stringResource(R.string.opt_pose_fade_hint))

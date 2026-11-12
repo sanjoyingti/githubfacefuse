@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "cpu.h"
 #include "net.h"
 
 #ifdef __ANDROID__
@@ -84,7 +85,9 @@ struct Model {
 };
 
 InitSpec g_spec;
-std::string g_err;
+// thread_local: the mask models run on a worker thread beside the swapper (ffpipe.cpp),
+// and an error string shared between the two would be a data race on every call.
+thread_local std::string g_err;
 bool g_vulkan = false;
 
 // What the caller has allowed. Auto runs the agreement check below; see ffnn.h.
@@ -238,7 +241,19 @@ void verifyGpu() {
 
 }  // namespace
 
+// (ncnn here is built with NCNN_SIMPLEOMP: no LLVM libomp, no affinity start-up to abort.)
+// OpenMP worker threads spin-wait after every parallel region by default (KMP_BLOCKTIME,
+// 200 ms). Between frames that is pure CPU burn -- heat and battery for nothing -- so they
+// are told to sleep at once. Throughput of the work itself is unchanged.
+void quietThreads() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  ncnn::set_kmp_blocktime(0);
+}
+
 bool ncnnInit(const InitSpec& spec) {
+  quietThreads();
   g_spec = spec;
   // FFNCNN_GPU=auto|force|off, for the headless CLI. The app sets the same policy through
   // the seam instead -- an Android process has no environment to set from outside.
@@ -350,13 +365,23 @@ bool ncnnExecute(Handle h, const std::vector<std::string>& names,
     }
   }
 
-  ncnn::Mat out;
-  if (ex.extract(m->spec->out, out) != 0) {
-    g_err = "ncnn: extract " + std::string(m->spec->out) + " failed";
-    return false;
+  // One output, or several named in a comma-separated list (SCRFD has nine).
+  outs.clear();
+  const std::string outNames = m->spec->out;
+  size_t at = 0;
+  while (at <= outNames.size()) {
+    const size_t comma = outNames.find(',', at);
+    const std::string blob = outNames.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+    ncnn::Mat out;
+    if (ex.extract(blob.c_str(), out) != 0) {
+      g_err = "ncnn: extract " + blob + " failed";
+      return false;
+    }
+    outs.emplace_back();
+    flattenMat(out, outs.back());
+    if (comma == std::string::npos) break;
+    at = comma + 1;
   }
-  outs.assign(1, std::vector<float>());
-  flattenMat(out, outs[0]);
   return true;
 }
 
@@ -432,12 +457,21 @@ const std::map<std::string, Spec>& auxSpecs() {
   static const std::map<std::string, Spec> m = {
       {"xseg",    {"xseg_3_nchw",          {{"input", 256, 256, 3}}, "out0"}},
       {"bisenet", {"bisenet_resnet_18_b1", {{"input", 512, 512, 3}}, "out0"}},
+      // BiSeNet ResNet-34 (FaceFusion, MIT): the same input and 19 labels, larger.
+      {"bisenet34", {"bisenet_resnet_34_b1", {{"input", 512, 512, 3}}, "out0"}},
+      // PEPPA-Wutz (FaceFusion, MIT): the 256 landmarker crop, BGR /255; out0 is
+      // [294,64,64] -- 98 heatmaps, then their x and y offsets (decoded in ffpipe).
+      {"peppa",   {"peppa", {{"input", 256, 256, 3}}, "out0"}},
+      // SCRFD 2.5G (InsightFace, MIT): 640x640 BGR, (x-127.5)/128; nine outputs --
+      // scores, box distances and five points for strides 8, 16 and 32.
+      {"scrfd",   {"scrfd_2.5g", {{"input", 640, 640, 3}},
+                   "out0,out1,out2,out3,out4,out5,out6,out7,out8"}},
   };
   return m;
 }
 void* g_auxAssets = nullptr;
 std::string g_auxDir;
-std::string g_auxErr;
+thread_local std::string g_auxErr;
 bool g_auxVulkanAsked = false;
 
 bool loadAux(ncnn::Net& net, const Spec& sp, bool gpu, std::string& err) {
@@ -451,30 +485,37 @@ bool loadAux(ncnn::Net& net, const Spec& sp, bool gpu, std::string& err) {
   net.opt.use_packing_layout = true;
   net.opt.use_fp16_packed = true;
   net.opt.use_fp16_storage = true;
-  // fp32 arithmetic: these are 26-GFLOP U-Nets whose outputs are thresholded, and fp16
-  // accumulation over that depth moves the mask edge more than the speed is worth.
-  net.opt.use_fp16_arithmetic = false;
+  // fp16 arithmetic on the GPU only -- about twice as fast there. The CPU stays fp32 because
+  // it is the REFERENCE: ffpipe's maskNet compares the GPU's mask against it and falls back
+  // to the CPU when fp16 moves the mask too far.
+  net.opt.use_fp16_arithmetic = gpu;
   if (g_lowMem) net.opt.use_winograd_convolution = false;
 
   const std::string stem = std::string(sp.stem) + ".ncnn.";
+  // Which step failed, not just "not found": a .param this ncnn cannot PARSE (a layer
+  // option newer than the library) reads exactly like a missing file otherwise.
+  std::string why = "no asset manager or aux directory set";
 #if defined(__ANDROID__) && NCNN_PLATFORM_API
   if (g_auxAssets) {
     AAssetManager* mgr = static_cast<AAssetManager*>(g_auxAssets);
     const std::string a = "masks/" + stem;
-    if (net.load_param(mgr, (a + "param").c_str()) == 0 &&
-        net.load_model(mgr, (a + "bin").c_str()) == 0)
-      return true;
+    const int rp = net.load_param(mgr, (a + "param").c_str());
+    const int rm = rp == 0 ? net.load_model(mgr, (a + "bin").c_str()) : 0;
+    if (rp == 0 && rm == 0) return true;
+    why = rp != 0 ? "cannot read or parse assets/" + a + "param"
+                  : "cannot read assets/" + a + "bin";
     net.clear();
   }
 #endif
   if (!g_auxDir.empty()) {
     const std::string base = g_auxDir + "/" + stem;
-    if (net.load_param((base + "param").c_str()) == 0 &&
-        net.load_model((base + "bin").c_str()) == 0)
-      return true;
+    const int rp = net.load_param((base + "param").c_str());
+    const int rm = rp == 0 ? net.load_model((base + "bin").c_str()) : 0;
+    if (rp == 0 && rm == 0) return true;
+    why = rp != 0 ? "cannot read or parse " + base + "param" : "cannot read " + base + "bin";
     net.clear();
   }
-  err = "ncnn: " + std::string(sp.stem) + " not found in assets/masks or the aux directory";
+  err = "ncnn: " + why;
   return false;
 }
 }  // namespace
@@ -482,8 +523,10 @@ bool loadAux(ncnn::Net& net, const Spec& sp, bool gpu, std::string& err) {
 void ncnnSetAuxAssets(void* mgr) { g_auxAssets = mgr; }
 void ncnnSetAuxDir(const std::string& dir) { g_auxDir = dir; }
 const char* ncnnAuxLastError() { return g_auxErr.c_str(); }
+bool ncnnOnGpu(Handle h) { return h && static_cast<Model*>(h)->gpu; }
 
 Handle ncnnOpenAux(const std::string& logicalName, Placement p) {
+  quietThreads();
   g_auxErr.clear();
   auto it = auxSpecs().find(logicalName);
   if (it == auxSpecs().end()) {

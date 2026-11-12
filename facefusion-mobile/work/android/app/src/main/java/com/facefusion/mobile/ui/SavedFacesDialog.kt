@@ -80,7 +80,9 @@ fun SavedFacesDialog(
                             Spacer(Modifier.width(10.dp))
                             Text(
                                 DateFormat.getDateInstance(DateFormat.MEDIUM)
-                                    .format(Date(face.addedMs)),
+                                    .format(Date(face.addedMs)) +
+                                    (if (face.photos > 1) "\n" + stringResource(
+                                        R.string.faces_saved_photos, face.photos) else ""),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.weight(1f),

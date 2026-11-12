@@ -590,6 +590,31 @@ MatF createBoxMask(int w, int h, float blur, const int padding[4]) {
 }
 
 void pasteBack(Image& frame, const MatF& crop, const MatF& mask, const Affine& affine) {
+  // NO HARD EDGES, ever: the mask is read as 0 outside the crop, so a mask that is still
+  // on at the crop's edge pastes a visible rectangle (seen on a head turned away, where a
+  // "face" was found at the back of the head). Every mask the pipeline builds starts from a
+  // blurred box and is near 0 there already (the box's own blur leaves about 0.02-0.05),
+  // so this costs four border reads and changes nothing; only a mask that is clearly on at
+  // the edge gets faded to 0 over the outer 1/24 of the crop.
+  const int mw = mask.w, mh = mask.h;
+  float edge = 0.f;
+  if (mw > 4 && mh > 4 && mask.c == 1) {
+    for (int x = 0; x < mw; ++x)
+      edge = std::max(edge, std::max(mask.data[(size_t)x], mask.data[(size_t)(mh - 1) * mw + x]));
+    for (int y = 0; y < mh; ++y)
+      edge = std::max(edge, std::max(mask.data[(size_t)y * mw], mask.data[(size_t)y * mw + mw - 1]));
+  }
+  if (edge > 0.1f) {
+    MatF faded = mask;
+    const float band = std::max(2.f, std::min(mw, mh) / 24.f);
+    for (int y = 0; y < mh; ++y)
+      for (int x = 0; x < mw; ++x) {
+        const float d = (float)std::min(std::min(x, mw - 1 - x), std::min(y, mh - 1 - y));
+        if (d < band) faded.data[(size_t)y * mw + x] *= d / band;
+      }
+    pasteBackRoi(frame, crop, faded, affine, 0, 0, crop.w, crop.h);
+    return;
+  }
   pasteBackRoi(frame, crop, mask, affine, 0, 0, crop.w, crop.h);
 }
 

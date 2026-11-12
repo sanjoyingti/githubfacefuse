@@ -90,15 +90,28 @@ fun AppMark(size: Dp = 30.dp, modifier: Modifier = Modifier) {
  */
 @Composable
 fun Wordmark(modifier: Modifier = Modifier, color: Color = MaterialTheme.colorScheme.onBackground) {
-    Text(
-        buildAnnotatedString {
-            withStyle(SpanStyle(fontWeight = FontWeight.Light)) { append("FACE") }
-            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("FUSION") }
-        },
-        style = WordmarkStyle,
-        color = color,
-        modifier = modifier,
-    )
+    // The BUILD NUMBER beside the name, on every screen: two FaceFusion apps (the original
+    // and "FaceFusion Debug") look identical, and which one is open has to be visible
+    // without going to Settings.
+    val build = com.facefusion.mobile.BuildConfig.VERSION_NAME
+        .substringAfter("-build", "").takeIf { it.isNotEmpty() }
+    androidx.compose.foundation.layout.Row(
+        modifier, verticalAlignment = androidx.compose.ui.Alignment.Bottom,
+    ) {
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(fontWeight = FontWeight.Light)) { append("FACE") }
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("FUSION") }
+            },
+            style = WordmarkStyle,
+            color = color,
+        )
+        if (build != null) Text(
+            "  build $build",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 /**

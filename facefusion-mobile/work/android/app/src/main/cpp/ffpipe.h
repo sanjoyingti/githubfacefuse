@@ -10,6 +10,7 @@
 //             -> warp 112 -> [arcface] -> warp 256 -> [swapper] -> box mask -> paste back
 
 #pragma once
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -35,6 +36,14 @@ struct Face {
   // Config::poseFadeStart, so an extreme profile keeps its own face instead of a stretched
   // one.
   float poseFade = 1.f;
+  // How far this face moved since the previous frame of a sequence (pixels, frame space;
+  // 0 outside a sequence). Used to blur the swapped face like the real, motion-blurred one.
+  float vel[2] = {0.f, 0.f};
+  // True when this face was not found by the detector but held from the previous frames
+  // (lost-face recovery); the sequence counts how long it has been held.
+  bool recovered = false;
+  // A held face whose identity was checked against the person being followed (see analyse).
+  bool idMatched = false;
   float embedding[512];
   float embeddingNorm[512];
 };
@@ -57,6 +66,123 @@ struct Config {
   // original. keepMouth implies the parser runs.
   bool regionMask = false;
   bool keepMouth = false;
+  // Also leaves the LIPS (BiSeNet upper/lower lip) original, so the whole mouth is as filmed.
+  // For eating: the swapper draws lips in the shape of the source photo's mouth, which does
+  // not fit a mouth wrapped around something. Implies the parser runs.
+  bool keepLips = false;
+  // Skin-tone matching: Reinhard colour transfer (in Lab) of the swapped face onto the
+  // target's face colours, as DeepFaceLab's "rct" -- the swapped face takes the scene's
+  // lighting and skin tone instead of the source photo's. 0 = off, 1 = full transfer.
+  float colorMatch = 0.6f;
+  // --processors expression_restorer: LivePortrait puts the ORIGINAL face's expression
+  // (closed eyes, mouth shape) back on the swapped face. Needs the face editor models.
+  // Upstream's --expression-restorer-factor 0-100 is this x100; it maps to 0-1.2.
+  bool expressionRestore = false;
+  float expressionRestoreFactor = 0.8f;
+  // Run the mask models on a helper thread WHILE the swapper runs (GPU beside the NPU).
+  // Safe mode turns it off after a crash.
+  bool parallelMasks = true;
+  // SMART SPEED (video sequences only): reuse a face's masks while nothing in front of it
+  // changed, and run the expression restorer only around blinks / closed eyes. Previews
+  // and photos always compute everything.
+  bool smartSpeed = true;
+  // AUTO PIXEL BOOST: a face shown larger than its swap crop (a close-up) is swapped at
+  // 1024 x 1024 (4 x 4 tiles) instead of being stretched up from 512; other faces keep
+  // pixelBoost. More time on close-ups only, same memory order.
+  bool autoBoost = true;
+  // SEAMLESS edges: multi-band blend of the swapped face into the original crop before the
+  // paste, so the mask edge leaves no outline in the shading.
+  bool seamless = true;
+  // HAIR-AWARE masks: the face parser's hair and hat stay original whatever else is chosen,
+  // and the mask edge snaps to the picture's own edges (guided filter) instead of a blur
+  // across hair strands -- no dark half-swapped streaks where hair crosses the face.
+  bool hairAware = true;
+  // Video: smooth the skin-tone transfer and the mask edge from frame to frame (less
+  // flicker). Needs Smart speed's per-face tracking; previews and photos are unaffected.
+  bool temporalSmooth = true;
+  // SHARPER ENHANCER: after the enhancer's blend, an unsharp mask on the enhanced face crop
+  // (0 = off, 1 = strong). Inside the same mask as the enhancer, so only the face changes.
+  // Off by default; only read when faceEnhance is on.
+  float enhanceSharpen = 0.f;
+  // MOTION BLUR MATCH: on a fast head move the swapped face gets the same streak as the
+  // real one (it was pasted sharp onto a blurred head). Only on frames that move.
+  bool motionBlurMatch = true;
+  // TOUCHING FACES: where two faces overlap, each face's swap stops at the other face
+  // instead of spilling onto it. Only when faces overlap.
+  bool overlapGuard = true;
+  // SECOND LOOK: a video frame with no face found is searched again in overlapping zoomed
+  // tiles, so small or distant faces are not left as filmed.
+  bool secondLook = true;
+  // CLOSED EYES: while an eye is shut (or nearly), its lids and lashes stay as filmed. The
+  // swapper draws the source photo's OPEN eyes into a closed eye, which smears the lids.
+  // Per eye (a wink works), fading in as the eye closes; nothing changes while eyes are open.
+  bool keepClosedEyes = true;
+  // SIDE PHOTOS: a face turned the way one of its source photos is turned keeps the swap
+  // 15 degrees further round before the head-turn fade (see Impl::sideBonus).
+  bool sideHold = true;
+  // NOT A FACE: detections whose landmarker score is under 0.2 are dropped (see analyse).
+  bool rejectFalseFaces = true;
+  // SECOND DETECTOR (SCRFD 2.5G, bundled): when the main detector finds no face on a video
+  // frame, or loses a face that was on screen a moment ago, SCRFD looks at the frame too.
+  // Only a face where the lost one was is added (posters and pictures stay out); with no
+  // face at all, any face it finds. Frames where every face is found pay nothing.
+  bool secondDetector = true;
+  // LARGER FACE PARSER: BiSeNet ResNet-34 instead of ResNet-18 for the face parser mask
+  // (bundled; on the NPU when it computes the same labels as the CPU). A more exact outline
+  // of skin, hair and ears; about 1.2x the parser's work. Off by default.
+  bool largeParser = false;
+  // SECOND LANDMARKER (PEPPA-Wutz, bundled): for a face the 2DFAN4 landmarker is unsure of
+  // (score under 0.85: turned, tilted, blurred), PEPPA-Wutz places the 68 points too and
+  // the more confident of the two is used. Faces 2DFAN4 is sure of pay nothing.
+  bool turnedLandmarker = true;
+  // SHARPER ENHANCER (GPEN-BFR 512, bundled, NPU only): the face enhancer restores the face
+  // at 512 px on its own FFHQ crop instead of GPEN 256 on the swap crop. Twice the detail on
+  // close-ups; slower. Off by default; without the NPU build the 256 one runs as before.
+  bool enhancer512 = false;
+  // ---- 1.0.56: likeness, mouth and light (all off by default; see ffpipe.cpp)
+  // DOUBLE SWAP: the swapped face is swapped once more from the same source -- closer to
+  // the source photo; twice the swapper's time.
+  bool doubleSwap = false;
+  // AUTO WEIGHT: the first clear view of each person is swapped at the chosen weight and at
+  // +0.1 and +0.2; the lowest weight within 0.02 of the best likeness is used for the run.
+  bool autoWeight = false;
+  // HAIR ONLY: the face parser keeps only hair and hats as filmed and cuts nothing else, so
+  // hair edges stay clean without the swap shrinking to the skin outline.
+  bool hairOnlyParser = false;
+  // LIGHT MATCH (0..1): the swapped face takes the target face's shading -- which side is
+  // lit, which is in shadow -- not only its overall colour (Match skin tone).
+  float lightMatch = 0.f;
+  // LIPS AUTO: lips stay swapped, except the band where something (food, a fork, a cup)
+  // touches them, which stays as filmed. Needs the occlusion mask.
+  bool lipsAuto = false;
+  // LIPSTICK MATCH (0..1): lips kept as filmed are recoloured to the source photo's lip
+  // colour (lipstick or natural), keeping their own shading; swapped lips are brought
+  // halfway towards it.
+  float lipstickMatch = 0.f;
+  // MOUTH FOCUS: the expression restorer works fully on the mouth (open, chewing, around
+  // food) and only lightly on the rest of the face, for more likeness.
+  bool restoreMouthFocus = false;
+  // SIDE GUARD: on a turned face (35 degrees and more) the swap is kept only on the visible
+  // half, up to the nose line; the far side -- the hidden eye, the far cheek and the nose
+  // outline against the background, which the swapper can only invent (it draws a front
+  // face) -- stays as filmed, fully from 60 degrees. Front faces are unchanged.
+  bool sideGuard = true;
+  // LIPS FOLLOW THE VIDEO: the lips and the open mouth keep the video's own shape (always in
+  // line with the filmed mouth); with Lipstick match they take the source photo's lip
+  // colour. The swapped lips never spill onto the skin around the filmed lips.
+  bool lipsFollow = false;
+  // TEXTURE MATCH (0..1): the finished face is brought to the video's own fine detail. A
+  // swapped face that is sharper than the face it replaces (an HD face in a soft or
+  // compressed video) is softened to it; one that is smoother takes the video's own grain
+  // (the fine noise of the original face, edges left out). The tell-tale of a swap is a
+  // face whose texture does not belong to the footage. Cheap: no model, no extra warp.
+  float textureMatch = 1.f;
+  // GAP FILL (video, needs look-ahead frames from the caller, see Pipeline::setAhead): a
+  // face the detector loses for a few frames and finds again within the look-ahead is
+  // carried through the gap -- its points placed between where it was and where it is found
+  // again, refined by the landmarker when that still sees it. As FaceFusion 3.7's face
+  // tracker; the look-ahead frames are only read when a face is actually lost.
+  bool gapFill = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;
@@ -279,13 +405,40 @@ class Pipeline {
   // frames (the preview, photos, source images), where "the previous frame" means nothing.
   void setSequence(bool on);
 
+  // LOOK-AHEAD for gap fill (Config::gapFill). `provider(j, out)` hands over the frame
+  // j + 1 frames AFTER the one about to be analysed (j = 0 is the next frame) and returns
+  // false past the end; it is only called when a face has been lost, and each look-ahead
+  // frame is searched at most once (the result is kept until that frame has gone by).
+  // `depth` is how many frames may be asked for. Set before analyse; advanceAhead() after
+  // each frame of the run; a null provider turns it off.
+  void setAhead(std::function<bool(int, ffcv::Image&)> provider, int depth);
+  void advanceAhead();
+  // Faces carried through a gap by the look-ahead since the last resetStats-independent
+  // read (for the run log); resets when read.
+  int gapFilledFaces();
+
+  // Releases the optional models this RUN will not use (lip sync, LivePortrait, enhancer),
+  // so a long video swap holds less memory and Android is less likely to stop the app for
+  // memory. The next init (the preview after the run) loads everything again.
+  void trimModels(bool keepLipSync, bool keepPortrait, bool keepEnhancer);
+
   // Whether the optional mask models opened and executed (they are opened lazily, on the
   // first frame that asks for them).
   bool hasOcclusionModel() const;
   bool hasParserModel() const;
+  // One line per mask model: whether it ran, on which unit, or why not. Process-wide,
+  // for the options card -- the question it answers is "is the mask actually on".
+  static std::string maskStatus();
 
   bool setSource(const ffcv::Image& sourceImage);
   int addSource(const ffcv::Image& sourceImage);
+  // Another photo of the SAME person for source slot `slot`: the slot's identity becomes
+  // the average of its photos' embeddings (re-normalised), as FaceFusion does with several
+  // source images. Returns the slot's photo count on success; -1 no face (error() says
+  // why), -2 the face looks like a different person (cosine to the slot's first photo
+  // under kSamePersonCos), -3 no such slot, -4 the slot already has kMaxSourcePhotos.
+  int addSourcePhoto(int slot, const ffcv::Image& photo);
+  static constexpr int kMaxSourcePhotos = 5;
   void clearSourceSlots();
   void setActiveSource(int index);
   /**
@@ -309,6 +462,21 @@ class Pipeline {
 
   /** Put a remembered identity's assignment back on a pipeline that was just built. */
   bool restoreFaceAssignment(const float* embedding, int sourceIndex, bool keepOriginal);
+
+  /**
+   * One picture of one PERSON found by the "find everyone in the video" scan. Call it once
+   * per picture (front, left, right ...) with the same [person] id (0..999999): every
+   * picture of the person carries the same choice, and on any frame a person is given to
+   * one face only. [embedding] need not be normalised.
+   */
+  bool restorePersonAssignment(const float* embedding, int sourceIndex, bool keepOriginal,
+                               int person);
+
+  /**
+   * Assign per person: whether a face that matches nobody assigned keeps its own face
+   * (true, the default) or takes the source that was active when the mode turned on.
+   */
+  void setAssignUnknownKeep(bool keep);
 
   void clearFaceSourceAssignments();
 
@@ -529,6 +697,9 @@ class Pipeline {
    * same "absent is not a failure" convention as `syncLip`.
    */
   bool enhance(ffcv::Image& frame, const std::vector<Face>& faces);
+  // GPEN-BFR 512 on one face (Config::enhancer512); see ffpipe.cpp.
+  bool enhanceFace512(ffcv::Image& frame, const Face& f, const ffcv::MatF& boxCS,
+                      const float* tmplCS, int CS);
 
   /**
    * face_editor/core.py:edit_face on every face, in place: crop ffhq_512 at 512 around
@@ -586,6 +757,18 @@ class Pipeline {
   double msGeomMask = 0;     // createBoxMask alone -- frame-invariant, so suspect
   double msGeomPaste = 0;    // pasteBack alone
   int framesDone = 0, facesDone = 0;
+  // Frames in which a found face was NOT swapped, by why (reported after a run, see
+  // swapReport): face selection, turned too far, "keep this face", largest face only.
+  int skipRefFrames = 0, skipFadeFrames = 0, skipKeepFrames = 0, skipLargestFrames = 0;
+  int framesWithFaces = 0;
+  std::string swapReport(bool reset);
+  // Which source face [fi] of [faces] gets on this frame (-1 = keeps its own face).
+  // What swapAll would use; for tests and logs.
+  int sourceFor(const std::vector<Face>& faces, size_t fi);
+  // Faces the second detector (SCRFD) added since the pipeline was built.
+  int secondDetectorHits() const;
+  // Faces whose points came from the second landmarker (PEPPA-Wutz).
+  int turnedLandmarkerUsed() const;
   // Zero every counter above.  A run has to call this itself: the accumulators are
   // cumulative across frames by design, and setSource clears only SOME of them --
   // msSwap and msLipSync survive it, so a second run without this reports the first
@@ -596,6 +779,8 @@ class Pipeline {
   // LivePortrait's shared steps: the ffhq_512 crop at 256, the two extractors, and the
   // generator from hourglassInput to the pasted face.
   bool lpCrop(const ffcv::Image& frame, const Face& f, ffcv::Affine* am, std::vector<float>* in);
+  // expression_restorer, run by editFaces on the frame swapAll just produced.
+  bool restoreExpression(ffcv::Image& frame, const std::vector<Face>& faces);
   bool lpFeature(const std::vector<float>& in, std::vector<float>* fv);
   bool lpMotion(const std::vector<float>& in, ffportrait::Motion* m);
   bool lpRender(const std::vector<float>& fv, const float* source, const float* target,

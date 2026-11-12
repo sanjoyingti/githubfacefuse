@@ -8,13 +8,6 @@ import java.io.File
 /**
  * The NSFW content gate, with upstream's policy.
  *
- * ⚠ DORMANT / DISABLED (developer override).
- * All public inspection entry points now always return ALLOW and never run the
- * NSFW model. The rest of the original implementation is left intact so the
- * gate can be re-enabled later by restoring the original bodies of
- * inspectStill / inspectClip / inspectPixels.
- *
- * Original behaviour (commented for reference):
  * It **blocks**: FaceFusion's `content_analyser.py` refuses to process flagged content and
  * so does this port (decided 2026-08-24). Everything here is upstream's rule, ported:
  *
@@ -53,9 +46,6 @@ object ContentGate {
      */
     const val QUANTISED_BIAS = 0.087f
 
-    /** Master switch: when true the gate never blocks and never runs the model. */
-    private const val DORMANT = true
-
     enum class Verdict { ALLOW, BLOCK, ERROR }
 
     data class Result(
@@ -89,18 +79,12 @@ object ContentGate {
      * still path and both video paths cannot drift apart on how NaN is treated.
      */
     private fun inspectPixels(bgr: ByteArray, w: Int, h: Int): Result {
-        if (DORMANT) {
-            return Result(Verdict.ALLOW, 0f, detail = "content gate dormant")
-        }
         val score = NativePipe.contentScore(bgr, w, h)
         return Result(judge(score), score,
                       detail = if (score.isNaN()) NativePipe.lastError() else "")
     }
 
     fun inspectStill(bitmap: Bitmap): Result {
-        if (DORMANT) {
-            return Result(Verdict.ALLOW, 0f, detail = "content gate dormant")
-        }
         val soft = bitmap.asArgb8888()
             ?: return Result(Verdict.ERROR, Float.NaN, detail = "cannot read image")
         val px = IntArray(soft.width * soft.height)
@@ -129,19 +113,23 @@ object ContentGate {
      * swapper could process. Fail-closed, so never a way through the gate, but a way to be
      * told no about a good file.
      */
-    fun inspectClip(file: File): Result {
-        if (DORMANT) {
-            return Result(Verdict.ALLOW, 0f, detail = "content gate dormant")
-        }
-        return sampleByRetriever(file) ?: sampleByDecoder(file)
+    fun inspectClip(file: File, startUs: Long = 0L, endUs: Long = Long.MAX_VALUE): Result {
+        return sampleByRetriever(file, startUs, endUs) ?: sampleByDecoder(file)
     }
+
+    /**
+     * The longest side a sampled frame is decoded at. The gate scales every frame down to
+     * 384 itself, so a full-resolution decode only costs memory and time: a 4K frame is
+     * ~33 MB as a Bitmap, and a 10-minute clip samples 600 of them.
+     */
+    private const val SAMPLE_MAX_SIDE = 768
 
     /**
      * @return null when the retriever produced no frames at all, meaning "ask the decoder".
      *         A graph failure is NOT null -- a broken gate is broken in either sampler, and
      *         retrying it would only turn one honest ERROR into two.
      */
-    private fun sampleByRetriever(file: File): Result? {
+    private fun sampleByRetriever(file: File, startUs: Long, endUsAsked: Long): Result? {
         val r = MediaMetadataRetriever()
         try {
             r.setDataSource(file.absolutePath)
@@ -151,14 +139,28 @@ object ContentGate {
             var sampled = 0
             var flagged = 0
             var worst = Float.NEGATIVE_INFINITY
-            var us = 0L
+            // Only the part of the clip that will be PROCESSED: the trimmed range. The rule is
+            // unchanged -- one sample a second, refused above 10% -- but a 3-minute trim of a
+            // 10-minute file no longer waits for 600 samples of footage it never touches.
+            val fileEndUs = maxOf(durationMs * 1000L, 1L)
+            var us = startUs.coerceIn(0L, fileEndUs)
             // `<=` and the max(): a clip shorter than one second still has to be checked.
-            val endUs = maxOf(durationMs * 1000L, 1L)
+            val endUs = minOf(endUsAsked, fileEndUs).coerceAtLeast(us)
+            val w0 = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?.toIntOrNull() ?: 0
+            val h0 = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull() ?: 0
+            val k = if (w0 > 0 && h0 > 0) minOf(1f, SAMPLE_MAX_SIDE.toFloat() / maxOf(w0, h0)) else 1f
+            val sw = maxOf(1, (w0 * k).toInt())
+            val sh = maxOf(1, (h0 * k).toInt())
+            fun grab(t: Long, opt: Int) =
+                if (w0 > 0 && h0 > 0) r.getScaledFrameAtTime(t, opt, sw, sh)
+                else r.getFrameAtTime(t, opt)
             while (us <= endUs) {
-                val frame = r.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    ?: r.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST)
+                val frame = grab(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: grab(us, MediaMetadataRetriever.OPTION_CLOSEST)
                 if (frame != null) {
-                    val res = inspectStill(frame)
+                    val res = try { inspectStill(frame) } finally { frame.recycle() }
                     if (res.verdict == Verdict.ERROR) return res
                     sampled++
                     if (res.refused) flagged++

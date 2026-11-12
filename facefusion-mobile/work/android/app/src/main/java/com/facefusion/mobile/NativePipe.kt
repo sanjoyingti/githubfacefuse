@@ -102,15 +102,105 @@ object NativePipe {
      * See ffpipe::Config for what each one does.
      */
     @JvmStatic external fun setQuality(
-        occlusion: Boolean, region: Boolean, keepMouth: Boolean,
+        occlusion: Boolean, region: Boolean, keepMouth: Boolean, keepLips: Boolean,
         poseFadeStart: Float, smooth: Boolean, recover: Boolean, rotated: Boolean,
+        colorMatch: Float, expressionRestore: Boolean, expressionFactor: Float,
+        parallelMasks: Boolean, smartSpeed: Boolean,
     )
 
     fun pushQuality(opts: SwapOptions) {
-        setQuality(opts.occlusionMask, opts.regionMask, opts.keepMouth,
+        setQuality(opts.occlusionMask, opts.regionMask, opts.keepMouth, opts.keepLips,
                    if (opts.poseFade) opts.poseFadeStart else 90f,
-                   opts.motionSmooth, opts.motionSmooth, opts.detectRotated)
+                   opts.motionSmooth, opts.motionSmooth, opts.detectRotated,
+                   if (opts.colorMatch) opts.colorMatchStrength else 0f,
+                   opts.expressionRestore, opts.expressionFactor, opts.parallelMasks,
+                   opts.smartSpeed)
+        setQuality2(opts.autoBoost, opts.seamless, opts.hairAware, opts.temporalSmooth)
+        setEnhanceSharpen(if (opts.enhanceSharpen) opts.enhanceSharpenStrength else 0f)
+        setQuality3(opts.keepClosedEyes, opts.sideHold)
+        setModels4(opts.secondDetector, opts.turnedLandmarker, opts.largeParser, opts.enhancer512)
+        setLikeness5(false, opts.autoWeight, opts.hairOnlyParser,
+                     if (opts.lightMatch) opts.lightMatchStrength else 0f, opts.lipsAuto,
+                     if (opts.lipstickMatch) opts.lipstickStrength else 0f, opts.mouthFocus)
+        setSideGuard(opts.sideGuard)
+        setLipsFollow(opts.lipsFollow)
+        setRealism6(opts.textureMatch, opts.gapFill)
     }
+
+    /** Turned faces keep the swap on their visible half only (no invented far eye). */
+    @JvmStatic external fun setSideGuard(on: Boolean)
+
+    /**
+     * 1.0.62: [texture] brings the finished face to the video's own grain and sharpness;
+     * [gapFill] carries a face the detector loses for a few frames through them (video).
+     */
+    @JvmStatic external fun setRealism6(texture: Boolean, gapFill: Boolean)
+
+    /** The lips keep the video's shape (always in line), with the source's lip colour. */
+    @JvmStatic external fun setLipsFollow(on: Boolean)
+
+    /**
+     * 1.0.56: double swap (measured: no likeness gain, not offered), auto weight per person,
+     * hair-only face parser, light match, lips auto, lipstick match, mouth-focused restorer.
+     */
+    @JvmStatic external fun setLikeness5(doubleSwap: Boolean, autoWeight: Boolean,
+                                         hairOnly: Boolean, lightMatch: Float, lipsAuto: Boolean,
+                                         lipstick: Float, mouthFocus: Boolean)
+
+    /**
+     * The added models (1.0.54): second face detector (SCRFD), second landmarker
+     * (PEPPA-Wutz), larger face parser (BiSeNet ResNet-34), 512 enhancer (GPEN-BFR 512).
+     */
+    @JvmStatic external fun setModels4(secondDetector: Boolean, turnedLandmarker: Boolean,
+                                       largeParser: Boolean, enhancer512: Boolean)
+
+    /** Closed eyes stay as filmed; side photos hold the swap further round (build 50). */
+    @JvmStatic external fun setQuality3(keepClosedEyes: Boolean, sideHold: Boolean)
+
+    /** Why found faces were not swapped since the last call ("" when all were); resets. */
+    @JvmStatic external fun swapReport(): String
+
+    /** Sharper enhancer: unsharp mask after the face enhancer, 0 = off (build 41). */
+    @JvmStatic external fun setEnhanceSharpen(amount: Float)
+
+    /**
+     * Every face in a picture with its quality numbers and identity, for the photo check
+     * and for picking photos out of a video. [SCAN_STRIDE] floats per face:
+     * x1, y1, x2, y2, detScore, yaw, pitch (deg, NaN unknown), sharpness, brightness,
+     * then the 512 normalised embedding values. Empty with no pipeline or no face.
+     */
+    @JvmStatic external fun scanFaces(bgr: ByteArray, w: Int, h: Int): FloatArray
+    const val SCAN_STRIDE = 9 + 512
+
+    /** Folder with the mask models' NPU builds (copied out of the APK). */
+    @JvmStatic external fun setAuxQnnDir(dir: String)
+
+    /**
+     * A decoded video frame straight from the codec's planes to the upright, size-capped
+     * BGR frame, in one call and without intermediate arrays. Same pixels as yuvToBgr +
+     * rotateBgr + resizeBgr. outW/outH <= 0 keeps the upright size.
+     */
+    @JvmStatic external fun yuvFrameToBgr(
+        y: java.nio.ByteBuffer, yOff: Int, yLen: Int, yRow: Int,
+        u: java.nio.ByteBuffer, uOff: Int, uLen: Int, uRow: Int, uPix: Int,
+        v: java.nio.ByteBuffer, vOff: Int, vLen: Int, vRow: Int, vPix: Int,
+        w: Int, h: Int, rotation: Int, outW: Int, outH: Int,
+    ): ByteArray?
+
+    /** [yuvFrameToBgr] for a codec Image. */
+    fun imageToUprightBgr(image: android.media.Image, w: Int, h: Int, rotation: Int,
+                          outW: Int, outH: Int): ByteArray? {
+        val p = image.planes
+        val y = p[0].buffer; val u = p[1].buffer; val v = p[2].buffer
+        return yuvFrameToBgr(y, y.position(), y.remaining(), p[0].rowStride,
+                             u, u.position(), u.remaining(), p[1].rowStride, p[1].pixelStride,
+                             v, v.position(), v.remaining(), p[2].rowStride, p[2].pixelStride,
+                             w, h, rotation, outW, outH)
+    }
+
+    /** Close-up boost, seamless edges, hair-aware masks, smoothing over time (build 40). */
+    @JvmStatic external fun setQuality2(autoBoost: Boolean, seamless: Boolean,
+                                        hairAware: Boolean, temporalSmooth: Boolean)
 
     /**
      * True while the caller feeds CONSECUTIVE frames of one clip (a video run, the Live
@@ -119,8 +209,18 @@ object NativePipe {
      */
     @JvmStatic external fun setSequence(on: Boolean)
 
+    /** Release the optional models a run will not use (lip sync, face editor, enhancer). */
+    @JvmStatic external fun trimModels(keepLipSync: Boolean, keepPortrait: Boolean,
+                                       keepEnhancer: Boolean)
+
+    /** NPU clock profile: 0 burst (previews), 1 sustained (video swaps), 2 balanced (warm). */
+    @JvmStatic external fun setPowerProfile(profile: Int)
+
     /** Where the bundled mask models (assets/masks) are read from. Once per process. */
     @JvmStatic external fun setAuxAssets(assets: android.content.res.AssetManager)
+
+    /** Whether each mask model is running, on which unit, or why not -- for the UI. */
+    @JvmStatic external fun maskModelStatus(): String
 
     /** Bit 0: occlusion model running, bit 1: face parser running. */
     @JvmStatic external fun maskModelState(): Int
@@ -392,6 +492,8 @@ object NativePipe {
 
     @JvmStatic external fun setSource(bgr: ByteArray, w: Int, h: Int): Boolean
     @JvmStatic external fun addSource(bgr: ByteArray, w: Int, h: Int): Int
+    /** Another photo of the same person for [slot]; see SourcePhotos. Count, or < 0. */
+    @JvmStatic external fun addSourcePhoto(slot: Int, bgr: ByteArray, w: Int, h: Int): Int
     @JvmStatic external fun setActiveSource(index: Int)
     @JvmStatic external fun setSwapEnabled(enabled: Boolean)
 
@@ -435,6 +537,17 @@ object NativePipe {
     /** Put one identity from [assignFaceAt] back onto a pipeline that was just built. */
     @JvmStatic external fun restoreFaceAssignment(embedding: FloatArray, source: Int,
                                                   keepOriginal: Boolean): Boolean
+
+    /**
+     * One picture of one PERSON from "Find everyone in the video". Call once per picture
+     * (front, left, right ...) with the same [person] id: all of them carry one choice,
+     * and a person goes to one face per frame only.
+     */
+    @JvmStatic external fun restorePersonAssignment(embedding: FloatArray, source: Int,
+                                                    keepOriginal: Boolean, person: Int): Boolean
+
+    /** Assign per person: faces matching nobody assigned keep their own face. */
+    @JvmStatic external fun setAssignUnknownKeep(keep: Boolean)
 
     /**
      * Queue a tap (DISPLAY bitmap coordinates -- the frame [LiveScreen] draws) for the
@@ -495,6 +608,18 @@ object NativePipe {
      */
     @JvmStatic external fun processFrameAt(bgr: ByteArray, w: Int, h: Int,
                                            frameIndex: Int): Int
+
+    /**
+     * [processFrameAt] with look-ahead: [ahead] holds the next frames of the run ([0] is
+     * the frame after this one, all the same size). They are only read when a face is lost
+     * on this frame: if it is found again within them, it is carried through the gap
+     * instead of being left as filmed. Call it for EVERY frame of the run, in order.
+     */
+    @JvmStatic external fun processFrameAhead(bgr: ByteArray, w: Int, h: Int,
+                                              frameIndex: Int, ahead: Array<ByteArray>): Int
+
+    /** Faces carried through frames the detector missed since the last call. */
+    @JvmStatic external fun gapFilledFaces(): Int
 
     /**
      * Per-stage ms/frame for the run so far, as one line for the log.

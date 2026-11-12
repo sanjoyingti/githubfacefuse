@@ -1,0 +1,311 @@
+# Builds the FaceFusion Mobile APK on GitHub's servers and publishes it as a Release, so it
+# can be downloaded from the repository's Releases page without Android Studio.
+#
+# Runs when this file changes on a push, and on demand: Actions tab -> "Build APK release"
+# -> Run workflow. Each run creates a new release tagged v0.9.41-motion-<run number>.
+name: Build APK release
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to create the release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: facefusion-mobile/work/android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK, NDK and CMake
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;34.0.0" "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+
+      # The Qualcomm AI Runtime zip (~2.3 GB) the build downloads once; cached between runs.
+      - uses: actions/cache@v4
+        with:
+          path: facefusion-mobile/work/android/.qairt-cache
+          key: qairt-2.49.0.260730
+
+      - name: Build the APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleDebug
+
+      # Always available, even if releases cannot be created: the APK as a downloadable
+      # artifact on the run's page (Actions tab -> the run -> Artifacts).
+      - name: Upload the APK as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceFusion-0.9.41-motion-apk
+          path: facefusion-mobile/work/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+
+      # Needs "Read and write permissions" for workflows (Settings -> Actions -> General ->
+      # Workflow permissions). If that is set to read-only, this step is skipped with a
+      # warning instead of failing the build; the artifact above still has the APK.
+      - name: Publish the release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v1.0.${GITHUB_RUN_NUMBER}"
+          apk="FaceFusion-1.0.${GITHUB_RUN_NUMBER}.apk"
+          cp app/build/outputs/apk/debug/*.apk "$apk"
+          cat > notes.md <<'NOTES'
+          FaceFusion Mobile 0.9.41 with the occlusion mask (food, hands and cups in front of the face stay as filmed), "keep original mouth inside", fading the swap out on big head turns, motion smoothing for video/Live and rotated-face detection. The switches are under the gear on the face_swapper chip.
+
+          **How to install:** download `FaceFusion-0.9.41-motion.apk` below on your Android phone, tap it, allow installing from this source if Android asks, then tap Install. It appears as "FaceFusion Debug" next to any existing FaceFusion app. Needs a 64-bit (arm64) phone with Android 12 or newer.
+
+          On first launch the app downloads its face models (Settings -> Models).
+
+          To check the masks are working: gear on the face_swapper chip -> Face masker. Under the switches a blue status line says whether the occlusion model and the face parser are running, on the GPU or the CPU, or why not. It fills in after the first preview or swap.
+
+          Version 1.0.62 (side views swapped, frames no longer left out, texture match):
+          - Side views are swapped instead of faded out. The head-turn fade used to begin at 55-60 degrees, which left side views half original or unswapped: on a two-person test clip 202 of 305 faces were partly faded and 100 mostly left as filmed. With Side guard on (it keeps the far, hidden side as filmed, so no invented eye) the fade now begins 25 degrees later, beyond a full profile. Tested at 70-84 degrees: clean profiles, no stretched face. Looking up or down is held the same way.
+          - Fill frames where the face is lost (new, Realism, on; video): the swap now looks 5 frames ahead. A face the face finder loses for a few frames (a hand, blur, a quick turn) and finds again is carried through the gap, placed between where it was and where it is found again and refined by the landmarker. As FaceFusion 3.7's face tracker. Tested: a face lost for 3 frames is carried within 3-6% of its true position. A face that is fully hidden (nothing face-like left) stays as filmed, so no face is painted on whatever covers it. Look-ahead frames are only read when a face is lost; the run holds 4 frames more (about 25 MB at 1080p; none with Lowest memory).
+          - A weakly seen face (landmarker 0.4-0.6) is now kept when it is recognised as the same person, and a recognised face is followed for up to 60 frames instead of 12.
+          - Match the video's grain and sharpness (new, Realism, on): the finished face is brought to the footage's own fine detail: softened when it is sharper than the face it replaces, given the video's own grain when it is smoother. Does nothing when they already match. No model.
+          - Researched and not added, with the reasons: the new alphaface_256 swapper (FaceFusion 3.9) scores higher on likeness (0.89 vs 0.83) but is 6.6 times the work per face (about 210 vs 32 GMAC) and 555 MB, and distorts side views more; the new hrffa landmarker places the same points as the two the app already has.
+          - The likeness figure in the log is now only measured on faces that are seen and roughly facing the camera.
+
+          Version 1.0.61 (Eating scenes at full speed):
+          - The Eating scenes button now swaps as fast as Strongest likeness, with the same picture: it keeps Smart speed on and no longer finds the face again on every frame or searches for rotated faces on every frame. Tested on an eating clip: the result is the same as the every-frame version (the lips stay in line through every bite and chew), and the fingertip spot is smaller. Smart speed already recomputes the masks whenever the mouth is open or something touches the lips.
+          - Includes 1.0.59 (lips follow the video, exact lipstick colour, no blurred box) and 1.0.58 (same speed in the background).
+
+          Version 1.0.60 (Eating scenes button):
+          - New one-tap "Eating scenes" button (Gear > Realism, under Strongest likeness): everything set for food, spoons, forks and fingers at the mouth. Strongest likeness, plus: Lips follow the video with full Lipstick match (lips in line while biting and chewing, exactly the source's lipstick), Lips auto and the occlusion mask (food and hands stay as filmed), Keep original mouth inside (real teeth, tongue and food), the face and every mask worked out again on every frame (Fast video 1, Smart speed off), mask blur 0.3, weight 0.8 with Auto weight, Smooth over time, motion smoothing, seamless edges, side guard, rotated faces, the expression restorer on the mouth, and a light enhancer (0.3) that does not repaint the lips. Slower than the default.
+          - Lipstick colour now only goes on pixels clearly redder than the person's own skin: a fingertip or food pressed on the lips is not coloured.
+          - Right against the lips the video's own pixels win where the swap differs (the swapper's wider lips and gloss).
+
+          Version 1.0.59 (lips in line with the video, exact lipstick, no blurred boxes):
+          - Lips follow the video (new, Face Masker; on in Strongest likeness): the lips and the open mouth keep the video's own shape, so they are always exactly in line with the filmed mouth, chewing and pouting included. The swapper's own, wider lips no longer show around them (tested on the eating clip: the second, pale lip outline is gone).
+          - Lipstick match now gives exactly the source photo's lip colour: its colour and its darkness relative to the face (not brighter, not paler), so a dim scene keeps dim lips. Strongest likeness sets it to full strength.
+          - The swapped mouth no longer lags behind the filmed one in close-ups: "steady under cover" now holds only the brows, eyes and nose, never the mouth and jaw.
+          - Smooth over time no longer blends the lips with the previous frame (it left a faint second outline beside moving lips).
+          - No more blurred box: the back of a head or an ear is no longer taken for a turned face by the second face-point model, the motion-blur match can no longer smear a whole face, and no swap can ever end in a hard-edged rectangle (normal faces are unchanged, byte for byte).
+          - Press Strongest likeness once again (Gear > Realism) to turn on Lips follow the video with full Lipstick match.
+
+          Version 1.0.58 (same speed in the background):
+          - A swap left running in the background (another app open, or the screen off) no longer slows down. Off screen Android takes away the speed boost it gives the app on screen; the app now asks Android for the pace the swap had on screen, and no more. On screen nothing changes, so battery and memory use stay as before.
+          - The swap's working threads keep their turn when another app is busy.
+
+          Version 1.0.57 (side views, no flicker, lipstick through bites):
+          - Side guard (Face Masker, on): on a face turned 35 degrees or more the swapper draws a front face and invents the far eye and the nose outline (an eye on the cheek, a nose edge). The swap is now kept on the visible half, up to the nose line; the far side stays as filmed, fully from 60 degrees. The mouth and the visible cheek and eye keep the swap; front faces are unchanged (pixel-identical). Measured at a 53 degree turn: the invented far eye is gone (12.5 -> 1.5 from the real one).
+          - No more switching between the source and the original: Natural closed eyes now keeps the original eyes only on a real blink. Eyes lowered to look down (eating, reading) were taken for closing and brought back 30-70% of the original eyes, so the face flipped back and forth as the person looked up and down.
+          - Steady under cover: while fingers or food pass in front of the face, the face points lean on the previous frame instead of jumping (the swapped eyes no longer flash open for a frame), and the closed-eye switch changes gradually.
+          - Smooth over time also steadies the swapped face itself (small frame-to-frame redraws); real movement is not smoothed.
+          - Lipstick through bites: lips pressed round food were taken for the food and kept as filmed (pale); the face parser now tells lips from food, and they get the source's lip colour (measured: 15-30 darker and redder at the upper lip). Food is never coloured (only reddish pixels count as lips).
+          - Strongest likeness now also turns on Smooth over time and Side guard.
+
+          - "Strongest likeness" button (Gear > Realism): weight 0.8, the face parser keeps only hair (it no longer cuts the swap to the original face outline), the source's mouth with Lips auto and Lipstick match, Auto weight, and the expression restorer on the mouth only.
+          - Face parser: keep hair only (Face Masker): clean hair edges without losing likeness (measured: no change in likeness).
+          - Keep lips: Auto (eating) (Face Masker): lips stay the source's except the narrow band food, a fork, a spoon or a finger touches, which stays as filmed. Measured with a finger on the lips: likeness 0.685 vs 0.688 without.
+          - Lipstick match (Face Masker): lips kept as filmed take the source photo's lip colour (lipstick or natural) with their own shading; swapped lips are brought towards it. Food and teeth are never coloured.
+          - Mouth focus (Expression restorer): the mouth moves fully like the original (open, chewing, around food), the rest of the face only lightly; also runs while the mouth is open.
+          - Auto weight per person: the first clear view of each person is swapped at the weight and +0.1/+0.2, and the lowest one that looks most like the source is kept.
+          - Match lighting (Realism): the video's light and shadow direction on the swapped face. More natural in side light; costs a little likeness (0.688 -> 0.668), so it is not in Strongest likeness.
+          - Best quality output (Realism): twice the video bitrate, so fine detail survives compression.
+          - The log now shows the likeness to the source photo per person after a swap (the face recogniser's score; about 0.66 is what two photos of the same person score).
+          - Measured, not added: a "double swap" (swapping twice) gave no likeness gain (0.682 -> 0.684) for twice the time. Raising the weight from 0.5 to 0.95 only moves likeness 0.650 -> 0.664: the swapped face is already recognised as the source person about as strongly as a second photo of her; what still differs is hair, face shape, lips and light.
+          - All new options are off by default: speed, memory, battery and your settings are unchanged unless you turn them on.
+
+          - Pressing Continue while the app was still loading its models froze the screen while it waited (up to two minutes), and Android closed the app as "not responding". The wait now happens in the background; the screen stays usable and says it is waiting for the models.
+          - The same fix everywhere the app waits for the models: preview, Live, player, Find everyone, batch.
+          - Releasing the preview, reading the assigned people and reopening the video no longer run on the screen thread. A double tap on Continue starts one swap.
+          - Speed, memory, battery and settings unchanged.
+
+          - Second face detector (SCRFD, on): when a face that was on screen a moment ago is lost (turned, half hidden, blurred), or no face is found at all, a second detector looks too. Only a face where the lost one was is added, so posters and pictures stay out. Frames where every face is found cost nothing extra.
+          - Second face-point model for turned faces (PEPPA-Wutz, on): for a face the normal face-point model is unsure of, a second one places the eyes, nose and mouth too, and the more confident one is used. On the NPU; about 1 face in 12 on a dance clip, a few milliseconds each.
+          - Larger face parser (BiSeNet ResNet-34, off): a more exact outline of skin, hair and ears. Gear > Face Masker.
+          - Sharper enhancer at 512 px (GPEN-BFR 512, off): twice the detail on close-ups, on the NPU; slower when on. Face enhancer settings.
+          - The big optional models are only unpacked on the phone while their switch is on; nothing is loaded into memory until it is used.
+          - All converted models checked against the originals: the NPU builds agree within 0.07 of 255 (enhancer), 99.86% of pixels (parser), 1.65 px (face points).
+          - The APK is larger (about 440 MB) because these models are inside it.
+
+          - Find everyone in the video now lists each person ONCE: 3 people in the video, 3 pictures; 10 people, 10 pictures. Before, the same person seen from another side, in other light or with another expression could be listed several times.
+          - How: full side views (head turned past 50 degrees) are no longer used to decide who is who; each person is compared through several different-looking pictures of them, not only their average; one person cannot be two faces at the same moment; and at the end, groups that are clearly one person (and never on screen together) are joined.
+          - Tested on real faces from two clips (a dance clip with 3 girls, a TikTok clip with 2 people) and on a "film" where both clips play twice: every person once, also when they come back later. The old way listed the same 5 people as 5 to 11 entries.
+          - Same person as...: if one person is still listed twice, join the two entries with one tap.
+          - Each assigned person is swapped wherever they appear, from the beginning of the video to the end.
+
+          - Find everyone in the video: in Assign per person, one tap scans the whole target video and lists each person once, in the order they appear, with when they are first seen (also people who only come in at minute 5). Give each their own source photo or Own face, or remove them with the X. Each assigned person is swapped wherever they appear, from the beginning of the video to the end.
+          - Quick scan for any length: frames between two looks are skipped when a key frame is near, a long video is read in 3 parts at once, and the decoder runs at full speed. A 64 s phone recording decodes 739 frames instead of 2289. Works for a film of any length (up to 120 people); the progress bar says how long is left, and the screen stays on.
+          - Scan only part of the video: a From/To slider to search just one part (quicker for a long film). Whoever you assign is still swapped in the whole video.
+          - No more same picture on two people: each person goes to one face per frame, and anyone you did not assign keeps their own face (switch under the list). On a two-person dance clip: 0 frames with both faces given one person's picture.
+          - Continue after closing the app keeps the assigned people, so the rest of the film swaps each person the same way.
+          - A note shows when the trim does not cover the whole video, with "Swap the whole video".
+
+          - No more faces pasted where there is no face: the detector sometimes fires on face-like patterns (a plaid shirt in a test clip, at knee height), and the swap then pasted a face there. Such boxes are now dropped: the face landmarker scored them 0.07-0.11, while every real face in the clip (turned, blurred, looking down) scored 0.36 or more. On that clip all 25 false faces are gone and both people are still found in every frame.
+          - Closer likeness to the source photo: the face swapper weight is now 0.65 by default (was 0.5), which keeps more of the source face. If you never moved that slider it moves to 0.65 once; a value you set is kept.
+          - Includes 1.0.50: sideways faces keep the swap with side photos, natural closed eyes, sticky face selection.
+
+          Version 1.0.50 (sideways faces, closed eyes):
+          - Sideways faces: when the person's Faces card has a photo turned the same way, a turned face keeps the full swap 15 degrees further round before the head-turn fade. On a 15 s two-person clip (both faces found in every frame) fully swapped faces went from 140 to 301 of 330, and none is left unswapped (was 10). Switch: "Swap turned faces with side photos". Add left- and right-turned photos on the Faces tab to get it.
+          - Natural closed eyes: while an eye is shut, its own lids and lashes stay as filmed instead of being drawn from the source photo's open eyes (which smeared them). Each eye on its own, fading in as it closes. Switch: "Natural closed eyes". No extra model needed.
+          - Sticky face selection: after tapping a face ("swap only this face"), the same person keeps being swapped while the eyes close or the head turns, instead of being dropped when the matcher is unsure.
+          - After a video swap the log says in how many frames a found face was not swapped and why (face selection, turned too far, kept as filmed, largest face only).
+          - "More photos of Source N" shows "of 5" (it said "of 3").
+          Both new switches are on by default; your other settings are kept.
+
+          Version 1.0.49 (the zip builds where Qualcomm's download is blocked):
+          - If Qualcomm's runtime download is refused (HTTP 403, seen in GitHub Codespaces), the build now takes the native libraries by itself from the published APK of THIS SAME release (named by the BUILD_NUMBER file) and compiles only the Kotlin code around them: same app, no Qualcomm download, no C++ compile. Tested from a fresh copy with Qualcomm made unreachable: a complete APK.
+          - A new check refuses native libraries from another release: an APK of an older version (for example v0.9.0) lacks newer native functions and the app would crash. The build stops with a clear message instead. Tested with a 1.0.40 APK: refused.
+          - AGENTS.md and BUILDING.md say all of this, so an AI agent does not have to improvise.
+          - The app itself is unchanged.
+
+          Version 1.0.48 (the zip):
+          - sanjoyingti.zip now carries AGENTS.md and .github/copilot-instructions.md: instructions that AI coding agents (Copilot, Claude, Cursor) read, telling them never to edit the source to make a build pass, how to build, and to report the exact error instead. BUILDING.md lists what is inside and what the first build downloads (the Qualcomm runtime, about 2.4 GB, needs internet).
+          - Checked from scratch: the zip was extracted into a new folder and built with ./gradlew :app:assembleDebug (native code included): a complete APK, version 1.0.47 at the time, with the photo controls, the NPU masks and the Qualcomm runtime inside. Also compiles with Kotlin 2.2.20.
+          - The app is unchanged from 1.0.47.
+
+          Version 1.0.47 (upside-down faces, winks):
+          - Upside-down or sideways faces: the normal face finder also "finds" such a head, but with its points in the wrong order, so the swap was distorted or faded out, and the search for rotated faces never ran. A face like that now triggers the rotated search (even with "detect rotated faces" off) and is replaced by the properly oriented one. Tested: a 180-degree and a 90-degree turned copy of a frame now swap exactly like the upright one. Frames without such a face cost nothing extra.
+          - Winks: the expression restorer now also runs when one eye is clearly more closed than the other (before: only when an eye was almost shut), so the swapped face follows a wink instead of keeping two open eyes. It needs the face editor models (Settings > Models).
+
+          Version 1.0.46 (frames where a face was lost):
+          - A face that was seen a moment ago and is lost for a few frames (blur, a hand, a quick turn) is now looked for where it was for up to 4 frames (was 1), and kept for up to 12 frames in a row, as long as the face finder still finds a confident face of the same size there that is not another person's.
+          - Checked on your whole clip (322 frames, both girls): both faces are found in 290 frames; in the other 32 there is no face to find: the front girl turned almost fully sideways with hair across (frames 91-100), the girl behind hidden behind her (227-245), and the front girl facing away (292-294).
+
+          Version 1.0.45 (Continue):
+          - Continue works: it used to reload the video, which started loading the models for the preview, and the swap gave up after waiting only 5 seconds for them, so nothing happened. It now carries on at once when the video is already on screen, and otherwise waits (up to 2 minutes, with a message, Cancel stops it) for the models to finish loading.
+          - The swapped part is no longer deleted: reloading the video after Continue, or after a crash, used to delete the swapped video left by the last run. It stays until the new run has really started.
+          - New buttons next to Continue: "Save the part that is done" (makes a video from the saved pieces right now, to watch, save or share), "Discard unfinished swap", and "New project" (removes the video, result and unfinished swap; faces and settings stay).
+          - A Swap or Continue that cannot start now says why instead of doing nothing.
+          - Progress was already saved every 2 seconds of video; an accidental close loses at most the last 2 seconds.
+
+          Version 1.0.44 (scenes where the swap did not happen):
+          - Second look: a video frame in which no face is found is searched again in overlapping zoomed tiles, so small or distant faces are swapped instead of left as filmed. Frames with a face pay nothing; a stretch with no face is re-checked only every 3rd frame (every 8th after a second).
+          - Upside-down or sideways heads: on such a frame, if a face was seen in the last half second, rotated faces are tried too, even with "detect rotated faces" off. Your settings are unchanged.
+          - The run log now says "no face found in N of M frames (left as filmed): times", so any scene that still stays unswapped can be pinpointed.
+
+          Version 1.0.43:
+          - sanjoyingti.zip now compiles with newer Kotlin versions too (a `when` at the end of a lambda had no else branch, which a stricter compiler rejects; an AI agent then edited the source and removed the extra-photos controls). The app itself is unchanged by this.
+          - The motion-blur match is now several times faster (3.8 ms instead of 88 ms on a 512 px face crop), so fast head moves cost almost nothing.
+          - BUILDING.md explains how to build the zip without an agent changing the source.
+
+          Version 1.0.42 (from your clip at 0:03):
+          - Fast head moves: the swapped face now gets the same motion blur as the real head, so it no longer looks like a sharp face pasted on a blurred head. Only on frames where the head moves fast.
+          - Touching faces: when two faces overlap (cheek to cheek), each face's swap stops at the other face instead of spilling onto it.
+          - Big tilts and turns: the swap now eases out more slowly at the turn limit, so it does not flick between swapped and original.
+          Frames with one still face are unchanged.
+
+          Version 1.0.41:
+          - Masks on the NPU: the occlusion mask and the face parser now run on the NPU (the S25 Ultra's Snapdragon 8 Elite), converted from the same models. Tested against the originals: 99.99% of occlusion-mask pixels and 99.7-99.97% of face-parser pixels agree. On the phone the app checks they match before using them, otherwise it uses the GPU or CPU as before. Frees the GPU and less battery and heat.
+          - Up to 5 photos per person (front, left, right, up, down). Empty slots say which angle to add.
+          - From a video: pick a video and the app finds the person, then offers the sharpest front/left/right (and up/down) pictures. Tick the ones you want and Add. "Add a person from a video" does the same for someone new.
+          - Photo check: each photo says if there is no face, more than one face, the face is small, blurry, too dark or bright, turned too far, or the same angle as another photo.
+          - Saved people: Save person keeps the main photo and all its photos; using it later brings them all back, for any video.
+          - Test 3 seconds: swaps 3 s from where the preview is, so you can check before a long swap. It does not touch an unfinished swap.
+          - Time and heat estimate under Swap, learned from your own swaps.
+          - Sharper enhancer (enhancer settings, off by default).
+          - Less memory with the same result: 4K video is converted to the working size in one step (about 100 MB less churn per frame), photo previews are small copies, models are released when Android says memory is low while idle. Optional "Lowest memory" switch (same result, a little slower).
+
+          Version 1.0.40: every build now has its own version (Settings > About, the top bar, and the APK's name), and installs as an update of the last.
+          - Recommended settings are applied once on the first start: face parser with hair-aware and seamless edges, more detail on close-ups, occlusion mask, real mouth inside, skin tone, expression restorer 80, enhancer 50, head-turn fade, motion smoothing, Smart speed, Faster masks, Fast video 2, 30 fps, 4K at 1080p. Your own changes afterwards are kept.
+          - Hair-aware edges: hair and hats always stay as filmed, and the swap edge follows the picture's own edges, so hair across the face no longer turns into dark streaks.
+          - Seamless edges: the face edge blends into the video's own skin, no outline.
+          - More detail on close-ups: a face shown big is swapped at 1024 px instead of stretched.
+          - Smooth over time: skin tone and the swap edge do not flicker between frames.
+          Checked before release: the native code under a memory-error checker (4K close-up, 8 faces, all options on: no errors), and the Swap screen, Faces tab and the new switches rendered in tests.
+
+          Build 39 adds a FACES tab (bottom bar, between Swap and Live): every source face with its 3 photo slots. Tap an empty slot or "Add photo" to add another photo of the same person, the X to remove one, "Use" to pick the face the swap uses, "Add a new person" for another face. Assign faces to the people in a video on the Swap tab as before.
+
+          Build 38: the "More photos of Source …" button and the + on the source picture no longer depend on anything but a face being loaded: tapping them opens the panel through shared state, with no callback that could be missing. Checked by rendering the Swap screen in a test: both show, and a tap opens the panel.
+
+          Build 37: the "More photos of Source …" button and the + on the source picture are wired directly, so they show as soon as a source face is loaded (on a phone they stayed hidden in build 36).
+
+          Build 36 shows the build number next to the FACEFUSION name at the top of every screen ("FACEFUSION build 36"), so you can see at a glance that you are in the new app ("FaceFusion Debug") and not an older FaceFusion app.
+
+          Build 35 adds **sanjoyingti.zip** below: the Android Studio project on its own, in a short folder named sanjoyingti, so Windows extracts every file (the long paths in the repository zip made Windows drop files, including the photos panel). Extract it to C:\\, open C:\\sanjoyingti in Android Studio, Build > Build APK(s). Settings > About then shows build35.
+
+          Build 34 shows its build number: Settings -> About now reads "0.9.41-mic-debug-build34", and every bug report names the build, so you can always see which version is installed. A copy compiled from this source zip shows the same number.
+
+          Build 33: a clear "More photos of Source N (1 of 3)" button right under the face row opens the photos panel (it was only a small + in the source pane and a second tap on the selected face).
+
+          Build 32 runs cooler and saves battery, same results and settings: the AI chip is no longer held at full power while the app is just open (after a preview or a swap it used to stay pinned at maximum voltage, unable to sleep deeply); it goes to full power only for the frame being swapped, and stays there only while Live or the player is running. During a long swap it switches to its balanced mode at the first sign of warmth instead of waiting until the phone is already warm. The thread pool that replaced the crashing one sleeps between frames instead of spinning.
+
+          Build 31 never throws swapped work away: Stop keeps every frame swapped so far and Continue starts at the very next frame (before, the piece in progress was swapped again); pressing Swap with an unfinished swap of the same video offers Continue instead of starting over, and on another video asks before replacing it; a video that finished in the background after the app was closed is shown again when you reopen the app.
+
+          Build 30 makes Continue dependable: progress is saved every 2 seconds of video (was 5), an unfinished swap is offered even if it stopped before the first save, the app's copy of the video is kept outside the cache (which Android and cleaner tools empty), and a "Continue unfinished swap" button stays on the Swap screen until it is finished or a new swap replaces it. Continue carries on from the last save and gives you the whole video.
+
+          Build 29 is faster with the same result, and comes set up:
+          - Reading the video, swapping on the AI chip and saving the video now run at the same time instead of one after another, so the AI chip no longer waits for the file. Same frames, same order, same output.
+          - Ready-made settings on a new install: 512 pixel boost, occlusion mask, real mouth inside, skin-tone matching, expression restorer 80, face enhancer 50 (once its model is downloaded), head-turn fade, motion smoothing, Smart speed, Faster masks, Fast video 2, output 30 fps and 4K clips at 1080p. Settings you saved before are kept; Output settings -> source size for full 4K.
+          - Safer: the error text shared between threads is now guarded, and the video stages always stop before the video tools are closed.
+
+          Build 28 makes the extra photos angle-aware: for every frame and every face, the photo whose head angle is closest to that face's counts most (a face turned left uses mostly your left-turned photo), blending smoothly as the head turns so there is no flicker, while every photo keeps a share of the identity. No extra memory or time.
+
+          Build 27 adds up to 3 photos of the same person per source face, combined into one likeness for a steadier face on head turns and in different light. On the Swap screen: the + button in the source pane, or tap the selected face again. Each photo is content-checked like the main one, a photo of a different person is refused, and the combining happens once before the swap, so swapping is not slower. A face with one photo works exactly as before.
+
+          Build 26: only the face swapper you have selected is required. Before, hyperswap 1a was always downloaded as required, even when you used 1b or 1c and had deleted 1a to save space.
+
+          Build 25 removes the part that kept crashing: the CPU thread library (LLVM OpenMP) that the mask models used is gone from the app. Its start-up stopped the app on Android 17 when the phone switched CPU cores off to save power, and no setting avoided it. ncnn is now built from its official source with its own small thread pool instead. Same features, settings and results (mask outputs checked against the previous build, and under a memory-error checker: no errors, no leaks, also with both masks running at the same time).
+
+          Build 24 reads 10-bit (HDR) videos correctly, such as 4K HDR clips from Samsung phones: before, their frames came out as noise and no face was found. It also contains build 23. Checked before release: the native swap code ran under a memory-error checker (AddressSanitizer) on 4K frames with 8 faces and every mask, mouth, colour, smart-speed and rotation option on, with no errors and no leaks.
+
+          Build 23 fixes the crash that build 22 did not: the CPU thread library (OpenMP) built into the app was visible to the rest of the phone, so on Android 17 another copy of it in the same app process could take over its settings, and it then stopped the app while starting the masks. The app's native library now keeps all of it private and shows Android only its own functions. Build 22's extra thread setting, which made the same check fail another way, is removed.
+
+          Build 22 fixes the crash in your bug report (a real crash this time, not memory): the CPU thread library inside the mask models aborted the app while starting up on Android 17 (OpenMP affinity setup). That setup is now switched off; the app never needed it. Smart speed also runs the face parser for "Keep original mouth inside" only while the mouth is open (and a few frames after), so videos with a closed mouth swap faster. Same result: tested byte-identical.
+
+          Build 21 uses less memory while you use the app, too: the preview and the Live camera now load only the models your settings use (no lip syncer, face editor or enhancer unless they are switched on). Switching one of them on loads it then, which takes a few seconds the first time.
+
+          Build 20 fixes the app closing by itself: the bug report showed Android stopping it for low memory, not a crash. During a swap the app now unloads the models your settings do not use (lip syncer, face editor, enhancer, when they are off), and when you leave the app while nothing is running it frees all models and reloads them when you come back. Same settings, same result. If a swap is still stopped, Continue picks it up.
+
+          Build 19: the bug report now lists the crash location first (the app's own functions, the signal and the abort reason), so a crash can be fixed exactly.
+
+          Build 18 adds Smart speed (Realism card, on by default): in videos the expression restorer runs only around blinks and closed eyes, and the masks are reused while nothing in front of the face changes. Faster and cooler; previews and photos always compute everything.
+
+          Build 17 never changes your settings on its own: after a crash it only reloads your video (no settings are switched off), and the output frame rate and size you choose are kept for the next video.
+
+          Build 16 is faster with the masks on: they run on the graphics chip while the AI chip swaps ("Faster masks" in Face Masker, on by default), and the expression restorer reuses the swap's masks instead of computing them a second time. Same result.
+
+          Build 15 runs cooler and uses less battery during video swaps, with the same result: the NPU uses Qualcomm's sustained profile instead of burst for long runs (and its balanced profile when the phone is warm), the app eases off as soon as Android forecasts heat instead of waiting for it, and the mask models' CPU threads no longer spin between frames.
+
+          Build 14 saves progress every 5 seconds of video (was 20), so Continue is offered even when the app is closed early in a long, slow swap. Build 13 added Continue: a video swap is saved in pieces as it runs, so if you stop it, close the app or it crashes, the next time you open the app it asks "Continue unfinished swap?" and carries on from where it stopped. Lip-sync swaps keep the old single-run behaviour.
+
+          Builds 9 and 10 (crash fixes, safe mode, delete guard, background and battery fixes) are included in this build; they were built but not published because releases were blocked at the time.
+
+          Build 10: the app can only ever delete its own private working files (a hard guard on every delete; your photos and videos are only read, never changed or deleted), long runs stop cleanly at Android's 6-hour background limit instead of crashing, the wake lock covers runs up to 12 hours, and the live preview picture is skipped while the app is in the background to save battery.
+
+          Build 9 fixed the crash when a target video is added or a swap starts: the pipeline can no longer be released or reloaded while a preview frame is still running (one lock around every native call), the parallel mask thread from build 7 is removed, native errors now show as a message instead of closing the app, and after any crash the app restarts in safe mode with your last video reloaded.
+
+          Build 8 keeps swapping in the background (notification with progress and Cancel, works with the screen off), slows down instead of overheating, checks content only over the trimmed part with small frames (much quicker start, less memory), and tells you on the next start why the app closed if it ever does.
+
+          Build 7 made it faster: the mask models run at the same time as the swap (GPU beside the NPU) and use faster GPU maths, and the Realism card has a one-tap "Fast" preset next to "Most realistic". For 60 fps videos, set Output settings to 30 fps.
+
+          Build 6 added a Realism card at the top of the gear dialog: a one-tap "Most realistic" preset, skin-tone matching, and the expression restorer (puts the original closed eyes, blinks and mouth shape back on the swapped face; needs the face editor models from Settings, Models).
+
+          The content check is ON, as in the original app: photos and videos flagged as nudity are refused before any processing.
+
+          Not yet tested on a phone; built automatically from this commit.
+          NOTES
+          # The Android Studio project alone, under a SHORT top folder ("sanjoyingti"), so
+          # Windows' Extract All stays far below its 260-character path limit (the
+          # repository zip nests it four folders deeper and long paths were dropped).
+          # Self-contained: the project reads nothing outside work/android. BUILD_NUMBER
+          # is this run's, so Settings > About names the same build as the release.
+          rm -rf /tmp/sz && mkdir -p /tmp/sz
+          git -C "$GITHUB_WORKSPACE" archive --format=tar --prefix=sanjoyingti/ \
+            HEAD:facefusion-mobile/work/android | tar -x -C /tmp/sz
+          echo "$GITHUB_RUN_NUMBER" > /tmp/sz/sanjoyingti/BUILD_NUMBER
+          (cd /tmp/sz && zip -qr sanjoyingti.zip sanjoyingti)
+          cp /tmp/sz/sanjoyingti.zip sanjoyingti.zip
+          gh release create "$tag" "$apk" sanjoyingti.zip \
+            --target "$GITHUB_SHA" \
+            --title "FaceFusion Mobile 1.0.${GITHUB_RUN_NUMBER}" \
+            --notes-file notes.md

@@ -30,6 +30,8 @@ data class SavedFace(
     val uri: android.net.Uri,
     val thumb: android.graphics.Bitmap,
     val addedMs: Long,
+    /** Photos of this person kept with it, the main photo included. */
+    val photos: Int = 1,
 )
 
 data class ModelRow(

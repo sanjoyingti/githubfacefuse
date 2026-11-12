@@ -55,3 +55,33 @@ against NDK 27.
 
 `keystore.properties` next to this file (gitignored) with `storeFile`, `storePassword`,
 `keyAlias`, `keyPassword`. Without it the release build is produced unsigned.
+
+## Building this zip with an AI coding agent
+
+Do not let an agent "fix" compile errors by editing the source: it can silently remove
+features (for example the extra-photos controls). Build with the project's own Gradle
+wrapper and its pinned Kotlin (2.0.21) instead:
+
+    ./gradlew :app:assembleDebug
+
+or in Android Studio: Build > Build APK(s). If a build fails, send the exact error text
+instead of letting the agent change files.
+
+## What is in this zip
+
+Everything Android Studio needs is here: the sources, the Gradle wrapper, the bundled
+ncnn libraries (`ncnn/`), the mask models (`app/src/main/assets`), the debug keystore and
+the build scripts. Two things are fetched on the FIRST build, automatically:
+
+* the Qualcomm AI Runtime (about 2.4 GB, into `.qairt-cache/`) - needs internet;
+* Gradle dependencies and, if missing, the Android SDK pieces named in `AGENTS.md`.
+
+## When Qualcomm's download is blocked (HTTP 403)
+
+Some cloud IDEs (GitHub Codespaces among them) cannot reach Qualcomm's download. The build
+then falls back by itself: it downloads the published APK of THIS release (named by the
+`BUILD_NUMBER` file) into `.apk-cache/`, takes the arm64 native libraries out of it, and
+compiles only the Kotlin code around them - no C++ compile, no Qualcomm download. The result
+is the same app. `-PapkFallbackUrl=<url>` names a different APK; `-PprebuiltNativeDir=<dir>`
+names the libraries directly. They MUST be from the same release as this source: the build
+refuses libraries that lack any native function the Kotlin code declares.

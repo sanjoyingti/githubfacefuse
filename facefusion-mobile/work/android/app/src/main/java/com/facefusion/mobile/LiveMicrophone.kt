@@ -102,14 +102,14 @@ class LiveMicrophone(private val context: Context) {
             runCatching { muxer?.release() }
             ve.release()
             ae.release()
-            merged.delete()
+            merged.safeDelete()
         }
     }
 
     fun close() {
         runCatching { recorder?.release() }
         recorder = null
-        audio?.delete()
+        audio?.safeDelete()
         audio = null
     }
 }

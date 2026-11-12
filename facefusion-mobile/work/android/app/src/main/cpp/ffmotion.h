@@ -12,6 +12,9 @@
 //     detector look at the frame turned by 90/180/270 degrees.
 #pragma once
 
+#include <array>
+#include <vector>
+
 #include "ffcv.h"
 
 namespace ffmotion {
@@ -56,7 +59,82 @@ void unrotatePoint(int degreesCw, int w, int h, float xr, float yr, float* x, fl
 // Intersection over union of two [x0,y0,x1,y1] boxes.
 float iou(const float* a, const float* b);
 
+// Reinhard colour transfer (DeepFaceLab "rct") in CIE Lab: `swapped` (CS x CS x 3, BGR
+// 0..255 floats) takes the per-channel mean and spread of `target` (the original face crop,
+// same geometry), both measured where `mask` > 0.5. `strength` 0..1 blends the result with
+// the unmatched face. The spread ratio is clamped to [0.6, 1.6] so a dark or flat crop
+// cannot blow the face out.
+void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF& mask,
+                float strength);
+
+// The same transfer with its statistics smoothed over a video: [state] carries the last
+// frame's target mean and spread ratio per Lab channel, and each frame moves 35% of the way
+// to its own measurement. The face's colour then follows real lighting changes but not the
+// frame-to-frame jitter of the mask edge, which read as flicker.
+struct ColorState {
+  bool init = false;
+  float mt[3] = {}, ratio[3] = {1.f, 1.f, 1.f};
+};
+void matchColor(const ffcv::Image& target, ffcv::MatF& swapped, const ffcv::MatF& mask,
+                float strength, ColorState* state);
+
+// EDGE-AWARE mask refinement (a guided filter, He et al. 2010, guide = the target crop's
+// brightness): the soft mask edge snaps to the real edges in the picture -- hair strands,
+// the jaw line, a finger -- instead of a uniform blur across them. The result is only ever
+// allowed to SHRINK the mask (min with the input), so hair and objects stay original and
+// the swap can never leak onto them. radius in crop pixels.
+void refineMaskEdges(const ffcv::Image& guide, ffcv::MatF& mask, int radius, float eps);
+
+// SEAMLESS blend (multi-band / Laplacian pyramid, Burt & Adelson): [fg] (the swapped crop,
+// BGR floats 0..255) takes [bg]'s (the original crop's) low frequencies outside the mask
+// and its own inside, each frequency band blended over a width proportional to it. The
+// edge between the two disappears in the large-scale shading while fine detail stays
+// sharp. Writes the result into [fg]. W, H must be divisible by 2^(levels-1).
+void seamlessBlend(const ffcv::Image& bg, ffcv::MatF& fg, const ffcv::MatF& mask, int levels);
+
+// Re-map a mask made for one crop of the frame into another crop of the same frame.
+// `fromAffine` and `toAffine` are the frame->crop affines of the two crops; pixels of the
+// new crop that fall outside the old one get 0.
+ffcv::MatF remapMask(const ffcv::MatF& mask, const ffcv::Affine& fromAffine,
+                     const ffcv::Affine& toAffine, int w, int h);
+
+// A tiny grey thumbnail (n x n, box-averaged) of a face crop, for "did anything change".
+std::vector<uint8_t> thumbGray(const ffcv::Image& crop, int n);
+// Two thumbnails of the same face look alike: small mean change AND no local change big
+// enough to be something entering the face (a hand, food).
+bool thumbSame(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b);
+
+// Eye openness from the 68 landmarks (eye aspect ratio, the smaller of the two eyes):
+// about 0.25-0.35 open, under ~0.2 closing or closed.
+float eyeOpenness(const float* landmark68);
+// The two eyes' openness separately (eye height / width, each about 0.3 open, 0 closed).
+void eyeOpenness2(const float* landmark68, float* left, float* right);
+
+// Mouth openness from the 68 landmarks: the gap between the inner lips (62-66) over the
+// mouth width (48-54). About 0-0.03 closed, over ~0.05 opening. Returns 1 (open) when the
+// landmarks are missing, so a caller that skips work on a closed mouth never skips blindly.
+float mouthOpenness(const float* landmark68);
+
 // Bilinear resize of a single-channel float mask.
 ffcv::MatF resizeMask(const ffcv::MatF& src, int w, int h);
+
+// Unsharp mask in place on a 0..255 float image: x + amount*0.8*(x - blur_r(x)), clamped.
+void sharpen(ffcv::MatF& img, float amount, int r);
+
+// Blur a 3-channel 0..255 float image along (vx, vy) over `len` pixels (centred), like a
+// camera's motion streak. len < 1 leaves it alone.
+void directionalBlur(ffcv::MatF& img, float vx, float vy, float len);
+
+// TOUCHING FACES: in a crop-space mask of the face with frame box `box` (crop = am * frame),
+// fade out the pixels that are nearer (in each face's own ellipse units) to one of
+// `others`' boxes than to this face's, with a soft seam where both are equally near.
+void excludeOtherFaces(ffcv::MatF& mask, const ffcv::Affine& am, const float* box,
+                       const std::vector<std::array<float, 4>>& others);
+
+// CLOSED EYES: in a crop-space mask (crop = am * frame), lower the mask over each eye --
+// lids, lashes and the crease above -- by keepL / keepR (0 nothing .. 1 fully original),
+// a soft ellipse around that eye's six landmarks (68-point indices 36-41 and 42-47).
+void keepEyesOriginal(ffcv::MatF& mask, const ffcv::Affine& am, const float* landmark68,
+                      float keepL, float keepR);
 
 }  // namespace ffmotion

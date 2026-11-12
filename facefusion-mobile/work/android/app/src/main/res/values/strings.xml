@@ -560,7 +560,7 @@ Turning it off runs your own Swap settings instead. This is experimental: the en
     <string name="live_assign_kept">This person keeps their own face</string>
     <string name="swap_assign_on">Nothing changes until you tap a person</string>
     <string name="swap_assign_off">Every face takes the selected source</string>
-    <string name="swap_assign_hint">Pick a source (or Keep face), then tap a person below. People you do not tap take the source that was selected when you turned this on.</string>
+    <string name="swap_assign_hint">Pick a source (or Keep face), then tap a person below. People you do not tap keep their own face (see the switch below). For people who appear later in the video, use Find everyone in the video.</string>
     <string name="swap_assign_no_people">No faces found in the frame shown. Move the trim handle to a frame with the people you want to assign.</string>
     <string name="swap_assign_person">Person %1$d</string>
     <string name="swap_assign_badge">S%1$d</string>

@@ -53,7 +53,8 @@ private const val KEEP_ORIGINAL = -1
 class MainActivity : ComponentActivity() {
 
     /** One face the user has picked. [thumb] is the decode the pane and the row draw. */
-    private data class SourceItem(val uri: Uri, val thumb: Bitmap)
+    private data class SourceItem(val uri: Uri, val thumb: Bitmap,
+                                  val extras: List<Uri> = emptyList())
 
     /**
      * EVERY source face, shared by both screens, in the order the native slots hold them.
@@ -118,6 +119,47 @@ class MainActivity : ComponentActivity() {
      * preview and do nothing at all in the output -- the worst shape a bug can take.
      */
     private var swapPersonIdentity by mutableStateOf<Map<Int, FloatArray>>(emptyMap())
+
+    /**
+     * FIND EVERYONE IN THE VIDEO (Assign per person): each person the whole-video scan
+     * found, in the order they first appear. [ids] are the person's identities (average
+     * face plus the best picture per angle), all pushed under the same native person id,
+     * so a person turned sideways at minute 7 is still the person assigned at minute 1.
+     */
+    private class VideoPerson(val id: Int, val thumb: Bitmap?, val firstUs: Long,
+                              val seen: Int, val ids: List<FloatArray>)
+    private var videoPeople by mutableStateOf<List<VideoPerson>>(emptyList())
+    private var videoPeopleScanned by mutableStateOf(false)
+    /** person id -> source slot, or [KEEP_ORIGINAL]. Missing = not set (keeps own face). */
+    private var videoPeopleChoice by mutableStateOf<Map<Int, Int>>(emptyMap())
+    private var videoPeopleScan by mutableStateOf<Float?>(null)
+    @Volatile private var videoPeopleCancel = false
+    private var videoPeopleStart = 0L
+    /** "Scan only part of the video": on, and the part (ms). */
+    private var videoPeopleRangeOn by mutableStateOf(false)
+    private var videoPeopleRange by mutableStateOf(0f..0f)
+
+    /**
+     * Time between looks, by length: every second up to 10 minutes, then a little wider so
+     * a 2-hour film is still a few minutes -- someone on screen for a few seconds is found
+     * at any length.
+     */
+    private fun stepFor(durationMs: Long): Long = when {
+        durationMs <= 10 * 60_000L -> 1_000_000L
+        durationMs <= 40 * 60_000L -> 1_500_000L
+        else -> 2_000_000L
+    }
+
+    /** "About 3 min left" while scanning, from how fast it has gone so far. */
+    private fun scanTimeLeft(p: Float): String? {
+        if (p < 0.03f || videoPeopleStart == 0L) return null
+        val spent = System.currentTimeMillis() - videoPeopleStart
+        val left = (spent * (1f - p) / p / 1000f).toLong()
+        return if (left >= 90) getString(R.string.vpeople_left_min, (left + 30) / 60)
+               else getString(R.string.vpeople_left_sec, maxOf(5L, (left + 4) / 5 * 5))
+    }
+    /** Faces matching nobody assigned keep their own face (native assignUnknownKeep). */
+    private var assignUnknownKeep by mutableStateOf(true)
     private var liveLargestOnly by mutableStateOf(false)
     private var targetFile by mutableStateOf<File?>(null)
     private var targetName by mutableStateOf<String?>(null)
@@ -235,6 +277,26 @@ class MainActivity : ComponentActivity() {
      * pane says so.
      */
     private var outputPartial by mutableStateOf(false)
+
+    /**
+     * The last swapped video, remembered on disk. A run can finish in the background after
+     * the screen was closed; without this the file existed but the reopened app showed
+     * nothing to save. Forgotten when the output is discarded.
+     */
+    private fun rememberFinishedOutput(f: File, partial: Boolean) {
+        getSharedPreferences("ff_output", MODE_PRIVATE).edit()
+            .putString("path", f.absolutePath).putBoolean("partial", partial).apply()
+    }
+
+    private fun restoreFinishedOutput() {
+        if (outputFile != null) return
+        val p = getSharedPreferences("ff_output", MODE_PRIVATE)
+        val f = p.getString("path", null)?.let { File(it) } ?: return
+        if (f.isFile && f.length() > 0) {
+            outputFile = f
+            outputPartial = p.getBoolean("partial", false)
+        } else p.edit().clear().apply()
+    }
     private var savedUri by mutableStateOf<Uri?>(null)
 
     /**
@@ -545,6 +607,7 @@ class MainActivity : ComponentActivity() {
      * screen or a message will ever show and still fits in memory four times over.
      */
     private val MAX_SOURCE_EDGE = 2048
+    private val THUMB_EDGE = 768
     private val MAX_TARGET_EDGE = 4096
 
     private var targetW by mutableStateOf(0)
@@ -641,12 +704,257 @@ class MainActivity : ComponentActivity() {
         val kept = keepSourceFile(uri) ?: uri
         val existing = sources.indexOfFirst { it.uri == kept }
         if (existing >= 0) return existing
-        val thumb = decodeOriented(kept) ?: run {
+        // A DISPLAY copy at 768 px: the swap always decodes the photo itself again at full
+        // size (prepareSources), so this saves ~10 MB per face with no change to results.
+        val thumb = decodeOriented(kept, THUMB_EDGE) ?: run {
             status = getString(R.string.status_cannot_read_source)
             return null
         }
-        sources = sources + SourceItem(kept, thumb)
+        sources = sources + SourceItem(kept, thumb, loadExtraPhotos(kept))
         return sources.lastIndex
+    }
+
+    // ------------------------------------------------- extra photos of the same person
+
+    /** Where a source face's extra photos live: one folder per main photo, app-private. */
+    private fun extrasDir(primary: Uri): File? {
+        val name = primary.path?.let { File(it).name } ?: return null
+        return File(File(filesDir, "source_extras"), name)
+    }
+
+    private fun loadExtraPhotos(primary: Uri): List<Uri> =
+        (extrasDir(primary)?.listFiles() ?: emptyArray())
+            .filter { it.isFile }
+            .sortedBy { it.lastModified() }
+            .take(SourcePhotos.MAX - 1)
+            .map { Uri.fromFile(it) }
+
+    /** Which source face the photos panel is open for, or -1. */
+    private var photosSheetFor: Int
+        get() = SourcePhotos.openFor
+        set(v) { SourcePhotos.openFor = v }
+    private var pendingExtraFor = -1
+
+    private val pickExtraPhoto =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            val index = pendingExtraFor
+            pendingExtraFor = -1
+            if (uri != null) addExtraPhoto(index, uri)
+        }
+
+    /** Copy [uri] in as another photo of source [index]'s person, then re-register. */
+    private fun addExtraPhoto(index: Int, uri: Uri) {
+        val item = sources.getOrNull(index) ?: return
+        if (item.extras.size >= SourcePhotos.MAX - 1) return
+        val dir = extrasDir(item.uri)?.apply { mkdirs() } ?: return
+        val kept = runCatching {
+            val bytes = (contentResolver.openInputStream(uri) ?: return).use { it.readBytes() }
+            val name = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+                .joinToString("") { "%02x".format(it) }.take(32) + ".img"
+            val f = File(dir, name)
+            if (!f.exists()) f.writeBytes(bytes)
+            Uri.fromFile(f)
+        }.getOrNull() ?: run {
+            status = getString(R.string.status_cannot_read_source); return
+        }
+        if (kept == item.uri || kept in item.extras) return
+        if (decodeOriented(kept, 64) == null) {
+            runCatching { File(kept.path!!).safeDelete() }
+            status = getString(R.string.status_cannot_read_source); return
+        }
+        sources = sources.mapIndexed { i, s -> if (i == index) s.copy(extras = s.extras + kept) else s }
+        // The tag of this slot changed, so the warm pipeline re-registers the sources --
+        // with the content check over every photo -- on the next refresh.
+        previewOptionsChanged(reloads = false)
+    }
+
+    private fun removeExtraPhoto(index: Int, photo: Uri) {
+        val item = sources.getOrNull(index) ?: return
+        runCatching { File(photo.path!!).safeDelete() }
+        SourcePhotos.verdicts.remove(photo)
+        sources = sources.mapIndexed { i, s -> if (i == index) s.copy(extras = s.extras - photo) else s }
+        previewOptionsChanged(reloads = false)
+    }
+
+    /** Delete a removed face's extra photos and their folder. */
+    private fun dropExtraPhotos(primary: Uri) {
+        val dir = extrasDir(primary) ?: return
+        runCatching {
+            dir.listFiles()?.forEach { it.safeDelete() }
+            dir.safeDelete()
+        }
+    }
+
+    // ------------------------------------------------- photos picked out of a video
+
+    /** The "from a video" dialog's state; null when closed. [forFace] -1 = a new person. */
+    private class VPick(
+        val forFace: Int,
+        val progress: Float? = null,
+        val people: List<VideoFacePicker.Person>? = null,
+        val picks: List<VideoFacePicker.Seen>? = null,
+        val checked: Set<Int> = emptySet(),
+        val message: String? = null,
+        val found: List<VideoFacePicker.Person> = emptyList(),
+    )
+
+    private var vpick by mutableStateOf<VPick?>(null)
+    @Volatile private var vpickCancel = false
+    private var pendingVideoFor = -1
+
+    private val pickVideoForFaces =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            if (uri != null) scanVideoForFaces(uri, pendingVideoFor)
+        }
+
+    private fun openVideoForFaces(forFace: Int) {
+        pendingVideoFor = forFace
+        pickVideoForFaces.launch("video/*")
+    }
+
+    /** The photo tiles of one face, main first, with the photo check's answers. */
+    private fun tilesFor(item: SourceItem, thumbs: List<Pair<Uri, Bitmap?>>):
+            List<com.facefusion.mobile.ui.SourcePhotoTile> {
+        val checks = SourcePhotos.warningsFor(listOf<Any>(item.uri) + item.extras)
+        return listOf(com.facefusion.mobile.ui.SourcePhotoTile(item.thumb, true, null, checks[0])) +
+            thumbs.mapNotNull { (u, b) ->
+                b?.let {
+                    com.facefusion.mobile.ui.SourcePhotoTile(
+                        it, false, SourcePhotos.verdicts[u],
+                        checks.getOrNull(1 + item.extras.indexOf(u)))
+                }
+            }
+    }
+
+    /**
+     * Go through [uri] and offer the best photos: of face [forFace] (which must be in the
+     * list), or of anyone in it for a new person (-1). Uses the preview's pipeline when it
+     * is loaded, else loads one just for this and releases it after.
+     */
+    private fun scanVideoForFaces(uri: Uri, forFace: Int) {
+        vpickCancel = false
+        vpick = VPick(forFace, progress = 0f)
+        lifecycleScope.launch {
+            if (!PipeGuard.await("faces", 4000)) {
+                vpick = VPick(forFace, message = pipeBusyMessage()); return@launch
+            }
+            var ownPipe = false
+            try {
+                if (!PipeGuard.uninterrupted(lastPipeSeq)) { previews.invalidate(); previewWarm = false }
+                val mainBgr: Triple<ByteArray, Int, Int>? = if (forFace >= 0) withContext(Dispatchers.IO) {
+                    val b = sources.getOrNull(forFace)?.let { decodeOriented(it.uri) }?.asArgb8888()
+                        ?: return@withContext null
+                    val px = IntArray(b.width * b.height)
+                    b.getPixels(px, 0, b.width, 0, 0, b.width, b.height)
+                    Triple(NativePipe.argbToBgr(px, b.width, b.height), b.width, b.height)
+                } else null
+                if (forFace >= 0 && mainBgr == null) {
+                    vpick = VPick(forFace, message = getString(R.string.status_cannot_read_source))
+                    return@launch
+                }
+                val result: Any = withContext(Dispatchers.Default) {
+                    if (!previews.isWarm) {
+                        previews.invalidate()
+                        previewWarm = false
+                        val models = modelDir()
+                        val missing = listOf("yoloface", "fan2d", "arcface", opts.swapper)
+                            .filterNot { ModelPaths.present(models, tier, it) }
+                        if (missing.isNotEmpty()) return@withContext "Missing ${missing.joinToString()}"
+                        val lib = applicationInfo.nativeLibraryDir
+                        if (!NativePipe.init(lib, lib, models.absolutePath, opts))
+                            return@withContext "Could not load the models: " + NativePipe.lastError()
+                        ownPipe = true
+                        NativePipe.trimModels(false, false, false)
+                    }
+                    val target = mainBgr?.let { VideoFacePicker.identityOf(it.first, it.second, it.third) }
+                    if (forFace >= 0 && target == null) return@withContext getString(R.string.status_no_face)
+                    var last = 0L
+                    VideoFacePicker.scan(this@MainActivity, uri, target, { p ->
+                        val now = System.currentTimeMillis()
+                        if (now - last > 200 || p >= 1f) {
+                            last = now
+                            runOnUiThread { vpick?.let { if (it.progress != null) vpick = VPick(forFace, progress = p) } }
+                        }
+                    }, { vpickCancel })
+                }
+                if (vpickCancel) { vpick = null; return@launch }
+                when (result) {
+                    is String -> vpick = VPick(forFace, message = result)
+                    is List<*> -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val found = result as List<VideoFacePicker.Person>
+                        val people = if (forFace >= 0) found.filter { it.best.isNotEmpty() }
+                                     else VideoFacePicker.people(found)
+                        vpick = when {
+                            people.isEmpty() -> VPick(forFace, message = getString(
+                                if (forFace >= 0) R.string.vpick_not_found else R.string.vpick_nobody),
+                                found = found)
+                            forFace >= 0 || people.size == 1 -> reviewFor(forFace, people[0], found)
+                            else -> VPick(forFace, people = people, found = found)
+                        }
+                    }
+                    else -> Unit
+                }
+            } catch (t: Throwable) {
+                appendLog("photos from video: $t")
+                vpick = VPick(forFace, message = t.message ?: t.toString())
+            } finally {
+                if (ownPipe) { NativePipe.release(); previewWarm = false }
+                lastPipeSeq = PipeGuard.sequence
+                PipeGuard.release()
+            }
+        }
+    }
+
+    /** The review step for [person]: angles the face lacks, best three ticked. */
+    private fun reviewFor(forFace: Int, person: VideoFacePicker.Person,
+                          found: List<VideoFacePicker.Person>): VPick {
+        val item = sources.getOrNull(forFace)
+        val have = if (item == null) emptySet() else
+            (listOf<Any>(item.uri) + item.extras).mapNotNull { SourcePhotos.checks[it]?.angle }.toSet()
+        val free = SourcePhotos.MAX - (if (item == null) 0 else 1 + item.extras.size)
+        val picks = VideoFacePicker.pick(person, have, free)
+        if (picks.isEmpty()) return VPick(forFace, message = getString(R.string.vpick_nothing_new), found = found)
+        return VPick(forFace, picks = picks, checked = (0 until minOf(3, picks.size)).toSet(), found = found)
+    }
+
+    /** Add the ticked pictures: as photos of the face, or as a new person (front first). */
+    private fun addVideoPicks(v: VPick) {
+        val picks = v.picks ?: return
+        val chosen = picks.filterIndexed { i, _ -> i in v.checked }
+        vpick = null
+        lifecycleScope.launch {
+            val files = withContext(Dispatchers.IO) {
+                val dir = File(cacheDir, "vpick").apply { mkdirs() }
+                chosen.mapIndexedNotNull { k, s ->
+                    val b = s.crop ?: return@mapIndexedNotNull null
+                    runCatching {
+                        val f = File(dir, "pick_${System.currentTimeMillis()}_$k.jpg")
+                        f.outputStream().use { b.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+                        f
+                    }.getOrNull()
+                }
+            }
+            if (files.isEmpty()) { recycleVPick(v); return@launch }
+            val face = if (v.forFace >= 0) v.forFace else addToSources(Uri.fromFile(files[0])) ?: -1
+            val extras = if (v.forFace >= 0) files else files.drop(1)
+            if (face >= 0) for (f in extras) addExtraPhoto(face, Uri.fromFile(f))
+            if (face >= 0 && v.forFace < 0) previewOptionsChanged()
+            withContext(Dispatchers.IO) { files.forEach { it.safeDelete() } }
+            status = getString(R.string.vpick_added, files.size)
+            recycleVPick(v)
+        }
+    }
+
+    private fun recycleVPick(v: VPick?) {
+        v?.found?.forEach { p -> p.best.values.forEach { it.crop?.recycle(); it.crop = null } }
+    }
+
+    private fun closeVPick() {
+        vpickCancel = true
+        val v = vpick
+        vpick = null
+        if (v?.progress == null) recycleVPick(v)
     }
 
     /** The row's own copies. App-private; nothing else on the phone can read it. */
@@ -662,6 +970,35 @@ class MainActivity : ComponentActivity() {
      */
     private fun savedDir(): File = File(filesDir, "saved").apply { mkdirs() }
 
+    /** A saved person's other photos: filesDir/saved_extras/<main photo's name>. */
+    private fun savedExtrasDir(name: String): File = File(File(filesDir, "saved_extras"), name)
+
+    /**
+     * SAVE A PERSON: the main photo and every extra photo, so the whole person comes back
+     * on another day and with another video. Saving again updates the photos.
+     */
+    private fun savePerson(index: Int) {
+        val item = sources.getOrNull(index) ?: return
+        val src = item.uri.path?.let { File(it) } ?: return
+        runCatching {
+            val dst = File(savedDir(), src.name)
+            if (!dst.exists()) src.copyTo(dst)
+            val dir = savedExtrasDir(src.name)
+            dir.listFiles()?.forEach { it.safeDelete() }
+            dir.mkdirs()
+            for (u in item.extras) u.path?.let { File(it) }?.takeIf { it.isFile }
+                ?.let { it.copyTo(File(dir, it.name), overwrite = true) }
+        }
+        refreshSavedFaces()
+        status = getString(R.string.faces_person_saved, 1 + item.extras.size)
+    }
+
+    /** Whether source [index]'s person is in the library. */
+    private fun isSaved(index: Int): Boolean {
+        val name = sources.getOrNull(index)?.uri?.path?.let { File(it).name } ?: return false
+        return savedFaces.any { s -> s.uri.path?.let { File(it).name } == name }
+    }
+
     /** The library, newest last, rebuilt from disk whenever it changes. */
     private var savedFaces by mutableStateOf<List<com.facefusion.mobile.ui.SavedFace>>(emptyList())
     private var facesDialogOpen by mutableStateOf(false)
@@ -671,8 +1008,9 @@ class MainActivity : ComponentActivity() {
             .sortedBy { it.lastModified() }
             .mapNotNull { f ->
                 val u = Uri.fromFile(f)
-                val thumb = decodeOriented(u) ?: return@mapNotNull null
-                com.facefusion.mobile.ui.SavedFace(u, thumb, f.lastModified())
+                val thumb = decodeOriented(u, 384) ?: return@mapNotNull null
+                val extras = savedExtrasDir(f.name).listFiles()?.count { it.isFile } ?: 0
+                com.facefusion.mobile.ui.SavedFace(u, thumb, f.lastModified(), 1 + extras)
             }
     }
 
@@ -697,15 +1035,18 @@ class MainActivity : ComponentActivity() {
         if (dst.exists()) {
             confirm(R.string.faces_unsave_title, R.string.faces_unsave_body,
                     R.string.faces_unsave_ok, destructive = true) {
-                runCatching { dst.delete() }
+                runCatching { dst.safeDelete() }
+                runCatching {
+                    val d = savedExtrasDir(src.name)
+                    d.listFiles()?.forEach { it.safeDelete() }; d.safeDelete()
+                }
                 refreshSavedFaces()
                 status = getString(R.string.faces_unsaved_toast)
             }
         } else {
             confirm(R.string.faces_save_title, R.string.faces_save_body,
                     R.string.faces_save_ok) {
-                runCatching { src.copyTo(dst) }
-                refreshSavedFaces()
+                savePerson(swapSourceIndex)
                 status = getString(R.string.faces_saved_toast)
             }
         }
@@ -744,6 +1085,25 @@ class MainActivity : ComponentActivity() {
         // No confirmation: nothing is lost and it is what the library is FOR. The prompts
         // are for the actions that delete something.
         facesDialogOpen = false
+        // Bring the person's other photos back too, where the row keeps them.
+        runCatching {
+            val name = uri.path?.let { File(it).name }
+            val from = name?.let { savedExtrasDir(it) }
+            val to = name?.let { File(File(filesDir, "source_extras"), it) }
+            if (from != null && to != null && from.isDirectory) {
+                to.mkdirs()
+                from.listFiles()?.filter { it.isFile }?.forEach {
+                    val t = File(to, it.name)
+                    if (!t.exists()) it.copyTo(t)
+                }
+            }
+        }
+        val existing = sources.indexOfFirst { it.uri.path?.let { p -> File(p).name } == uri.path?.let { p -> File(p).name } }
+        if (existing >= 0) {
+            // Already in the row: refresh its photos from disk.
+            val item = sources[existing]
+            sources = sources.mapIndexed { i, s -> if (i == existing) s.copy(extras = loadExtraPhotos(item.uri)) else s }
+        }
         setSourceFrom(uri)
     }
 
@@ -751,7 +1111,12 @@ class MainActivity : ComponentActivity() {
     private fun deleteSavedFace(uri: Uri) {
         confirm(R.string.faces_delete_title, R.string.faces_delete_body,
                 R.string.common_delete, destructive = true) {
-            runCatching { uri.path?.let { File(it).delete() } }
+            runCatching { uri.path?.let { File(it).safeDelete() } }
+            runCatching {
+                uri.path?.let { savedExtrasDir(File(it).name) }?.let { d ->
+                    d.listFiles()?.forEach { it.safeDelete() }; d.safeDelete()
+                }
+            }
             refreshSavedFaces()
         }
     }
@@ -809,10 +1174,12 @@ class MainActivity : ComponentActivity() {
         // work until the next launch. The LIBRARY copy is a different file and is left
         // alone: keeping a face is what protects it from this.
         val gone = sources[index].uri
+        dropExtraPhotos(gone)
+        photosSheetFor = -1
         runCatching {
             if (gone.scheme == "file") {
                 val f = File(gone.path!!)
-                if (f.parentFile == sourcesDir()) f.delete()
+                if (f.parentFile == sourcesDir()) f.safeDelete()
             }
         }
         sources = sources.filterIndexed { i, _ -> i != index }
@@ -852,15 +1219,25 @@ class MainActivity : ComponentActivity() {
         // Empty is a valid list only while face_swapper is off (SwapOptions.swapsFace).
         if (sources.isEmpty()) return if (opts.swapsFace) null else PreparedSources(emptyList(), emptyList())
         val bitmaps = sources.map { decodeOriented(it.uri) ?: return null }
+        // Every extra photo is CHECKED with the rest (it joins the screened list) and
+        // registered into its face's slot. One that cannot be read is left out.
+        val extraBitmaps = mutableListOf<Bitmap>()
         val slots = sources.zip(bitmaps).map { (item, bmp) ->
             val soft = bmp.asArgb8888() ?: return null
             val px = IntArray(soft.width * soft.height)
             soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+            val extras = item.extras.mapNotNull { u ->
+                val eb = decodeOriented(u) ?: return@mapNotNull null
+                extraBitmaps += eb
+                toExtra(u, eb)
+            }
             PreviewEngine.SourceSlot(
-                item.uri, NativePipe.argbToBgr(px, soft.width, soft.height),
-                soft.width, soft.height)
+                // The tag names the photos too: adding or removing one re-registers.
+                if (item.extras.isEmpty()) item.uri else (item.uri to item.extras),
+                NativePipe.argbToBgr(px, soft.width, soft.height),
+                soft.width, soft.height, extras)
         }
-        return PreparedSources(bitmaps, slots)
+        return PreparedSources(bitmaps + extraBitmaps, slots)
     }
 
     /**
@@ -887,6 +1264,14 @@ class MainActivity : ComponentActivity() {
         return null
     }
 
+    private fun toExtra(tag: Any, bmp: Bitmap): SourcePhotos.Extra? {
+        val soft = bmp.asArgb8888() ?: return null
+        val px = IntArray(soft.width * soft.height)
+        soft.getPixels(px, 0, soft.width, 0, 0, soft.width, soft.height)
+        return SourcePhotos.Extra(tag, NativePipe.argbToBgr(px, soft.width, soft.height),
+                                  soft.width, soft.height)
+    }
+
     /** Register a prepared list into the pipeline that is loaded now. Null on success. */
     private fun registerSources(prepared: PreparedSources): String? {
         if (prepared.slots.isEmpty()) {
@@ -896,10 +1281,14 @@ class MainActivity : ComponentActivity() {
         val first = prepared.slots.first()
         if (!NativePipe.setSource(first.bgr, first.width, first.height))
             return "source: ${NativePipe.lastError()}"
+        SourcePhotos.checkMain(first.tag, first.bgr, first.width, first.height)
+        SourcePhotos.register(0, first.extras)
         for ((i, slot) in prepared.slots.withIndex()) {
             if (i == 0) continue
             if (NativePipe.addSource(slot.bgr, slot.width, slot.height) < 0)
                 return "source ${i + 1}: ${NativePipe.lastError()}"
+            SourcePhotos.checkMain(slot.tag, slot.bgr, slot.width, slot.height)
+            SourcePhotos.register(i, slot.extras)
         }
         NativePipe.setActiveSource(swapSourceIndex.coerceIn(0, prepared.slots.lastIndex))
         NativePipe.setFaceAssignEnabled(swapAssignMode)
@@ -915,7 +1304,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Forget the target-specific people without changing whether the mode is enabled. */
-    private fun resetSwapPersonState() {
+    private fun resetSwapPersonState(keepVideoPeople: Boolean = false) {
+        if (!keepVideoPeople) {
+            // Thumbnails are NOT recycled: the screen may still be drawing them this frame.
+            videoPeopleCancel = true
+            videoPeopleRangeOn = false
+            videoPeopleRange = 0f..0f
+            videoPeople = emptyList()
+            videoPeopleChoice = emptyMap()
+            videoPeopleScanned = false
+        }
         swapSelectedPerson = -1
         swapPersonSnapshot = null
         swapPersonBoxes = null
@@ -1014,9 +1412,12 @@ class MainActivity : ComponentActivity() {
 
     private fun toggleSwapAssign() {
         swapAssignMode = !swapAssignMode
-        resetSwapPersonState()
+        // A whole-video scan is kept across the switch: it is the same video, and a scan
+        // of a long clip is worth not repeating.
+        resetSwapPersonState(keepVideoPeople = true)
         swapBrushKeepOriginal = false
         NativePipe.setFaceAssignEnabled(swapAssignMode)
+        if (swapAssignMode && previewWarm) restoreSwapAssignments()
         if (swapAssignMode) {
             // Keep the native swap selector clean: a stale reference would win
             // inside swapAll and silently cut assign mode down to one face.
@@ -1032,6 +1433,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun clearSwapAssignments() {
+        videoPeopleChoice = emptyMap()
         swapPersonAssignments = emptyMap()
         swapPersonIdentity = emptyMap()
         swapSelectedPerson = -1
@@ -1048,6 +1450,7 @@ class MainActivity : ComponentActivity() {
      * assignments do not survive one. Returns how many landed.
      */
     private fun restoreSwapAssignments(): Int {
+        NativePipe.setAssignUnknownKeep(assignUnknownKeep)
         if (!swapAssignMode) return 0
         var n = 0
         for ((person, slot) in swapPersonAssignments) {
@@ -1056,7 +1459,227 @@ class MainActivity : ComponentActivity() {
             if (NativePipe.restoreFaceAssignment(identity, if (keep) 0 else slot, keep)) n++
             else appendLog("could not restore the choice for person ${person + 1}")
         }
+        // The whole-video people go in AFTER the taps: a person who is in both gets the
+        // whole-video choice for all their pictures (native groups them by person id).
+        for ((k, vp) in videoPeople.withIndex()) {
+            val slot = videoPeopleChoice[vp.id] ?: continue
+            val keep = slot == KEEP_ORIGINAL
+            if (!keep && slot !in sources.indices) continue
+            var ok = 0
+            for (e in vp.ids)
+                if (NativePipe.restorePersonAssignment(e, if (keep) 0 else slot, keep, vp.id)) ok++
+            if (ok > 0) n++ else appendLog("could not restore the choice for video person ${k + 1}")
+        }
         return n
+    }
+
+    /** Assign per person as JSON, for an unfinished swap to continue with (ResumeStore). */
+    private fun assignSnapshot(): String {
+        fun arr(f: FloatArray) = org.json.JSONArray().apply { f.forEach { put(it.toDouble()) } }
+        val o = org.json.JSONObject()
+        o.put("mode", swapAssignMode); o.put("unknownKeep", assignUnknownKeep)
+        val taps = org.json.JSONArray()
+        for ((person, slot) in swapPersonAssignments) {
+            val id = swapPersonIdentity[person] ?: continue
+            taps.put(org.json.JSONObject().put("person", person).put("slot", slot).put("emb", arr(id)))
+        }
+        o.put("taps", taps)
+        val ppl = org.json.JSONArray()
+        for (vp in videoPeople) {
+            val slot = videoPeopleChoice[vp.id] ?: continue   // only the ones that matter
+            val ids = org.json.JSONArray().apply { vp.ids.forEach { put(arr(it)) } }
+            ppl.put(org.json.JSONObject().put("id", vp.id).put("slot", slot)
+                .put("first", vp.firstUs).put("seen", vp.seen).put("ids", ids))
+        }
+        o.put("people", ppl)
+        return o.toString()
+    }
+
+    /** What [assignSnapshot] saved, parsed (off the main thread: it can be megabytes). */
+    private class AssignSnapshot(val mode: Boolean, val unknownKeep: Boolean,
+                                 val tapA: Map<Int, Int>, val tapI: Map<Int, FloatArray>,
+                                 val people: List<VideoPerson>, val choice: Map<Int, Int>)
+
+    private fun parseAssignSnapshot(json: String): AssignSnapshot? = runCatching {
+            val o = org.json.JSONObject(json)
+            fun floats(a: org.json.JSONArray) = FloatArray(a.length()) { a.getDouble(it).toFloat() }
+            val taps = o.getJSONArray("taps")
+            val tapA = mutableMapOf<Int, Int>(); val tapI = mutableMapOf<Int, FloatArray>()
+            for (i in 0 until taps.length()) {
+                val t = taps.getJSONObject(i)
+                tapA[t.getInt("person")] = t.getInt("slot"); tapI[t.getInt("person")] = floats(t.getJSONArray("emb"))
+            }
+            val ppl = o.getJSONArray("people")
+            val vps = mutableListOf<VideoPerson>(); val ch = mutableMapOf<Int, Int>()
+            for (i in 0 until ppl.length()) {
+                val p = ppl.getJSONObject(i)
+                val ids = p.getJSONArray("ids")
+                vps += VideoPerson(p.getInt("id"), null, p.getLong("first"), p.getInt("seen"),
+                                   (0 until ids.length()).map { floats(ids.getJSONArray(it)) })
+                ch[p.getInt("id")] = p.getInt("slot")
+            }
+            if (tapA.isEmpty() && vps.isEmpty()) null
+            else AssignSnapshot(o.getBoolean("mode"), o.optBoolean("unknownKeep", true),
+                                tapA, tapI, vps, ch)
+        }.onFailure { appendLog("continue: could not read the assigned people: $it") }.getOrNull()
+
+    /** Put back a saved assignment, when nothing is assigned in memory. Main thread. */
+    private fun restoreAssignSnapshot(a: AssignSnapshot) {
+        if (swapPersonAssignments.isNotEmpty() || videoPeopleChoice.isNotEmpty()) return
+        swapAssignMode = a.mode
+        assignUnknownKeep = a.unknownKeep
+        swapPersonAssignments = a.tapA; swapPersonIdentity = a.tapI
+        videoPeople = a.people; videoPeopleChoice = a.choice; videoPeopleScanned = a.people.isNotEmpty()
+        runCatching { NativePipe.setFaceAssignEnabled(swapAssignMode) }
+        appendLog("continue: restored ${a.tapA.size + a.people.size} assigned people")
+    }
+
+    /** Push the assignments again from Kotlin state, exactly (after a change in the list). */
+    private fun repushSwapAssignments() {
+        if (!previewWarm) return
+        NativePipe.clearFaceSourceAssignments()
+        restoreSwapAssignments()
+        previewOptionsChanged(reloads = false)
+    }
+
+    private fun chooseVideoPerson(index: Int, choice: Int) {
+        val vp = videoPeople.getOrNull(index) ?: return
+        if (choice != KEEP_ORIGINAL && choice !in sources.indices) return
+        videoPeopleChoice = videoPeopleChoice + (vp.id to choice)
+        status = if (choice == KEEP_ORIGINAL) getString(R.string.swap_assign_kept, index + 1)
+                 else getString(R.string.swap_assign_set, index + 1, choice + 1)
+        repushSwapAssignments()
+    }
+
+    /** "Same person as ...": one entry for both, with all their pictures. */
+    private fun joinVideoPeople(from: Int, into: Int) {
+        val a = videoPeople.getOrNull(from) ?: return
+        val b = videoPeople.getOrNull(into) ?: return
+        if (from == into) return
+        val keep = if (a.firstUs <= b.firstUs) a else b      // the earlier one keeps its place
+        val gone = if (keep === a) b else a
+        val joined = VideoPerson(keep.id,
+            (if (a.seen >= b.seen) a.thumb else b.thumb) ?: keep.thumb ?: gone.thumb,
+            minOf(a.firstUs, b.firstUs), a.seen + b.seen, keep.ids + gone.ids)
+        val choice = videoPeopleChoice[b.id] ?: videoPeopleChoice[a.id]
+        videoPeople = videoPeople.mapNotNull { when {
+            it === keep -> joined
+            it === gone -> null
+            else -> it } }
+        videoPeopleChoice = (videoPeopleChoice - a.id - b.id).let {
+            if (choice != null) it + (keep.id to choice) else it }
+        status = getString(R.string.vpeople_joined, from + 1, into + 1)
+        repushSwapAssignments()
+    }
+
+    private fun removeVideoPerson(index: Int) {
+        val vp = videoPeople.getOrNull(index) ?: return
+        videoPeople = videoPeople.filterIndexed { i, _ -> i != index }
+        videoPeopleChoice = videoPeopleChoice - vp.id
+        repushSwapAssignments()
+    }
+
+    private fun setAssignUnknownKeepUi(keep: Boolean) {
+        assignUnknownKeep = keep
+        if (previewWarm) NativePipe.setAssignUnknownKeep(keep)
+        previewOptionsChanged(reloads = false)
+    }
+
+    /**
+     * FIND EVERYONE IN THE VIDEO: go through the whole target clip (about once a second
+     * for a long one) and list each person once, with when they first appear. Uses the
+     * preview's pipeline when it is loaded, else loads one just for this.
+     */
+    private fun findEveryoneInVideo() {
+        val file = targetFile ?: return
+        if (videoPeopleScan != null) return
+        videoPeopleCancel = false
+        videoPeopleScan = 0f
+        videoPeopleStart = System.currentTimeMillis()
+        val forTarget = targetVersion
+        // The part to search: the whole video, or the chosen part. Finding people in a part
+        // only saves time -- whoever is assigned is matched by face in every frame swapped.
+        val partOn = videoPeopleRangeOn && durationMs > 0 &&
+            videoPeopleRange.endInclusive > videoPeopleRange.start
+        val scanFromUs = if (partOn) (videoPeopleRange.start * 1000).toLong() else 0L
+        val scanToUs = if (partOn && videoPeopleRange.endInclusive < durationMs)
+                           (videoPeopleRange.endInclusive * 1000).toLong() else Long.MAX_VALUE
+        val scanSpanMs = if (partOn) (videoPeopleRange.endInclusive - videoPeopleRange.start).toLong()
+                         else durationMs
+        // A long film takes minutes: the screen stays on so the phone does not sleep
+        // (and stop the scan) half way.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        lifecycleScope.launch {
+            if (!PipeGuard.await("people", 4000)) {
+                videoPeopleScan = null; status = pipeBusyMessage(); return@launch
+            }
+            var ownPipe = false
+            try {
+                if (!PipeGuard.uninterrupted(lastPipeSeq)) { previews.invalidate(); previewWarm = false }
+                val result: Any = withContext(Dispatchers.Default) {
+                    if (!previews.isWarm) {
+                        previews.invalidate()
+                        previewWarm = false
+                        val models = modelDir()
+                        val missing = listOf("yoloface", "fan2d", "arcface", opts.swapper)
+                            .filterNot { ModelPaths.present(models, tier, it) }
+                        if (missing.isNotEmpty()) return@withContext "Missing ${missing.joinToString()}"
+                        val lib = applicationInfo.nativeLibraryDir
+                        if (!NativePipe.init(lib, lib, models.absolutePath, opts))
+                            return@withContext "Could not load the models: " + NativePipe.lastError()
+                        ownPipe = true
+                        NativePipe.trimModels(false, false, false)
+                    }
+                    var last = 0L
+                    val found = VideoFacePicker.scan(this@MainActivity, Uri.fromFile(file), null, { p ->
+                        val now = System.currentTimeMillis()
+                        if (now - last > 250 || p >= 1f) {
+                            last = now
+                            runOnUiThread { if (videoPeopleScan != null) videoPeopleScan = p }
+                        }
+                    }, { videoPeopleCancel }, maxLooks = 0, cropMax = 128, maxPeople = 120,
+                       parts = 3, minStepUs = stepFor(scanSpanMs), maxGapUs = 2_500_000L,
+                       rangeFromUs = scanFromUs, rangeToUs = scanToUs)
+                    found.toMutableList()
+                }
+                if (videoPeopleCancel || forTarget != targetVersion) {
+                    (result as? List<*>)?.forEach { p ->
+                        (p as VideoFacePicker.Person).best.values.forEach { it.crop?.recycle() }
+                    }
+                    return@launch
+                }
+                when (result) {
+                    is String -> status = result
+                    is MutableList<*> -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val found = result as MutableList<VideoFacePicker.Person>
+                        val everyone = VideoFacePicker.everyone(found)
+                        val keep = everyone.map { it.thumb }.toSet()
+                        found.forEach { p -> p.best.values.forEach { s ->
+                            if (s.crop !in keep) { s.crop?.recycle(); s.crop = null } } }
+                        videoPeople = everyone.mapIndexed { i, p ->
+                            VideoPerson(i, p.thumb, p.firstUs, p.count, p.identities())
+                        }
+                        videoPeopleChoice = emptyMap()
+                        videoPeopleScanned = true
+                        status = getString(R.string.vpeople_done, everyone.size)
+                        appendLog("find everyone: ${everyone.size} people (" +
+                            everyone.joinToString { "${it.count}x from ${it.firstUs / 1000} ms" } + ")")
+                        repushSwapAssignments()
+                    }
+                    else -> Unit
+                }
+            } catch (t: Throwable) {
+                appendLog("find everyone: $t")
+                status = t.message ?: t.toString()
+            } finally {
+                videoPeopleScan = null
+                if (!busy) window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                if (ownPipe) { NativePipe.release(); previewWarm = false }
+                lastPipeSeq = PipeGuard.sequence
+                PipeGuard.release()
+            }
+        }
     }
 
     /**
@@ -1583,7 +2206,11 @@ class MainActivity : ComponentActivity() {
         intent?.getStringExtra("lowmem")?.let {
             if (it == "auto" || it == "on" || it == "off") ModelPaths.setLowMemory(this, it)
         }
+        SafeFiles.init(this)
         ModelPaths.apply(this)
+        Thermal.init(this)
+        RunBoost.init(this)
+        reportLastExit()
         forcedBackend = ModelPaths.forcedBackend(this)
         ncnnGpu = ModelPaths.ncnnGpu(this)
         lowMemory = ModelPaths.lowMemory(this)
@@ -1603,7 +2230,40 @@ class MainActivity : ComponentActivity() {
             // offers, and Settings keeps a delete-only row for the file itself.
             if (it.swapper == "inswapper") it.copy(swapper = "hyperswap") else it
         }
+        // The optional NPU models the saved settings use (none, unless turned on).
+        ModelPaths.syncOptionalNpu(this, opts)
+        VideoSwapper.lowMemory = opts.lowestMemory
+        VideoSwapper.bestQuality = opts.bestQualityOutput
+        // STRONGER LIKENESS, once (build 51): a swapper weight still at the old default 0.5
+        // moves to 0.65, which keeps more of the source photo's face. A value the user set is kept.
+        run {
+            val rp = getSharedPreferences("ff_recommended", MODE_PRIVATE)
+            if (!rp.getBoolean("weight_v51", false)) {
+                if (kotlin.math.abs(opts.weight - 0.5f) < 1e-4f) {
+                    opts = opts.copy(weight = 0.65f); opts.save(this)
+                }
+                rp.edit().putBoolean("weight_v51", true).apply()
+            }
+        }
+        VideoSwapper.lowMemory = opts.lowestMemory
         ApiService.restore(this)
+        // RECOMMENDED SETTINGS, applied ONCE on the first start of build 40 and later, as
+        // asked: everything discussed is on without tuning. Said in the status line; after
+        // this the person's own changes are kept as always.
+        run {
+            val rp = getSharedPreferences("ff_recommended", MODE_PRIVATE)
+            if (!rp.getBoolean("applied_v40", false)) {
+                opts = opts.realisticPreset()
+                opts.save(this)
+                rp.edit().putBoolean("applied_v40", true).apply()
+                status = getString(R.string.status_recommended_applied)
+            }
+        }
+        if (crashedLastTime) enterSafeMode()
+        restoreFinishedOutput()
+        offerResume()
+        // The photos panel's opener, read by the Swap screen directly (see SourcePhotos.opener).
+        SourcePhotos.opener = { i -> photosSheetFor = i }
 
         // adb: ... --es selftest 1 --es enhance 1 --es lipsync 1   (or `0` to force OFF)
         //
@@ -1695,6 +2355,9 @@ class MainActivity : ComponentActivity() {
         if (intent?.getStringExtra("download") != null) onDownloadTapped()
 
         setContent {
+            androidx.compose.runtime.SideEffect {
+                SourcePhotos.counts = sources.map { 1 + it.extras.size }
+            }
             FaceFusionTheme(darkTheme) {
                 // The download runs in a service, on its own thread. Rather than trust a
                 // cross-thread state write to invalidate exactly the right scope, re-read
@@ -1739,6 +2402,7 @@ class MainActivity : ComponentActivity() {
                                 "gpen" -> applyOpts(opts.copy(faceEnhance = true))
                                 "edtalk" -> applyOpts(opts.copy(lipSync = true))
                                 ModelPaths.LIVEPORTRAIT -> applyOpts(opts.copy(faceEdit = true))
+                                else -> Unit
                             }
                         }
                         enableAfterDownload = null
@@ -1861,6 +2525,8 @@ class MainActivity : ComponentActivity() {
                                 sourceThumb = sourceThumb,
                                 sourceThumbs = sources.map { it.thumb },
                                 activeSource = swapSourceIndex,
+                                sourcePhotoCounts = sources.map { 1 + it.extras.size },
+                                onOpenSourcePhotos = { i -> photosSheetFor = i },
                                 onSelectSource = ::selectSwapSource,
                                 assignMode = swapAssignMode,
                                 personThumbs = swapPersonThumbs,
@@ -1871,6 +2537,47 @@ class MainActivity : ComponentActivity() {
                                 onToggleAssignMode = ::toggleSwapAssign,
                                 onSelectPerson = ::selectSwapPerson,
                                 onClearAssignments = ::clearSwapAssignments,
+                                videoPeopleFound = videoPeople.isNotEmpty(),
+                                videoPeoplePanel = {
+                                    com.facefusion.mobile.ui.VideoPeoplePanel(
+                                        isVideo = targetFile != null && targetImage == null,
+                                        scanning = videoPeopleScan,
+                                        timeLeft = videoPeopleScan?.let { scanTimeLeft(it) },
+                                        durationMs = durationMs,
+                                        rangeOn = videoPeopleRangeOn,
+                                        rangeMs = videoPeopleRange,
+                                        onRangeOn = { on ->
+                                            videoPeopleRangeOn = on
+                                            if (on && videoPeopleRange.endInclusive <= videoPeopleRange.start)
+                                                videoPeopleRange = 0f..durationMs.toFloat()
+                                        },
+                                        onRange = { videoPeopleRange = it },
+                                        trimNote = if (durationMs > 0 && (trimStartMs > 500f ||
+                                                       trimEndMs < durationMs - 500f))
+                                            getString(R.string.vpeople_trim_note,
+                                                com.facefusion.mobile.ui.clockOf(trimStartMs.toLong()),
+                                                com.facefusion.mobile.ui.clockOf(trimEndMs.toLong()))
+                                        else null,
+                                        onWholeVideo = {
+                                            onTrimChanged(0f, durationMs.toFloat(), TrimEdge.Start)
+                                        },
+                                        scanned = videoPeopleScanned,
+                                        people = videoPeople.map { vp ->
+                                            com.facefusion.mobile.ui.VideoPersonRow(
+                                                vp.thumb, vp.firstUs / 1000, vp.seen,
+                                                videoPeopleChoice[vp.id])
+                                        },
+                                        sourceThumbs = sources.map { it.thumb },
+                                        unknownKeep = assignUnknownKeep,
+                                        enabled = !busy,
+                                        onFind = ::findEveryoneInVideo,
+                                        onCancelScan = { videoPeopleCancel = true },
+                                        onChoose = ::chooseVideoPerson,
+                                        onRemove = ::removeVideoPerson,
+                                        onJoin = ::joinVideoPeople,
+                                        onUnknownKeep = ::setAssignUnknownKeepUi,
+                                    )
+                                },
                                 hasSource = sourceUri != null,
                                 hasTarget = targetFile != null || targetImage != null,
                                 imageTarget = targetImage != null,
@@ -1975,6 +2682,18 @@ class MainActivity : ComponentActivity() {
                                 // ONE button. A queue of one is a single run, and the
                                 // batch runner would only add a loop around it -- and its
                                 // own trim rule, which the single case must keep.
+                                resumeLabel = resumeAvailable?.let { j ->
+                                    getString(R.string.resume_button, j.targetName,
+                                              fmt(j.doneUs / 1000f), fmt(j.totalUs / 1000f))
+                                },
+                                onResume = { resumeAvailable?.let { resumeSwap(it) } },
+                                onSaveDonePart = if ((resumeAvailable?.done ?: 0) > 0)
+                                    ({ saveDonePart() }) else null,
+                                onDiscardResume = { discardUnfinished() },
+                                onNewProject = { newProject() },
+                                onTest3s = if (photoMakesVideo || batchQueue.size > 1) null
+                                           else ({ runTest3s() }),
+                                estimate = swapEstimate(),
                                 onSwap = {
                                     // ⚠ size > 1, not isEmpty. A queue of exactly one is
                                     // the ordinary single-clip run and must keep its TRIM:
@@ -1982,7 +2701,8 @@ class MainActivity : ComponentActivity() {
                                     // one range cannot mean anything across clips of
                                     // different lengths.
                                     if (photoMakesVideo) runPortrait()
-                                    else if (batchQueue.size > 1) runBatch() else runSwap()
+                                    else if (batchQueue.size > 1) runBatch()
+                                    else swapKeepingUnfinished()
                                 },
                                 batch = batchQueue,
                                 batchAutoSave = opts.batchAutoSave,
@@ -2103,6 +2823,38 @@ class MainActivity : ComponentActivity() {
                                 onToggleRecord = ::toggleLiveRecording,
                             )
 
+                            Screen.Faces -> {
+                                // Each face's extra photos, decoded once per change of the list.
+                                val extraThumbs = androidx.compose.runtime.remember(sources) {
+                                    sources.map { it.extras.map { u -> u to decodeOriented(u, 384) } }
+                                }
+                                com.facefusion.mobile.ui.FacesScreen(
+                                    faces = sources.mapIndexed { i, item ->
+                                        com.facefusion.mobile.ui.FaceCard(
+                                            photos = tilesFor(item, extraThumbs.getOrElse(i) { emptyList() }),
+                                            active = i == swapSourceIndex,
+                                            saved = isSaved(i),
+                                        )
+                                    },
+                                    max = SourcePhotos.MAX,
+                                    enabled = !busy,
+                                    onAddPerson = { pickSource.launch("image/*") },
+                                    onAddPhoto = { i ->
+                                        pendingExtraFor = i
+                                        pickExtraPhoto.launch("image/*")
+                                    },
+                                    onRemovePhoto = { i, k ->
+                                        sources.getOrNull(i)?.extras?.getOrNull(k)?.let { removeExtraPhoto(i, it) }
+                                    },
+                                    onUseFace = ::selectSwapSource,
+                                    onRemoveFace = ::removeSource,
+                                    onFromVideo = { i -> openVideoForFaces(i) },
+                                    onAddPersonFromVideo = { openVideoForFaces(-1) },
+                                    onSavePerson = ::savePerson,
+                                    onOpenSaved = { refreshSavedFaces(); facesDialogOpen = true },
+                                )
+                            }
+
                             Screen.Settings -> SettingsScreen(
                                 sections = modelSections(),
                                 modelDirPath = modelDir().absolutePath,
@@ -2116,7 +2868,7 @@ class MainActivity : ComponentActivity() {
                                 onDeleteModel = { m ->
                                     // Every file of the row, not just the one it is named
                                     // after: an ncnn model is a param/bin pair.
-                                    m.files.forEach { File(modelDir(), it).delete() }
+                                    m.files.forEach { File(modelDir(), it).safeDelete() }
                                     modelsVersion++
                                     // Hard: the file behind the loaded pipeline just went
                                     // away, and the redraw is what reports which one.
@@ -2213,6 +2965,58 @@ class MainActivity : ComponentActivity() {
                                     Text(stringResource(R.string.common_cancel))
                                 }
                             },
+                        )
+                    }
+
+                    sources.getOrNull(photosSheetFor)?.let { item ->
+                        val index = photosSheetFor
+                        val extraThumbs = androidx.compose.runtime.remember(item.extras) {
+                            item.extras.map { u -> u to decodeOriented(u, 384) }
+                        }
+                        com.facefusion.mobile.ui.SourcePhotosDialog(
+                            faceLabel = getString(R.string.live_source_label, index + 1),
+                            photos = tilesFor(item, extraThumbs),
+                            max = SourcePhotos.MAX,
+                            onAdd = {
+                                pendingExtraFor = index
+                                pickExtraPhoto.launch("image/*")
+                            },
+                            onRemove = { k -> item.extras.getOrNull(k)?.let { removeExtraPhoto(index, it) } },
+                            onDismiss = { photosSheetFor = -1 },
+                        )
+                    }
+
+                    vpick?.let { v ->
+                        com.facefusion.mobile.ui.VideoPickDialog(
+                            title = if (v.forFace >= 0) getString(R.string.vpick_title_face, v.forFace + 1)
+                                    else getString(R.string.vpick_title_new),
+                            progress = v.progress,
+                            people = v.people?.map { p ->
+                                com.facefusion.mobile.ui.FoundPerson(p.thumb, p.count,
+                                    getString(R.string.vpick_person_seen, p.count, p.best.size))
+                            },
+                            onPickPerson = { k -> v.people?.getOrNull(k)?.let { vpick = reviewFor(-1, it, v.found) } },
+                            photos = v.picks?.mapNotNull { sn ->
+                                sn.crop?.let { c ->
+                                    com.facefusion.mobile.ui.FoundPhoto(c, sn.angle?.let { a ->
+                                        getString(when (a) {
+                                            SourcePhotos.Angle.FRONT -> R.string.angle_front
+                                            SourcePhotos.Angle.LEFT -> R.string.angle_left
+                                            SourcePhotos.Angle.RIGHT -> R.string.angle_right
+                                            SourcePhotos.Angle.UP -> R.string.angle_up
+                                            SourcePhotos.Angle.DOWN -> R.string.angle_down
+                                        })
+                                    } ?: "")
+                                }
+                            },
+                            checked = v.checked,
+                            onToggle = { k ->
+                                vpick = VPick(v.forFace, picks = v.picks, found = v.found,
+                                    checked = if (k in v.checked) v.checked - k else v.checked + k)
+                            },
+                            onAdd = { addVideoPicks(v) },
+                            message = v.message,
+                            onCancel = ::closeVPick,
                         )
                     }
 
@@ -2611,6 +3415,11 @@ class MainActivity : ComponentActivity() {
         val reloads = fixed.swapper != opts.swapper
         opts = fixed
         fixed.save(this)
+        VideoSwapper.lowMemory = fixed.lowestMemory
+        VideoSwapper.bestQuality = fixed.bestQualityOutput
+        // The big optional NPU models (larger parser, 512 enhancer) are only unpacked while
+        // their setting is on.
+        ModelPaths.syncOptionalNpu(this, fixed)
         // init() consumed the old options; the warm pipeline is now showing something the
         // user did not ask for. This REDRAWS -- clearing the pane and leaving it cleared
         // is how "Preparing preview..." became permanent, since nothing was left to ask
@@ -2659,6 +3468,7 @@ class MainActivity : ComponentActivity() {
         // The whole chain, not one tier: the downloader picks the best tier the manifest
         // actually publishes. Handing it only `tier` would fail outright on a chip whose
         // best tier is not hosted yet.
+        ModelDownload.selectedSwapper = opts.swapper
         DownloadService.start(this, tierChain.joinToString(","), pendingDownload)
     }
 
@@ -2966,7 +3776,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             // The API server may be mid-request. Wait briefly rather than bounce: a preview
             // that quietly does not appear is the bug this whole pass has been about.
-            if (!PipeGuard.acquire("preview", 4000)) {
+            if (!PipeGuard.await("preview", 4000)) {
                 previewNote = pipeBusyMessage()
                 return@launch
             }
@@ -3171,7 +3981,7 @@ class MainActivity : ComponentActivity() {
         f
     }.getOrNull()
 
-    private fun loadTarget(uri: Uri) {
+    private fun loadTarget(uri: Uri, keepOutput: Boolean = false, onLoaded: (() -> Unit)? = null) {
         resetSwapPersonState()
         dropLipReferenceFace()
         lipPickMode = false
@@ -3186,8 +3996,19 @@ class MainActivity : ComponentActivity() {
                 runCatching {
                     // MediaExtractor needs a real path; SAF only gives a stream.
                     val f = File(cacheDir, "target.mp4")
-                    contentResolver.openInputStream(uri).use { i ->
-                        f.outputStream().use { o -> i!!.copyTo(o) }
+                    // Restoring after a crash re-opens THIS file: copying it onto itself would
+                    // truncate it to nothing before the first byte is read.
+                    val same = uri.scheme == "file" &&
+                        uri.path?.let { File(it).canonicalPath == f.canonicalPath } == true
+                    // Written beside and renamed over, never rewritten in place: an unfinished
+                    // swap keeps a hard link to the old file (ResumeStore), and truncating that
+                    // inode would change the video under it.
+                    if (!same) {
+                        val tmp = File(cacheDir, "target.mp4.tmp")
+                        contentResolver.openInputStream(uri).use { i ->
+                            tmp.outputStream().use { o -> i!!.copyTo(o) }
+                        }
+                        if (!tmp.renameTo(f)) error("cannot store the target")
                     }
                     val mmr = MediaMetadataRetriever().apply { setDataSource(f.absolutePath) }
                     val d = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
@@ -3232,31 +4053,35 @@ class MainActivity : ComponentActivity() {
                 // The old result belongs to the old target. Dropping it here is also the
                 // fix for a stale-result bug: nothing cleared `outputFile` on a new pick, so
                 // the pane went on offering to save and share the PREVIOUS video.
-                discardOutput()
+                // Not for Continue: that reloads the SAME video and the swapped part must stay.
+                if (!keepOutput) discardOutput()
                 targetImage = null
                 // face_animator moves a STILL's face; it has nothing to do on a clip.
                 if (opts.faceAnimate) applyOpts(opts.copy(faceAnimate = false))
                 targetFile = l.file; durationMs = l.durationMs
                 inputFps = l.fps
                 targetW = l.width; targetH = l.height
-                // ⚠ The output choices belong to the clip that is going away. "24 fps" and
-                // "720p" were answers about ITS 30 fps and ITS 2160p; carrying them onto a
-                // new clip applies a decision nobody made about it. Reset, not remembered.
-                if (opts.outputFps != 0 || opts.outputMaxShortEdge != 0)
-                    applyOpts(opts.copy(outputFps = 0, outputMaxShortEdge = 0))
+                // The output frame rate and size are KEPT for the next clip (the user's
+                // request: settings are never changed behind their back). Both are safe to
+                // carry over: VideoSwapper never raises a clip above its own frame rate and
+                // never scales it up, so "30 fps" on a 24 fps clip simply stays 24.
                 trimStartMs = 0f; trimEndMs = l.durationMs.toFloat()
                 targetAspect = if (l.width > 0 && l.height > 0)
                     l.width.toFloat() / l.height else 16f / 9f
                 status = getString(R.string.status_target_ready_video,
                                    l.width, l.height, fmt(l.durationMs.toFloat()))
                 // Open it for scrubbing and show the first frame straight away.
-                previews.openTarget(l.file.absolutePath, l.fps)
+                // Off the main thread: it waits for the frame reader's lock, which a frame
+                // being decoded can hold for a while on a big video.
+                withContext(Dispatchers.IO) { previews.openTarget(l.file.absolutePath, l.fps) }
                 targetVersion++
                 // `preview` too, which this path used to leave set -- see clearPreviewFrames.
                 clearPreviewFrames()
                 originalFrame = previews.frameAt(0f)
+                onLoaded?.invoke()
             }.onFailure {
                 status = getString(R.string.status_cannot_read_video, it.message ?: "")
+                resumeStarting = false   // a Continue waiting for this video may be tapped again
             }
             preparing = false
         }
@@ -3565,7 +4390,8 @@ class MainActivity : ComponentActivity() {
      */
     private fun discardOutput() {
         val gone = outputFile
-        gone?.delete()
+        gone?.safeDelete()
+        getSharedPreferences("ff_output", MODE_PRIVATE).edit().clear().apply()
         outputFile = null; outputPartial = false; savedUri = null; savedPathLabel = null
         // ⚠ A QUEUE ROW MAY BE POINTING AT WHAT WAS JUST DELETED. The row is the only way
         // back to a batch clip, so leaving it Done with a dead File means a thumbnail that
@@ -3595,7 +4421,7 @@ class MainActivity : ComponentActivity() {
     private fun sweepOrphanedOutputs() {
         val swept = outputDir().listFiles { f: File ->
             f.isFile && f.name.startsWith("swapped_") && f.name.endsWith(".mp4")
-        }?.count { it.delete() } ?: 0
+        }?.count { it.safeDelete() } ?: 0
         if (swept > 0) android.util.Log.i("ffmain", "swept $swept orphaned output(s)")
     }
 
@@ -3690,9 +4516,61 @@ class MainActivity : ComponentActivity() {
      * PipeGuard would stay HELD, so the next run anywhere in the app reports the NPU busy
      * with no way to clear it short of killing the process.
      */
+    /**
+     * Whether the screen is showing this app. A run in the background skips building the
+     * live preview picture of each frame -- nobody can see it, and it is CPU and battery
+     * spent for nothing. The swap itself is unaffected.
+     */
+    @Volatile private var appVisible = true
+
+    /** The models were released when the app went to the background; reload on return. */
+    private var releasedInBackground = false
+
+    override fun onStart() {
+        super.onStart()
+        appVisible = true
+        RunBoost.visible = true
+        if (releasedInBackground) {
+            releasedInBackground = false
+            // Back in front: load the models again for the preview of what is on screen.
+            if (targetFile != null || targetImage != null) refreshSwapped(force = true)
+        }
+    }
+
     override fun onStop() {
         super.onStop()
+        appVisible = false
+        RunBoost.visible = false
         if (liveRunning) stopLive()
+        // IDLE in the background: give the models' memory back. With ~600 MB of models
+        // loaded the app is one of the first Android stops when another app needs memory
+        // (the "low memory" exits in the bug reports). Not while anything is running: a
+        // swap, a batch or the remote API keeps its models.
+        if (!busy && !BatchStatus.running && PipeGuard.holder == null && previewWarm) {
+            invalidatePreview()
+            releasedInBackground = true
+        }
+    }
+
+    /**
+     * Android says memory is getting short. When nothing is running, give the preview's
+     * models back now instead of waiting to be killed; they reload on the next preview.
+     * A running swap, batch, Live or API request keeps everything it uses.
+     */
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // On screen only when it is critical (the picture on screen is cleared too);
+        // off screen as soon as it runs low.
+        val threshold = if (appVisible) android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+                        else android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+        if (level < threshold) return
+        if (busy || BatchStatus.running || liveRunning || PipeGuard.holder != null) return
+        if (previewWarm) {
+            invalidatePreview()
+            if (!appVisible) releasedInBackground = true
+        }
+        appendLog("memory low (level $level): models released while idle")
     }
 
     private fun toggleLive() {
@@ -3729,7 +4607,7 @@ class MainActivity : ComponentActivity() {
             // Step the pane off it first: the player holds the file, and a pane pointing at
             // a deleted path shows a black rectangle with no way back.
             if (outputFile == f) { outputFile = null; savedUri = null; savedPathLabel = null }
-            runCatching { f.delete() }
+            runCatching { f.safeDelete() }
         }
 
         if (i == 0) {
@@ -4064,7 +4942,7 @@ class MainActivity : ComponentActivity() {
             val out = withContext(Dispatchers.IO) { rec.stop() }
             liveFinalizing = false
             if (discard) {
-                out?.delete()
+                out?.safeDelete()
                 return@launch
             }
             val err = rec.error
@@ -4103,7 +4981,7 @@ class MainActivity : ComponentActivity() {
         // Read at bind time by the engine, so it must be set before start() and not after.
         live.frontCamera = liveFrontCamera
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("live", 5000)) {
+            if (!PipeGuard.await("live", 5000)) {
                 liveNote = pipeBusyMessage(); return@launch
             }
             // The preview holds a warm pipeline configured for the Swap screen. Live needs
@@ -4120,7 +4998,8 @@ class MainActivity : ComponentActivity() {
                 faceEnhance = false, pixelBoost = 1, lipSync = false, trackPeriod = 4,
                 // The mask models are ~26 GFLOP each per face: real-time camera frames
                 // cannot afford them. "Use my settings" keeps whatever the user chose.
-                occlusionMask = false, regionMask = false, keepMouth = false,
+                occlusionMask = false, regionMask = false, keepMouth = false, keepLips = false,
+                expressionRestore = false,
             )).copy(largestOnly = liveLargestOnly,
                     // Swap-only, whatever the Swap screen has on: ~150 ms a face for the
                     // editor is single-digit fps, and the animator moves a still.
@@ -4130,6 +5009,8 @@ class MainActivity : ComponentActivity() {
                 val libDir = applicationInfo.nativeLibraryDir
                 if (!NativePipe.init(libDir, libDir, models.absolutePath, opts))
                     return@withContext "init: ${NativePipe.lastError()}"
+                // Live is swap-only: no lip syncer or face editor, so free their memory.
+                NativePipe.trimModels(false, false, opts.faceEnhance)
                 NativePipe.setTrackPeriod(opts.trackPeriod)
                 NativePipe.setSequence(true)
                 // EVERY source is registered, in list order, so the native slots stay
@@ -4155,6 +5036,18 @@ class MainActivity : ComponentActivity() {
                                     NativePipe.setSource(bgr, soft.width, soft.height)
                                 else NativePipe.addSource(bgr, soft.width, soft.height) >= 0
                     if (!okOne) return@withContext "no face in source ${i + 1}"
+                    // This face's other photos: each checked like the main one, then
+                    // averaged into the same slot.
+                    val extras = ls.extras.mapNotNull { u ->
+                        val eb = decodeOriented(u) ?: return@mapNotNull null
+                        val ev = ContentGate.inspectStill(eb)
+                        appendLog("live source ${i + 1} extra photo score %+.3f".format(ev.score))
+                        if (!ev.permitted)
+                            return@withContext ContentGate.message(
+                                this@MainActivity, R.string.gate_subject_source_image, ev)
+                        toExtra(u, eb)
+                    }
+                    SourcePhotos.register(i, extras)
                 }
                 // A fresh pipeline defaults swapEnabled to true; the switch can be OFF
                 // before the pump ever ran, so the UI's value is pushed onto it here.
@@ -4184,6 +5077,8 @@ class MainActivity : ComponentActivity() {
             // deletes ContentGate.kt: the engine takes a number and knows nothing about the
             // gate, so this single assignment is the whole of what dev has to remove.
             live.gateThreshold = ContentGate.THRESHOLD
+            // Live is real time: full NPU power while it runs (previews leave it balanced).
+            NativePipe.setPowerProfile(0)
             live.start(this@MainActivity, this@MainActivity) { shot ->
                 // The analyzer thread hands the result straight to Compose state, which is
                 // safe for snapshot state and avoids a per-frame main-thread post.
@@ -4305,6 +5200,7 @@ class MainActivity : ComponentActivity() {
         // acquires the guard before it inits. Releasing the guard first would let a restart
         // begin against a pipeline this teardown is about to destroy.
         live.stop {
+            runCatching { NativePipe.setPowerProfile(2) }   // idle: let the NPU clock down
             NativePipe.release()
             PipeGuard.release()
         }
@@ -4335,7 +5231,7 @@ class MainActivity : ComponentActivity() {
         if (sources.isEmpty()) return
         val tgt = targetFile ?: return
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("player", 5000)) {
+            if (!PipeGuard.await("player", 5000)) {
                 status = pipeBusyMessage(); return@launch
             }
             // The preview holds a warm pipeline configured for the Swap screen. The player
@@ -4348,6 +5244,8 @@ class MainActivity : ComponentActivity() {
             playerPos = 0; playerFps = 0.0; playerFaces = 0; playerDropped = 0
             playerSeeking = false
             playerOpen = true
+            // Real-time playback: full NPU power while the player runs.
+            runCatching { NativePipe.setPowerProfile(0) }
 
             // Swap-only, like Live: the editor at ~150 ms a face cannot keep up with playback.
             val opts = SwapOptions.load(this@MainActivity)
@@ -4428,6 +5326,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             withContext(Dispatchers.Default) { player.stop() }
             playerFrame = null
+            runCatching { NativePipe.setPowerProfile(2) }   // idle: let the NPU clock down
             NativePipe.release()
             PipeGuard.release()
             // The Swap screen's preview was invalidated on the way in and its pipeline is
@@ -4436,29 +5335,319 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun runSwap() {
-        if (opts.swapsFace && sourceUri == null) return
-        val tgt = targetFile ?: return
+    /**
+     * If the app's LAST process ended abnormally -- a crash, running out of memory, the
+     * system killing it for heat or CPU -- say so once, in the status line and the log (which
+     * the bug report carries). Before this, "the app closed itself" left nothing to go on.
+     */
+    private fun reportLastExit() {
+        runCatching {
+            val am = getSystemService(android.app.ActivityManager::class.java) ?: return
+            val info = am.getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull()
+                ?: return
+            val prefs = getSharedPreferences("ff_exit", MODE_PRIVATE)
+            if (info.timestamp <= prefs.getLong("seen", 0L)) return
+            prefs.edit().putLong("seen", info.timestamp).apply()
+            val why = when (info.reason) {
+                android.app.ApplicationExitInfo.REASON_CRASH -> "an app error (crash)"
+                android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "a native crash"
+                android.app.ApplicationExitInfo.REASON_ANR -> "not responding (ANR)"
+                android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "running out of memory"
+                android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE ->
+                    "using too much CPU or getting too hot"
+                android.app.ApplicationExitInfo.REASON_SIGNALED -> "being stopped by the system"
+                else -> return
+            }
+            val msg = getString(R.string.status_last_exit, why) +
+                (info.description?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: "")
+            appendLog(msg)
+            status = msg
+            crashedLastTime = true
+        }
+    }
+
+    /** Set by [reportLastExit]; acted on by [enterSafeMode] once the options are loaded. */
+    private var crashedLastTime = false
+
+    /**
+     * After an abnormal exit: switch off the optional stages that cost the most memory and
+     * native work -- the expression restorer and 512 pixel boost -- so one crash cannot turn
+     * into a crash loop, say so, and bring back the target video the crash took off the
+     * screen (it is still in the app's cache, see [loadTarget]). The masks and everything
+     * else stay as they were.
+     */
+    private fun enterSafeMode() {
+        // Settings are NOT changed: the user decides. The message names what to try if the
+        // crashes repeat.
+        val msg = getString(R.string.status_safe_mode)
+        appendLog(msg)
+        status = if (status.isBlank()) msg else "$status\n$msg"
+        val last = File(cacheDir, "target.mp4")
+        // keepOutput: the swapped video the last run left behind must survive this reload.
+        if (last.isFile && last.length() > 0) loadTarget(Uri.fromFile(last), keepOutput = true)
+    }
+
+    /**
+     * An unfinished video swap from an earlier session -- stopped with Cancel, closed, or
+     * crashed -- is offered once per start: Continue reloads its video with the same trim
+     * and output settings and carries on at the next unfinished piece.
+     */
+    /** The unfinished swap Continue would resume, for the Swap screen's button; or null. */
+    private var resumeAvailable by mutableStateOf<ResumeJob?>(null)
+
+    private fun refreshResume() {
+        resumeAvailable = runCatching { ResumeStore.load(this) }.getOrNull()
+    }
+
+    private fun offerResume() {
+        refreshResume()
+        val job = resumeAvailable ?: return
+        // Offered even when no piece had finished yet: Continue then starts the same video
+        // with the same trim and output settings, which is still what the person wanted.
+        // done == count too: every piece finished but the app stopped before joining them.
+        pendingConfirm = Confirm(
+            getString(R.string.resume_title),
+            getString(R.string.resume_body, job.targetName,
+                      fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)),
+            getString(R.string.resume_ok), destructive = false,
+        ) { resumeSwap(job) }
+    }
+
+    /**
+     * Swap, without ever silently throwing away an unfinished swap. Starting a new one
+     * replaces the saved pieces, so: the SAME video -> offer to continue it; another video
+     * -> say what would be lost and only go on when asked.
+     */
+    private fun swapKeepingUnfinished() {
+        val job = runCatching { ResumeStore.load(this) }.getOrNull()
+        if (job == null || opts.lipSync) { runSwap(); return }
+        val tgt = targetFile
+        val sameVideo = tgt != null && File(job.targetPath).let {
+            it.isFile && it.length() == tgt.length()
+        }
+        pendingConfirm = if (sameVideo) Confirm(
+            getString(R.string.resume_title),
+            getString(R.string.resume_body, job.targetName,
+                      fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)),
+            getString(R.string.resume_ok), destructive = false,
+        ) { resumeSwap(job) }
+        else Confirm(
+            getString(R.string.resume_replace_title),
+            getString(R.string.resume_replace_body, job.targetName,
+                      fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)),
+            getString(R.string.resume_replace_ok), destructive = true,
+        ) { runSwap() }
+    }
+
+    /** A Continue is on its way to starting the run (one tap, one run). */
+    private var resumeStarting = false
+
+    private fun resumeSwap(job: ResumeJob) {
+        if (busy || resumeStarting) return
+        // Re-read: the record on disk is the truth (pieces may have been checked away).
+        val fresh = runCatching { ResumeStore.load(this) }.getOrNull() ?: run {
+            refreshResume()
+            status = getString(R.string.resume_gone)
+            return
+        }
+        if (fresh.targetPath != job.targetPath) { refreshResume(); return }
+        resumeStarting = true
+        fun go() = lifecycleScope.launch {
+          try {
+            // The people assigned when this swap started, so the rest of the video swaps
+            // each of them the same way (also after the app was closed). Read and parsed
+            // in the background: on the main thread a big list stalled the screen.
+            val saved = withContext(Dispatchers.IO) {
+                runCatching { ResumeStore.assignFile(this@MainActivity).takeIf { it.isFile }?.readText() }
+                    .getOrNull()?.let { parseAssignSnapshot(it) }
+            }
+            saved?.let { restoreAssignSnapshot(it) }
+            trimStartMs = job.startUs / 1000f
+            trimEndMs = if (job.toEnd) durationMs.toFloat() else job.endUs / 1000f
+            if (opts.outputFps != job.outputFps || opts.outputMaxShortEdge != job.outputMaxShortEdge)
+                applyOpts(opts.copy(outputFps = job.outputFps,
+                                    outputMaxShortEdge = job.outputMaxShortEdge))
+            runSwap(resume = job)
+          } finally { resumeStarting = false }
+        }
+        // The same video is already on screen (the app restored it, or it never left):
+        // carry on at once. Reloading it would restart the preview, which holds the
+        // models, and clear the swapped part from the screen.
+        val tgt = targetFile
+        if (tgt != null && tgt.isFile && tgt.length() == File(job.targetPath).length() &&
+            durationMs > 0L) {
+            go(); return
+        }
+        loadTarget(Uri.fromFile(File(job.targetPath)), keepOutput = true) { go() }
+    }
+
+    /** Forget the unfinished swap: its saved pieces and its copy of the video. */
+    private fun discardUnfinished() {
+        confirm(R.string.resume_discard_title, R.string.resume_discard_body,
+                R.string.resume_discard_ok, destructive = true) {
+            if (busy) return@confirm
+            ResumeStore.clear(this)
+            refreshResume()
+            status = getString(R.string.resume_discarded)
+        }
+    }
+
+    /** A clean slate: no unfinished swap, no result, no video. Faces and settings stay. */
+    private fun newProject() {
+        confirm(R.string.newproj_title, R.string.newproj_body, R.string.newproj_ok,
+                destructive = true) {
+            if (busy) return@confirm
+            ResumeStore.clear(this)
+            refreshResume()
+            discardOutput()
+            clearTarget()
+            status = getString(R.string.newproj_done)
+        }
+    }
+
+    /**
+     * Join the saved pieces of the unfinished swap into a video you can watch, save or
+     * share right now -- the part that is done -- without touching the unfinished swap.
+     */
+    private fun saveDonePart() {
+        val job = runCatching { ResumeStore.load(this) }.getOrNull() ?: return
+        if (busy || job.done == 0) return
+        busy = true
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val out = File(outputDir(), "swapped_part_${System.currentTimeMillis()}.mp4")
+                    val pieces = (0 until job.done).map {
+                        ResumeStore.part(this@MainActivity, it) to job.offset(it)
+                    }
+                    Mp4Concat.join(pieces, out)
+                    out
+                }
+            }
+            result.onSuccess { out ->
+                discardOutput()
+                outputFile = out; outputPartial = true; progress = 1f
+                rememberFinishedOutput(out, partial = true)
+                status = getString(R.string.resume_part_saved, fmt(job.doneUs / 1000f))
+            }.onFailure { failStatus(getString(R.string.status_failed, it.message ?: "")) }
+            busy = false
+        }
+    }
+
+    /**
+     * TEST 3 SECONDS: swap the 3 s from the preview position with the current settings,
+     * into a short clip, to judge the result before a long run. Does not touch an
+     * unfinished swap, and keeps the last real result on disk.
+     */
+    private fun runTest3s() {
+        if (busy) return
+        val total = durationMs.toFloat()
+        if (total <= 0f) return
+        val at = if (previewEdge == TrimEdge.End) previewAtMs - 3000f else previewAtMs
+        val from = at.coerceIn(0f, maxOf(0f, total - 3000f))
+        runSwap(testFromMs = from)
+    }
+
+    /** Seconds per output frame measured on this phone, by the settings that cost most. */
+    private fun estimateKey(): String =
+        "spf_${opts.pixelBoost}_${opts.faceEnhance}_${opts.expressionRestore}_" +
+        "${opts.regionMask || opts.keepMouth || opts.keepLips}_${opts.occlusionMask}_${opts.lipSync}"
+
+    private fun recordSpeed(frames: Int, seconds: Double) {
+        if (frames < 30 || seconds <= 0.0) return
+        val spf = (seconds / frames).toFloat()
+        val p = getSharedPreferences("ff_estimate", MODE_PRIVATE)
+        val old = p.getFloat(estimateKey(), 0f)
+        // Smoothed, so one hot or cold run does not swing the next estimate.
+        p.edit().putFloat(estimateKey(), if (old > 0f) old * 0.5f + spf * 0.5f else spf).apply()
+        estimateVersion++
+    }
+
+    private var estimateVersion by mutableIntStateOf(0)
+
+    /**
+     * TIME AND HEAT, before pressing Swap: frames to make x seconds per frame measured on
+     * this phone with these settings (a cautious guess until the first run), and how warm
+     * a run that long makes the phone.
+     */
+    private fun swapEstimate(): String? {
+        @Suppress("UNUSED_VARIABLE") val v = estimateVersion
+        if (targetFile == null || durationMs <= 0L) return null
+        val clipS = (trimEndMs.coerceAtMost(durationMs.toFloat()) - trimStartMs).coerceAtLeast(0f) / 1000f
+        if (clipS <= 0f) return null
+        val fps = if (opts.outputFps in 1..inputFps) opts.outputFps else inputFps
+        val frames = clipS * fps
+        val measured = getSharedPreferences("ff_estimate", MODE_PRIVATE).getFloat(estimateKey(), 0f)
+        val spf = if (measured > 0f) measured else 0.15f * opts.pixelBoost.coerceAtLeast(1) *
+            (if (opts.faceEnhance) 1.3f else 1f) * (if (opts.expressionRestore) 1.4f else 1f)
+        val secs = frames * spf
+        val time = if (secs < 90f) getString(R.string.estimate_seconds, secs.toInt().coerceAtLeast(1))
+                   else getString(R.string.estimate_minutes, Math.round(secs / 60f).coerceAtLeast(2))
+        val heat = getString(when {
+            secs < 120f -> R.string.estimate_cool
+            secs < 600f -> R.string.estimate_warm
+            else -> R.string.estimate_hot
+        })
+        return getString(if (measured > 0f) R.string.estimate_line else R.string.estimate_line_guess,
+                         time, heat)
+    }
+
+    private fun runSwap(resume: ResumeJob? = null, testFromMs: Float? = null) {
+        // Each early exit SAYS why: a tap that silently does nothing is what Continue was.
+        if (opts.swapsFace && sourceUri == null) {
+            status = getString(R.string.status_run_no_source); return
+        }
+        val tgt = targetFile ?: run { status = getString(R.string.status_run_no_target); return }
         // Defence in depth: the Swap button in SwapScreen is already disabled without one
         // when Lip Sync is on, but this is the actual place a no-op run would happen, so it
         // is checked again here rather than trusted from the UI alone.
-        if (opts.lipSync && voiceFile == null) return
+        if (opts.lipSync && voiceFile == null) {
+            status = getString(R.string.status_run_no_voice); return
+        }
         // The preview holds a loaded pipeline and `g_pipe` is a single global, so the run
-        // cannot start until it lets go.
-        invalidatePreview()
+        // cannot start until it lets go. Released once the run holds the pipeline (below),
+        // in the background: on the main thread the release could wait on a preview frame
+        // still being made and freeze the screen.
+        previewWarm = false
+        clearPreviewFrames()
         cancelRequested = false
         busy = true; progress = 0f; log = ""
-        // Deletes the PREVIOUS run's file, not merely the reference to it.
-        discardOutput()
+        val testRun = testFromMs != null
         preview = null; framesDone = 0; framesTotal = 0; elapsedS = 0.0
+        // Background keep-alive: a foreground notification and a wake lock for the length
+        // of the run, so leaving the app or turning the screen off does not stop it.
+        SwapService.start(this)
 
         lifecycleScope.launch {
+          try {
             // The run owns the pipeline for its whole length, minutes on a long clip. The
             // API server gets 503 for the duration, which is the honest answer.
-            if (!PipeGuard.acquire("swap", 5000)) {
-                status = pipeBusyMessage()
-                busy = false
-                return@launch
+            // The models may still be loading for the preview (a minute on a cold start):
+            // wait for them instead of giving up after 5 s, and say so. Cancel ends the wait.
+            if (!PipeGuard.await("swap", 2000)) {
+                status = getString(R.string.status_waiting_models)
+                var waited = 0
+                var got = false
+                while (waited < 120_000 && !cancelRequested && !SwapStatus.cancelRequested) {
+                    if (PipeGuard.await("swap", 500)) { got = true; break }
+                    waited += 500
+                }
+                if (!got) {
+                    status = if (cancelRequested || SwapStatus.cancelRequested)
+                        getString(R.string.status_cancelled) else pipeBusyMessage()
+                    busy = false
+                    return@launch
+                }
+            }
+            withContext(Dispatchers.Default) { previews.invalidate() }
+            previewWarm = false
+            // Only now is the previous result replaced: a run that could not start must not
+            // have thrown away the swapped video that was already there. A TEST keeps a real
+            // result on disk (it comes back on the next start) and replaces only a test.
+            if (!testRun) discardOutput()
+            else {
+                if (outputFile?.name?.startsWith("test_") == true) outputFile?.safeDelete()
+                outputFile = null; outputPartial = false; savedUri = null; savedPathLabel = null
             }
             val result = withContext(Dispatchers.Default) {
                 runCatching {
@@ -4482,6 +5671,11 @@ class MainActivity : ComponentActivity() {
                     noteTierRejection()
                     if (!ok) error("init: ${NativePipe.lastError()}")
                     NativePipe.setSwapEnabled(opts.swapsFace)
+                    // Less memory for the length of the run: drop what these options never
+                    // use, so Android is less likely to stop the app mid-swap.
+                    NativePipe.trimModels(opts.lipSync,
+                                          opts.faceEdit || opts.expressionRestore || opts.faceAnimate,
+                                          opts.faceEnhance)
                     if (!opts.swapsFace) appendLog("face_swapper off")
                     // WHICH UNIT, in the box the user can actually read, and only after
                     // init: the GPU agreement check runs on the first open that asks for the
@@ -4505,8 +5699,14 @@ class MainActivity : ComponentActivity() {
                         appendLog("content gate: W8A16 build, biased " +
                                   "+${ContentGate.QUANTISED_BIAS} toward refusing")
                     screenSourceList(prepared.bitmaps, "run")?.let { throw ContentGate.Refused(it) }
-                    // The target, sampled across the clip.
-                    ContentGate.inspectClip(tgt).let {
+                    // The target, sampled across the part of the clip this run processes.
+                    ContentGate.inspectClip(
+                        tgt,
+                        if (testFromMs != null) (testFromMs * 1000).toLong() else (trimStartMs * 1000).toLong(),
+                        if (testFromMs != null) (testFromMs * 1000).toLong() + 3_000_000L
+                        else if (trimEndMs >= durationMs) Long.MAX_VALUE
+                        else (trimEndMs * 1000).toLong(),
+                    ).let {
                         // `detail` is an ARGUMENT, never interpolated into the format
                         // string: it reads "0/11 flagged (0.0%)", and that trailing `%)`
                         // is parsed as a conversion -- UnknownFormatConversionException,
@@ -4538,7 +5738,7 @@ class MainActivity : ComponentActivity() {
                     val t0 = System.currentTimeMillis()
 
                     val out = File(outputDir(),
-                        "swapped_${System.currentTimeMillis()}.mp4")
+                        (if (testRun) "test_" else "swapped_") + "${System.currentTimeMillis()}.mp4")
                     status = getString(R.string.status_swapping)
                     var lastPreview = 0L
                     // Once per RUN: previewIntervalMs reads SharedPreferences and can probe
@@ -4550,43 +5750,134 @@ class MainActivity : ComponentActivity() {
                     // the progress readout can show, and the final tick always lands.
                     var lastProgress = 0L
 
-                    VideoSwapper(
-                        outputFps = opts.outputFps,
-                        outputMaxShortEdge = opts.outputMaxShortEdge,
-                        trackPeriod = opts.trackPeriod,
-                        lipSync = opts.lipSync,
-                        voicePath = voiceFile?.absolutePath,
-                        voiceTrimStartUs = (voiceTrimStartMs * 1000).toLong(),
-                        voiceTrimEndUs = if (voiceTrimEndMs >= voiceDurationMs) Long.MAX_VALUE
-                                         else (voiceTrimEndMs * 1000).toLong(),
-                        trimStartUs = (trimStartMs * 1000).toLong(),
-                        trimEndUs = if (trimEndMs >= durationMs) Long.MAX_VALUE
-                                    else (trimEndMs * 1000).toLong(),
-                        onProgress = { done, total ->
-                            val now = System.currentTimeMillis()
-                            if (now - lastProgress >= 100 || done >= total) {
-                                lastProgress = now
-                                framesDone = done; framesTotal = total
-                                progress = if (total > 0) done.toFloat() / total else 0f
-                                elapsedS = (now - t0) / 1000.0
-                            }
-                        },
-                        onFrame = { bgr, w, h ->
+                    fun onFrameCb(bgr: ByteArray, w: Int, h: Int) {
                             // Real-time on the NPU, throttled elsewhere -- see
                             // previewIntervalMs for why the number is derived and not a
                             // setting. Read once per run, not per frame.
                             val now = System.currentTimeMillis()
-                            if (now - lastPreview >= previewInterval) {
+                            if (appVisible && now - lastPreview >= previewInterval) {
                                 lastPreview = now
                                 val pw = 480
                                 val ph = (h.toLong() * pw / w).toInt().coerceAtLeast(1)
                                 val argb = NativePipe.bgrToArgb(bgr, w, h, pw, ph)
                                 preview = Bitmap.createBitmap(argb, pw, ph, Bitmap.Config.ARGB_8888)
                             }
-                        },
+                        }
+                    fun swapper(startUs: Long, endUs: Long, fps: Int, maxEdge: Int, track: Int,
+                                onProg: (Int, Int) -> Unit) = VideoSwapper(
+                        outputFps = fps,
+                        outputMaxShortEdge = maxEdge,
+                        trackPeriod = track,
+                        lipSync = opts.lipSync,
+                        voicePath = voiceFile?.absolutePath,
+                        voiceTrimStartUs = (voiceTrimStartMs * 1000).toLong(),
+                        voiceTrimEndUs = if (voiceTrimEndMs >= voiceDurationMs) Long.MAX_VALUE
+                                         else (voiceTrimEndMs * 1000).toLong(),
+                        trimStartUs = startUs,
+                        trimEndUs = endUs,
+                        onProgress = { d, t -> onProg(d, t) },
+                        onFrame = { bgr, w, h -> onFrameCb(bgr, w, h) },
                         onLog = { appendLog(it) },
-                        isCancelled = { cancelRequested },
-                    ).swap(tgt!!.absolutePath, out.absolutePath).getOrThrow()
+                        // The in-app Cancel, or Cancel on the background notification.
+                        isCancelled = { cancelRequested || SwapStatus.cancelRequested },
+                    )
+                    val runStartUs = if (testFromMs != null) (testFromMs * 1000).toLong()
+                                     else (trimStartMs * 1000).toLong()
+                    val runEndUs = if (testFromMs != null) runStartUs + 3_000_000L
+                                   else if (trimEndMs >= durationMs) Long.MAX_VALUE
+                                   else (trimEndMs * 1000).toLong()
+                    fun showProgress(done: Int, total: Int) {
+                            val now = System.currentTimeMillis()
+                            SwapStatus.done = done; SwapStatus.total = total
+                            if (now - lastProgress >= 100 || done >= total) {
+                                lastProgress = now
+                                framesDone = done; framesTotal = total
+                                progress = if (total > 0) done.toFloat() / total else 0f
+                                elapsedS = (now - t0) / 1000.0
+                            }
+                    }
+
+                    if (opts.lipSync || testRun) {
+                        // Lip sync keeps the ONE continuous run: its mouth timing counts frames
+                        // from the start of the run, which pieces would restart. A 3 s test
+                        // is one piece anyway and must not replace an unfinished job.
+                        swapper(runStartUs, runEndUs, opts.outputFps, opts.outputMaxShortEdge,
+                                opts.trackPeriod, ::showProgress)
+                            .swap(tgt!!.absolutePath, out.absolutePath).getOrThrow()
+                    } else {
+                        // RESUMABLE: pieces of 20 s, each saved as it finishes, joined at the
+                        // end -- see ResumableSwap.kt. A new swap starts a new job; Continue
+                        // picks up the saved one at its next piece.
+                        val job = resume ?: ResumeStore.begin(this@MainActivity, tgt!!) { path ->
+                            ResumeJob(
+                                targetPath = path, targetName = targetName ?: tgt.name,
+                                startUs = runStartUs,
+                                endUs = if (runEndUs == Long.MAX_VALUE) durationMs.toLong() * 1000
+                                        else runEndUs,
+                                toEnd = runEndUs == Long.MAX_VALUE,
+                                chunkUs = ResumeJob.CHUNK_US,
+                                outputFps = opts.outputFps,
+                                outputMaxShortEdge = opts.outputMaxShortEdge,
+                                trackPeriod = opts.trackPeriod,
+                            )
+                        }
+                        if (resume == null) runCatching {
+                            ResumeStore.assignFile(this@MainActivity).writeText(assignSnapshot())
+                        }
+                        if (job.done > 0)
+                            appendLog("continuing from %s of %s (%d pieces kept)".format(
+                                fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f), job.done))
+                        var framesBefore = 0
+                        while (!job.complete) {
+                            if (cancelRequested || SwapStatus.cancelRequested) break
+                            val i = job.done
+                            val (cs, ce) = job.nextRange()
+                            val last = job.nextIsLast()
+                            val part = ResumeStore.part(this@MainActivity, i)
+                            val pieceLen = (if (ce == Long.MAX_VALUE) job.endUs else ce) - cs + 1
+                            val sw = swapper(cs, ce, job.outputFps, job.outputMaxShortEdge, job.trackPeriod) { d, t ->
+                                // Whole-run progress: time done over time asked for.
+                                val frac = ((cs - job.startUs) +
+                                            (if (t > 0) d.toDouble() / t else 0.0) * pieceLen) /
+                                           maxOf(1L, job.totalUs).toDouble()
+                                val doneAll = framesBefore + d
+                                showProgress(doneAll,
+                                             if (frac > 0.0) (doneAll / frac).toInt().coerceAtLeast(doneAll)
+                                             else doneAll + t)
+                            }
+                            val pr = sw.swap(job.targetPath, part.absolutePath)
+                            framesBefore += SwapStatus.done.coerceAtLeast(0) - framesBefore
+                            val stopped = cancelRequested || SwapStatus.cancelRequested
+                            if (stopped) {
+                                // KEPT, not redone: the piece holds every frame swapped up to
+                                // Stop, so it is saved as a piece of its own and Continue
+                                // starts at the very next frame.
+                                val lastPts = sw.lastFramePtsUs
+                                if (pr.isSuccess && lastPts >= cs) {
+                                    job.ends += lastPts + 1
+                                    ResumeStore.save(this@MainActivity, job)
+                                } else part.safeDelete()
+                                break
+                            }
+                            pr.getOrThrow()
+                            if (last) {
+                                job.ends += maxOf(job.endUs, cs + 1)
+                                job.complete = true
+                            } else job.ends += ce + 1
+                            ResumeStore.save(this@MainActivity, job)
+                            appendLog("saved %s of %s (can be continued from here)"
+                                .format(fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)))
+                        }
+                        val pieces = (0 until job.done).map {
+                            ResumeStore.part(this@MainActivity, it) to job.offset(it)
+                        }
+                        if (pieces.isEmpty()) error("cancelled")
+                        Mp4Concat.join(pieces, out)
+                        rememberFinishedOutput(out, partial = !job.complete)
+                        if (job.complete) ResumeStore.clear(this@MainActivity)
+                        else appendLog("stopped at %s of %s: Continue carries on from here"
+                            .format(fmt(job.doneUs / 1000f), fmt(job.totalUs / 1000f)))
+                    }
 
                     appendLog("total %.1f s".format((System.currentTimeMillis() - t0) / 1000.0))
                     out
@@ -4596,7 +5887,9 @@ class MainActivity : ComponentActivity() {
                 outputFile = it; progress = 1f
                 // The run kept whatever it had when Cancel was pressed, so say which it is.
                 outputPartial = cancelRequested
-                status = getString(R.string.status_done, it.length() / 1024)
+                status = if (testRun) getString(R.string.status_test_done)
+                         else getString(R.string.status_done, it.length() / 1024)
+                if (!cancelRequested) recordSpeed(framesDone, elapsedS)
                 // ⚠ RE-WARM THE PREVIEW. `runSwap` opens with invalidatePreview(), which
                 // clears previewWarm -- and `onTrimChanged` only redraws the swapped pane
                 // `if (previewWarm)`, on the reasoning that the first model load costs
@@ -4628,6 +5921,11 @@ class MainActivity : ComponentActivity() {
             NativePipe.release()
             PipeGuard.release()
             busy = false
+          } finally {
+            refreshResume()
+            SwapService.stop()
+            runCatching { NativePipe.setPowerProfile(2) }   // idle; previews raise it per frame
+          }
         }
     }
 
@@ -4647,13 +5945,14 @@ class MainActivity : ComponentActivity() {
         if (opts.lipSync && voiceFile == null) return
         if (!animate && !opts.lipSync) return
         invalidatePreview()
+        runCatching { NativePipe.setPowerProfile(0) }
         cancelRequested = false
         busy = true; progress = 0f; log = ""
         discardOutput()
         preview = null; framesDone = 0; framesTotal = 0; elapsedS = 0.0
 
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("swap", 5000)) {
+            if (!PipeGuard.await("swap", 5000)) {
                 status = pipeBusyMessage(); busy = false; return@launch
             }
             val result = withContext(Dispatchers.Default) {
@@ -4718,7 +6017,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onFrame = { f, fw, fh ->
                             val now = System.currentTimeMillis()
-                            if (now - lastPreview >= previewInterval) {
+                            if (appVisible && now - lastPreview >= previewInterval) {
                                 lastPreview = now
                                 val pw = 480
                                 val ph = (fh.toLong() * pw / fw).toInt().coerceAtLeast(1)
@@ -4797,7 +6096,7 @@ class MainActivity : ComponentActivity() {
         // start, when onCreate's sweep found them. Anything auto-saved is already a
         // separate copy in the gallery and is unaffected.
         batchQueue = batchQueue.map {
-            it.output?.let { f -> runCatching { f.delete() } }
+            it.output?.let { f -> runCatching { f.safeDelete() } }
             it.copy(state = BatchState.Waiting, output = null, detail = null, thumb = null)
         }
 
@@ -4811,7 +6110,7 @@ class MainActivity : ComponentActivity() {
         BatchService.start(this)
 
         lifecycleScope.launch {
-            if (!PipeGuard.acquire("batch", 5000)) {
+            if (!PipeGuard.await("batch", 5000)) {
                 status = pipeBusyMessage(); busy = false
                 BatchStatus.end(); BatchService.stop(this@MainActivity)
                 return@launch
@@ -4837,6 +6136,11 @@ class MainActivity : ComponentActivity() {
                     noteTierRejection()
                     if (!ok) error("init: " + NativePipe.lastError())
                     NativePipe.setSwapEnabled(opts.swapsFace)
+                    // Less memory for the length of the run: drop what these options never
+                    // use, so Android is less likely to stop the app mid-swap.
+                    NativePipe.trimModels(opts.lipSync,
+                                          opts.faceEdit || opts.expressionRestore || opts.faceAnimate,
+                                          opts.faceEnhance)
 
                     // face_swapper off and no source: nothing to read or check here, and
                     // every clip in the queue is still checked on its own below.
@@ -4857,6 +6161,19 @@ class MainActivity : ComponentActivity() {
                                 NativePipe.argbToBgr(px, soft.width, soft.height),
                                 soft.width, soft.height))
                             error("source: " + NativePipe.lastError())
+                        // The same person's other photos, checked and averaged in.
+                        val extraUris = sources.getOrNull(swapSourceIndex)?.extras.orEmpty()
+                        val extras = extraUris.mapNotNull { u ->
+                            val eb = decodeOriented(u) ?: return@mapNotNull null
+                            ContentGate.inspectStill(eb).let {
+                                appendLog("source extra photo score %+.3f".format(it.score))
+                                if (!it.permitted) throw ContentGate.Refused(
+                                    ContentGate.message(this@MainActivity,
+                                                        R.string.gate_subject_source_image, it))
+                            }
+                            toExtra(u, eb)
+                        }
+                        SourcePhotos.register(0, extras)
                     }
                     val lipsN = pushLipSelection()
                     appendLog((if (src != null) "source ready" else "face_swapper off") +
@@ -4957,7 +6274,7 @@ class MainActivity : ComponentActivity() {
                             onFrame = { bgr, w, h ->
                                 // Same rule as the single-clip path above.
                                 val now = System.currentTimeMillis()
-                                if (now - lastPreview >= previewInterval) {
+                                if (appVisible && now - lastPreview >= previewInterval) {
                                     lastPreview = now
                                     val pw = 480
                                     val ph = (h.toLong() * pw / w).toInt().coerceAtLeast(1)
@@ -4977,7 +6294,7 @@ class MainActivity : ComponentActivity() {
                 }
                 // Whatever it got to is not a result. Deleting it here keeps a cancelled
                 // twelve-clip batch from leaving a trail of unplayable fragments.
-                if (r.isFailure) partial?.let { f -> runCatching { f.delete() } }
+                if (r.isFailure) partial?.let { f -> runCatching { f.safeDelete() } }
                 batchQueue = batchQueue.mapIndexed { j, it ->
                     if (j != i) it else r.fold(
                         { (f, th) ->
@@ -5010,7 +6327,7 @@ class MainActivity : ComponentActivity() {
                 // The COPY, not the output. A twelve-clip batch would otherwise leave
                 // twelve full-size videos in the cache behind the twelve it produced.
                 if (i > 0 && item.uri.scheme != "file")
-                    runCatching { File(cacheDir, "batch_" + (i + 1) + ".mp4").delete() }
+                    runCatching { File(cacheDir, "batch_" + (i + 1) + ".mp4").safeDelete() }
             }
 
             status = getString(R.string.status_batch_done, done, refused + failed)

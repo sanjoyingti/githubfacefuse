@@ -17,7 +17,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -48,6 +50,10 @@ fun SourceRow(
     onKeepOriginal: (() -> Unit)? = null,
     enabled: Boolean = true,
     modifier: Modifier = Modifier,
+    /** Photos per face (main photo included); a face with more than one shows the count. */
+    photoCounts: List<Int> = emptyList(),
+    /** Tapping the face that is already selected opens its photos, when set. */
+    onOpenPhotos: ((Int) -> Unit)? = null,
 ) {
     if (thumbs.isEmpty()) return
     Row(
@@ -75,14 +81,30 @@ fun SourceRow(
                 label = label,
                 selected = index == active && !keepOriginalBrush,
                 enabled = enabled,
-                onClick = { onSelect(index) },
+                onClick = {
+                    if (onOpenPhotos != null && index == active && !keepOriginalBrush)
+                        onOpenPhotos(index)
+                    else onSelect(index)
+                },
             ) {
-                Image(
-                    thumb.asImageBitmap(),
-                    contentDescription = label,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
+                Box(Modifier.fillMaxSize()) {
+                    Image(
+                        thumb.asImageBitmap(),
+                        contentDescription = label,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                    val n = photoCounts.getOrNull(index) ?: 1
+                    if (n > 1) Box(
+                        Modifier.align(Alignment.BottomEnd).padding(3.dp).size(20.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(FfRed),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(n.toString(), fontSize = 11.sp, color = Color.White,
+                             fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
     }
