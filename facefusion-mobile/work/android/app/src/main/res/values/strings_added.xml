@@ -48,7 +48,7 @@
     <string name="opt_pose_fade">Fade out on big head turns</string>
     <string name="opt_pose_fade_hint">When the head turns too far left, right, up or down for the swapper, the original face shows through smoothly instead of a stretched one.</string>
     <string name="opt_pose_fade_start">Start fading at</string>
-    <string name="opt_pose_fade_start_hint">Head turn where the fade begins. The swap is gone 20° later. Lower is safer, higher keeps more of the swap.</string>
+    <string name="opt_pose_fade_start_hint">Head turn where the fade begins. The swap is gone 20° later. Lower is safer, higher keeps more of the swap. With Side guard on, the fade begins 25° later than set here (side views stay swapped on their visible half).</string>
     <string name="opt_motion_smooth">Motion smoothing</string>
     <string name="opt_motion_smooth_hint">Video and Live: steadies the face alignment between frames and keeps motion-blurred faces swapped during fast movement.</string>
     <string name="opt_detect_rotated">Find rotated faces</string>

@@ -1828,6 +1828,10 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
         const bool nearby = std::hypot(ex / 5.f, ey / 5.f) < 0.5f * want;
         if (getenv("FF_DUMP_GAP"))
           fprintf(stdout, "gap: held face fan %.2f spanOk %d nearby %d\n", fanScore, (int)spanOk, (int)nearby);
+        // NOTHING face-like there (a fully covered face scores about 0.1, the faintest real
+        // one 0.36): the face is hidden, not missed, and the frame stays as filmed --
+        // swapping it would paint a face on whatever covers it.
+        if (fanScore < 0.15f) continue;
         if (!(fanScore >= 0.3f && spanOk && nearby)) {
           interp = true;
           std::memcpy(l5, f.landmark5, sizeof(l5));
@@ -4557,6 +4561,19 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
     // TEXTURE MATCH: the face takes the footage's fine detail. Here when this paste is the
     // last word on the face; when the 256 enhancer follows, it is left for that pass (the
     // enhancer changes the texture again), which finds the reference by this face's points.
+    // FF_TEX_TEST=smooth|sharp (host tests only): spoil the face's fine detail first, so
+    // both directions of the texture match can be measured without the enhancer.
+    if (const char* tt = getenv("FF_TEX_TEST")) {
+      std::vector<float> Y((size_t)CS * CS), hp;
+      for (size_t i = 0, n = (size_t)CS * CS; i < n; ++i) {
+        const float* o = outCrop.data.data() + i * 3;
+        Y[i] = 0.114f * o[0] + 0.587f * o[1] + 0.299f * o[2];
+      }
+      highPass5(Y, CS, CS, hp);
+      const float k = tt[1] == 'm' ? -0.85f : 1.2f;
+      for (size_t i = 0, n = (size_t)CS * CS; i < n; ++i)
+        for (int c = 0; c < 3; ++c) outCrop.data[i * 3 + c] += hp[i] * k;
+    }
     if (cfg.textureMatch > 0.f) {
       t0 = nowMs();
       const bool enh512 = cfg.enhancer512 && p_->enh512Net() != nullptr;
@@ -4599,7 +4616,11 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
 
     // LIKENESS for the log: every 10th frame, how much the swapped face looks like its
     // source (the face recogniser's cosine; the same person scores about 0.5 and up).
-    if (six >= 0 && p_->swapCalls % 10 == 0 && f.poseFade > 0.9f &&
+    // Only on a face that is really seen and roughly facing the camera: a held (covered)
+    // face or a profile scores low whoever it is, and the number would mislead.
+    const ffmotion::Pose lkPose = ffmotion::estimatePose(f.landmark5_68);
+    if (six >= 0 && p_->swapCalls % 10 == 0 && f.poseFade > 0.9f && !f.recovered &&
+        lkPose.ok && std::fabs(lkPose.yaw) < 40.f &&
         six < (int)p_->sourceSlots.size()) {
       float e[512];
       if (p_->embedAt(frame, f.landmark5_68, e)) {

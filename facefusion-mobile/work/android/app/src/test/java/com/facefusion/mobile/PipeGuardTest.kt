@@ -45,6 +45,18 @@ class PipeGuardTest {
     }
 }
 
+class Realism62Test {
+    @Test fun gapFillAndTextureMatchAreOnAndSurvivePresets() {
+        val d = SwapOptions()
+        assertTrue(d.textureMatch); assertTrue(d.gapFill)
+        for (p in listOf(d.likenessPreset(), d.eatingPreset(), d.fastPreset(), d.realisticPreset())) {
+            assertTrue(p.textureMatch); assertTrue(p.gapFill)
+        }
+        // A switch the user turned off stays off through a preset.
+        assertFalse(d.copy(gapFill = false).eatingPreset().gapFill)
+    }
+}
+
 class EatingPresetTest {
     @Test fun eatingScenesSetsUpTheMouth() {
         val p = SwapOptions().eatingPreset()

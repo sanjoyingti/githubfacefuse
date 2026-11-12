@@ -631,7 +631,7 @@ class VideoSwapper(
                 error("video stages did not stop in time")
         }
 
-        val pending = java.util.ArrayDeque<Frame>()
+        val inHand = java.util.ArrayDeque<Frame>()
         var decodeEnded = false
         try {
             while (true) {
@@ -666,23 +666,23 @@ class VideoSwapper(
                 // LOOK-AHEAD: keep `lookAhead` frames in hand beyond the one being swapped.
                 // Same frames, same order; a frame is only swapped a few frames later than
                 // it was decoded, and the end of the clip drains what is in hand.
-                while (!decodeEnded && pending.size < lookAhead + 1) {
+                while (!decodeEnded && inHand.size < lookAhead + 1) {
                     val n = decodedQ.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS) ?: break
                     if (n === end) {
                         decodeError.get()?.let { throw it }
                         decodeEnded = true
-                    } else pending.addLast(n)
+                    } else inHand.addLast(n)
                 }
-                if (pending.isEmpty()) { if (decodeEnded) break else continue }
-                if (!decodeEnded && pending.size < lookAhead + 1) continue
-                val f = pending.removeFirst()
+                if (inHand.isEmpty()) { if (decodeEnded) break else continue }
+                if (!decodeEnded && inHand.size < lookAhead + 1) continue
+                val f = inHand.removeFirst()
                 // `swapped` is the OUTPUT frame index: it already accounts for decimation.
                 val workT0 = System.nanoTime()
                 val faces =
                     if (lookAhead > 0)
                         NativePipe.processFrameAhead(f.bgr, outW, outH,
                             if (syncing) swapped else -1,
-                            Array(pending.size) { pending.elementAt(it).bgr })
+                            Array(inHand.size) { inHand.elementAt(it).bgr })
                     else NativePipe.processFrameAt(f.bgr, outW, outH,
                                                    if (syncing) swapped else -1)
                 boost.report(System.nanoTime() - workT0)
