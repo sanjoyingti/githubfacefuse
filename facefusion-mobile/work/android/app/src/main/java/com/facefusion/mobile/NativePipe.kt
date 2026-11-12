@@ -124,10 +124,17 @@ object NativePipe {
                      if (opts.lipstickMatch) opts.lipstickStrength else 0f, opts.mouthFocus)
         setSideGuard(opts.sideGuard)
         setLipsFollow(opts.lipsFollow)
+        setRealism6(opts.textureMatch, opts.gapFill)
     }
 
     /** Turned faces keep the swap on their visible half only (no invented far eye). */
     @JvmStatic external fun setSideGuard(on: Boolean)
+
+    /**
+     * 1.0.62: [texture] brings the finished face to the video's own grain and sharpness;
+     * [gapFill] carries a face the detector loses for a few frames through them (video).
+     */
+    @JvmStatic external fun setRealism6(texture: Boolean, gapFill: Boolean)
 
     /** The lips keep the video's shape (always in line), with the source's lip colour. */
     @JvmStatic external fun setLipsFollow(on: Boolean)
@@ -601,6 +608,18 @@ object NativePipe {
      */
     @JvmStatic external fun processFrameAt(bgr: ByteArray, w: Int, h: Int,
                                            frameIndex: Int): Int
+
+    /**
+     * [processFrameAt] with look-ahead: [ahead] holds the next frames of the run ([0] is
+     * the frame after this one, all the same size). They are only read when a face is lost
+     * on this frame: if it is found again within them, it is carried through the gap
+     * instead of being left as filmed. Call it for EVERY frame of the run, in order.
+     */
+    @JvmStatic external fun processFrameAhead(bgr: ByteArray, w: Int, h: Int,
+                                              frameIndex: Int, ahead: Array<ByteArray>): Int
+
+    /** Faces carried through frames the detector missed since the last call. */
+    @JvmStatic external fun gapFilledFaces(): Int
 
     /**
      * Per-stage ms/frame for the run so far, as one line for the log.

@@ -10,6 +10,7 @@
 //             -> warp 112 -> [arcface] -> warp 256 -> [swapper] -> box mask -> paste back
 
 #pragma once
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,6 +42,8 @@ struct Face {
   // True when this face was not found by the detector but held from the previous frames
   // (lost-face recovery); the sequence counts how long it has been held.
   bool recovered = false;
+  // A held face whose identity was checked against the person being followed (see analyse).
+  bool idMatched = false;
   float embedding[512];
   float embeddingNorm[512];
 };
@@ -168,6 +171,18 @@ struct Config {
   // line with the filmed mouth); with Lipstick match they take the source photo's lip
   // colour. The swapped lips never spill onto the skin around the filmed lips.
   bool lipsFollow = false;
+  // TEXTURE MATCH (0..1): the finished face is brought to the video's own fine detail. A
+  // swapped face that is sharper than the face it replaces (an HD face in a soft or
+  // compressed video) is softened to it; one that is smoother takes the video's own grain
+  // (the fine noise of the original face, edges left out). The tell-tale of a swap is a
+  // face whose texture does not belong to the footage. Cheap: no model, no extra warp.
+  float textureMatch = 1.f;
+  // GAP FILL (video, needs look-ahead frames from the caller, see Pipeline::setAhead): a
+  // face the detector loses for a few frames and finds again within the look-ahead is
+  // carried through the gap -- its points placed between where it was and where it is found
+  // again, refined by the landmarker when that still sees it. As FaceFusion 3.7's face
+  // tracker; the look-ahead frames are only read when a face is actually lost.
+  bool gapFill = true;
   // Head turn (degrees, the larger of yaw and 1.3x pitch) where the swap starts fading out;
   // it is gone 20 degrees later. >= 90 disables the fade.
   float poseFadeStart = 60.f;
@@ -389,6 +404,18 @@ class Pipeline {
   // smoothing and low-score recovery -- and resets their state either way. Off for single
   // frames (the preview, photos, source images), where "the previous frame" means nothing.
   void setSequence(bool on);
+
+  // LOOK-AHEAD for gap fill (Config::gapFill). `provider(j, out)` hands over the frame
+  // j + 1 frames AFTER the one about to be analysed (j = 0 is the next frame) and returns
+  // false past the end; it is only called when a face has been lost, and each look-ahead
+  // frame is searched at most once (the result is kept until that frame has gone by).
+  // `depth` is how many frames may be asked for. Set before analyse; advanceAhead() after
+  // each frame of the run; a null provider turns it off.
+  void setAhead(std::function<bool(int, ffcv::Image&)> provider, int depth);
+  void advanceAhead();
+  // Faces carried through a gap by the look-ahead since the last resetStats-independent
+  // read (for the run log); resets when read.
+  int gapFilledFaces();
 
   // Releases the optional models this RUN will not use (lip sync, LivePortrait, enhancer),
   // so a long video swap holds less memory and Android is less likely to stop the app for

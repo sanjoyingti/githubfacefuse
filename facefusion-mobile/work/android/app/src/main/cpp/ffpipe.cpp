@@ -1,4 +1,6 @@
 #include <pthread.h>
+#include <deque>
+#include <functional>
 #include "ffpipe.h"
 
 #include "ffaudio.h"
@@ -377,7 +379,36 @@ struct Pipeline::Impl {
     // (blink, turned head, looking down). -1 = nobody.
     int assignPerson = -1;
     int assignHold = 0;
+    // WHO this face is: a running mean of its identity while it is clearly seen, so a face
+    // held through frames the detector misses can be checked against it (and lends it its
+    // identity while it is covered). idOk: the last held frame matched.
+    float idEmb[512] = {};
+    bool haveId = false;
+    bool idOk = false;
+    // TEXTURE MATCH: the running ratio of the swapped face's fine detail to the original's.
+    float texR = 0.f;
   };
+  // TEXTURE MATCH: what the original face's fine detail was (this frame), for the pass that
+  // pastes the finished face -- the swap itself, or the enhancer after it.
+  struct TexRef {
+    float lm5[10];
+    int cs = 0;
+    float dT = 0.f;               // fine-detail level of the original face
+    std::vector<int8_t> grain;    // its fine noise (edges clipped away), x2, crop space
+  };
+  std::vector<TexRef> texRefs;
+  const TexRef* texRefFor(const Face& f) const {
+    for (const auto& t : texRefs)
+      if (std::memcmp(t.lm5, f.landmark5_68, sizeof(t.lm5)) == 0) return &t;
+    return nullptr;
+  }
+  // LOOK-AHEAD (gap fill): the detector's faces on the frames after this one, searched on
+  // demand and kept until the frame has gone by. Index 0 is the next frame.
+  struct AheadDet { bool done = false; bool ok = false; std::vector<Face> faces; };
+  std::deque<AheadDet> aheadCache;
+  std::function<bool(int, ffcv::Image&)> aheadProvider;
+  int aheadDepth = 0;
+  int gapFilled = 0;
   // The sequence state of faces[fi] on this frame (any options), or null.
   SeqFace* seqFaceAny(const Face& f, size_t fi) {
     if (!seq.on || fi >= seq.faces.size()) return nullptr;
@@ -1213,7 +1244,9 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   double t0 = 0;
 
   auto& tr = p_->track;
-  if (p_->seq.resetPending.exchange(false)) p_->seq.reset();
+  // (A boxes-only question -- the UI's, or the look-ahead's from inside this function --
+  // leaves a pending reset for the next real frame: it must not clear the list under it.)
+  if (!boxesOnly && p_->seq.resetPending.exchange(false)) { p_->seq.reset(); p_->aheadCache.clear(); }
   const int trackPeriod =
       p_->trackPeriodOverride >= 0 ? p_->trackPeriodOverride : ffTrackPeriod();
   // ⚠ boxesOnly never tracks: reconstructing the box from the PREVIOUS frame is
@@ -1526,7 +1559,109 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   // below must then find a confident face there of about the same size, or it is dropped.
   std::vector<char> recovered(boxes.size(), 0);
   std::vector<float> recoverSpan(boxes.size(), 0.f);
-  if (!useTrack && cfg.lowScoreRecovery && p_->seq.on && !noTrack && !boxesOnly) {
+  std::vector<int> recoverSeq(boxes.size(), -1);   // which sequence face a held box stands for
+  std::vector<char> anchored(boxes.size(), 0);     // held between two real sightings (gap fill)
+  // A HELD face: a candidate for a face of the sequence that this frame's detection did not
+  // produce. Either placed between its last sighting and its next one in the look-ahead
+  // frames (anchored: gap fill), or -- unless `anchoredOnly` -- where it was heading (the
+  // older lost-face recovery, which the landmarker must then confirm). Appends to
+  // boxes/keep; returns whether a candidate was added.
+  const bool canGap = cfg.lowScoreRecovery && p_->seq.on && !noTrack && !boxesOnly;
+  std::vector<char> heldFor(canGap ? p_->seq.faces.size() : 0, 0);
+  auto addHeld = [&](size_t si, bool anchoredOnly) -> bool {
+      const auto& sf = p_->seq.faces[si];
+      if (heldFor[si] || !sf.haveLm || sf.miss > 4) return false;
+      std::array<float, 4> bb{};
+      std::array<float, 10> l{};
+      bool anchor = false;
+      // GAP FILL: the look-ahead frames say whether this face is found again within the
+      // next few frames. If it is, it has not left -- the detector lost it (a blink of
+      // blur, a hand, a quick turn) -- and it is placed between where it was and where it
+      // is found again.
+      if (cfg.gapFill && p_->aheadProvider && p_->aheadDepth > 0) {
+        const float sw = sf.box[2] - sf.box[0], sh = sf.box[3] - sf.box[1];
+        const float size = std::max(sw, sh);
+        const float scx = (sf.box[0] + sf.box[2]) * 0.5f, scy = (sf.box[1] + sf.box[3]) * 0.5f;
+        for (int j = 0; j < p_->aheadDepth && !anchor; ++j) {
+          if ((int)p_->aheadCache.size() <= j) p_->aheadCache.resize((size_t)j + 1);
+          Impl::AheadDet& ad = p_->aheadCache[(size_t)j];
+          if (!ad.done) {
+            ad.done = true;
+            ffcv::Image fut;
+            // The look-ahead frame is analysed like a single picture (detector, landmarker,
+            // recogniser) and touches no tracking or sequence state: its points are then
+            // the same kind as this frame's, and its face can be recognised.
+            if (p_->aheadProvider(j, fut) && fut.w == frame.w && fut.h == frame.h) {
+              const int fd = framesDone, fc = facesDone;   // not a frame of the run
+              ad.faces = analyse(fut, false, true);
+              framesDone = fd; facesDone = fc;
+              ad.ok = true;
+            }
+          }
+          if (!ad.ok) break;   // past the end of the clip
+          const Face* best = nullptr; float bd = 1e9f;
+          for (const Face& a : ad.faces) {
+            const float aw = a.box[2] - a.box[0], ah = a.box[3] - a.box[1];
+            const float asz = std::max(aw, ah);
+            if (asz < 0.6f * size || asz > 1.67f * size) continue;
+            const float d = std::hypot((a.box[0] + a.box[2]) * 0.5f - scx,
+                                       (a.box[1] + a.box[3]) * 0.5f - scy);
+            // Further away the longer the gap (a moving head), never across the frame.
+            if (d > (0.5f + 0.2f * (float)(j + 1 + sf.miss)) * size) continue;
+            // Not a face that is being found right now (the other person). This face's own
+            // weak sighting on this frame -- the one the landmarker refused -- does not count.
+            bool other = false;
+            for (int idx : keep)
+              if (!recovered[(size_t)idx] &&
+                  ffmotion::iou(boxes[(size_t)idx].data(), a.box) >= 0.4f &&
+                  ffmotion::iou(boxes[(size_t)idx].data(), sf.box) < 0.2f) { other = true; break; }
+            if (other) continue;
+            // The same person, when this face's identity is known.
+            if (sf.haveId) {
+              double c = 0;
+              for (int i = 0; i < 512; ++i) c += (double)a.embeddingNorm[i] * sf.idEmb[i];
+              if (c < 0.25) continue;
+            }
+            if (d < bd) { bd = d; best = &a; }
+          }
+          if (!best) continue;
+          // Between the last sighting (miss + 1 frames ago) and the next (j + 1 ahead).
+          const float back = (float)(sf.miss + 1), fwd = (float)(j + 1);
+          const float t = back / (back + fwd);
+          for (int k = 0; k < 4; ++k) bb[(size_t)k] = sf.box[k] + (best->box[k] - sf.box[k]) * t;
+          for (int k = 0; k < 10; ++k) l[(size_t)k] = sf.lm5[k] + (best->landmark5_68[k] - sf.lm5[k]) * t;
+          anchor = true;
+          if (getenv("FF_DUMP_GAP"))
+            fprintf(stdout, "gap: seq %zu miss %d found %d ahead, t %.2f\n", si, sf.miss, j + 1, t);
+        }
+        if (!anchor && getenv("FF_DUMP_GAP"))
+          fprintf(stdout, "gap: seq %zu miss %d not found within %d\n", si, sf.miss, p_->aheadDepth);
+      }
+      if (!anchor) {
+        // Held forward only: up to 12 frames on the landmarker's word alone, longer while
+        // the face keeps being recognised as the same person (see idMatched below).
+        if (anchoredOnly) return false;
+        if (sf.recRun >= (sf.idOk ? 60 : 12)) return false;
+        // The head keeps drifting for a frame or two, then is assumed to stay where it was
+        // (a hand across the mouth hides a face that is not going anywhere).
+        const float steps = std::min(2.f, (float)(sf.miss + 1));
+        const float dx = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[0] * steps));
+        const float dy = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[1] * steps));
+        bb = {sf.box[0] + dx, sf.box[1] + dy, sf.box[2] + dx, sf.box[3] + dy};
+        for (int k = 0; k < 5; ++k) { l[2 * k] = sf.lm5[2 * k] + dx; l[2 * k + 1] = sf.lm5[2 * k + 1] + dy; }
+      }
+      boxes.push_back(bb);
+      scores.push_back(0.f);
+      lms.push_back(l);
+      recovered.push_back(1);
+      recoverSpan.push_back(sf.span);
+      recoverSeq.push_back((int)si);
+      anchored.push_back(anchor ? 1 : 0);
+      keep.push_back((int)boxes.size() - 1);
+      heldFor[si] = 1;
+      return true;
+  };
+  if (canGap && !useTrack) {
     // Each detection accounts for ONE face of the previous frame (the one it overlaps most),
     // so two faces cheek to cheek, one of them missed, do not hide each other.
     std::vector<char> claimed(p_->seq.faces.size(), 0);
@@ -1539,27 +1674,20 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
       }
       if (best >= 0) claimed[(size_t)best] = 1;
     }
-    for (size_t si = 0; si < p_->seq.faces.size(); ++si) {
-      const auto& sf = p_->seq.faces[si];
-      if (claimed[si] || !sf.haveLm || sf.miss > 4 || sf.recRun >= 12) continue;
-      // The head keeps drifting for a frame or two, then is assumed to stay where it was
-      // (a hand across the mouth hides a face that is not going anywhere).
-      const float steps = std::min(2.f, (float)(sf.miss + 1));
-      const float dx = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[0] * steps));
-      const float dy = std::max(-0.5f * sf.span, std::min(0.5f * sf.span, sf.vel[1] * steps));
-      std::array<float, 4> bb = {sf.box[0] + dx, sf.box[1] + dy, sf.box[2] + dx, sf.box[3] + dy};
-      std::array<float, 10> l{};
-      for (int k = 0; k < 5; ++k) { l[2 * k] = sf.lm5[2 * k] + dx; l[2 * k + 1] = sf.lm5[2 * k + 1] + dy; }
-      boxes.push_back(bb);
-      scores.push_back(0.f);
-      lms.push_back(l);
-      recovered.push_back(1);
-      recoverSpan.push_back(sf.span);
-      keep.push_back((int)boxes.size() - 1);
-    }
+    for (size_t si = 0; si < p_->seq.faces.size(); ++si)
+      if (!claimed[si]) addHeld(si, false);
   }
+  // A detection the landmarker then refuses (a blurred or covered face scores under the
+  // not-a-face limit) leaves its face of the sequence without a face on this frame: that
+  // face gets the gap fill too, when the look-ahead finds it again.
+  auto gapInstead = [&](const float* box) {
+    if (!canGap) return;
+    for (size_t si = 0; si < p_->seq.faces.size(); ++si)
+      if (!heldFor[si] && ffmotion::iou(box, p_->seq.faces[si].box) >= 0.2f) { addHeld(si, true); return; }
+  };
 
-  for (int idx : keep) {
+  for (size_t ki = 0; ki < keep.size(); ++ki) {
+    const int idx = keep[ki];
     Face f{};
     std::memcpy(f.landmark5, lms[idx].data(), sizeof(f.landmark5));
     for (int i = 0; i < 4; ++i) f.box[i] = boxes[idx][i];
@@ -1651,7 +1779,14 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
     // the swap then pastes a face there. The landmarker cannot find a face on those: on a
     // test clip they scored 0.07-0.11, while real faces -- turned, blurred, looking down --
     // never went below 0.36 (median 0.93). Under 0.2 the box is dropped.
-    if (cfg.rejectFalseFaces && score68 < 0.2f) continue;
+    const bool isHeld = (size_t)idx < recovered.size() && recovered[(size_t)idx];
+    const bool isAnchored = isHeld && anchored[(size_t)idx];
+    // (A face held between two real sightings is kept even when the landmarker cannot see
+    // it on this frame -- it is covered or blurred, not absent.)
+    if (cfg.rejectFalseFaces && score68 < 0.2f && !isAnchored) {
+      if (!isHeld) gapInstead(f.box);
+      continue;
+    }
     // SECOND LANDMARKER on a face 2DFAN4 is unsure of: the more confident one is used
     // (FaceFusion's "many" landmarker). The NOT-A-FACE test above stays on 2DFAN4's score.
     const float fanScore = score68;
@@ -1675,13 +1810,34 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
         msLandmark += nowMs() - tp;
       }
     }
-    if ((size_t)idx < recovered.size() && recovered[(size_t)idx]) {
+    // interp: this face's points are the look-ahead's in-between ones, not the landmarker's.
+    // needId: a half-confident held face is only kept when it is recognised as the person.
+    bool interp = false, needId = false;
+    if (isHeld) {
       // A recovered face must be a confident face of about the size it had.
       float l5[10];
       ffcv::toLandmark5(f.landmark68, l5);
-      const float span = std::hypot(l5[2] - l5[0], l5[3] - l5[1]);
+      float span = std::hypot(l5[2] - l5[0], l5[3] - l5[1]);
       const float want = recoverSpan[(size_t)idx];
-      if (fanScore < 0.6f || !(span > 0.6f * want && span < 1.6f * want)) continue;
+      const bool spanOk = span > 0.6f * want && span < 1.6f * want;
+      if (isAnchored) {
+        // Between two sightings the landmarker only has to agree roughly with where the
+        // face must be; when it cannot see the face at all, the in-between points are used.
+        float ex = 0, ey = 0;
+        for (int k = 0; k < 5; ++k) { ex += l5[2 * k] - f.landmark5[2 * k]; ey += l5[2 * k + 1] - f.landmark5[2 * k + 1]; }
+        const bool nearby = std::hypot(ex / 5.f, ey / 5.f) < 0.5f * want;
+        if (getenv("FF_DUMP_GAP"))
+          fprintf(stdout, "gap: held face fan %.2f spanOk %d nearby %d\n", fanScore, (int)spanOk, (int)nearby);
+        if (!(fanScore >= 0.3f && spanOk && nearby)) {
+          interp = true;
+          std::memcpy(l5, f.landmark5, sizeof(l5));
+          span = std::hypot(l5[2] - l5[0], l5[3] - l5[1]);
+        }
+        ++p_->gapFilled;
+      } else {
+        if (fanScore < 0.4f || !spanOk) continue;
+        if (fanScore < 0.6f) needId = true;
+      }
       // ...and not a face already found (the landmarker can lock on the neighbour).
       const float cx = (l5[0] + l5[2] + l5[4] + l5[6] + l5[8]) / 5.f;
       const float cy = (l5[1] + l5[3] + l5[5] + l5[7] + l5[9]) / 5.f;
@@ -1695,7 +1851,16 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
       f.detScore = score68;
       f.recovered = true;
     }
-    if (score68 > cfg.landmarkerScore)
+    if (interp) {
+      // The five in-between points; the 68 are last frame's, moved with them (the mouth and
+      // eyes keep the shape they had a moment ago).
+      std::memcpy(f.landmark5_68, f.landmark5, sizeof(f.landmark5_68));
+      const Impl::SeqFace& sf = p_->seq.faces[(size_t)recoverSeq[(size_t)idx]];
+      if (sf.haveLm68) {
+        const ffcv::Affine mv = ffcv::umeyama(sf.lm5, f.landmark5, 5);
+        ffcv::transformPoints(sf.lm68, 68, mv, f.landmark68);
+      }
+    } else if (score68 > cfg.landmarkerScore)
       ffcv::toLandmark5(f.landmark68, f.landmark5_68);
     else
       std::memcpy(f.landmark5_68, f.landmark5, sizeof(f.landmark5_68));
@@ -1757,6 +1922,27 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
     nrm = std::sqrt(nrm);
     for (int i = 0; i < 512; ++i) f.embeddingNorm[i] = (float)(f.embedding[i] / nrm);
 
+    // A HELD face against the person it stands for. A face nobody can see (covered, or
+    // only its in-between points known) is not recognisable, so it takes the identity it
+    // had -- the selection and the per-person assignment then keep treating it as the
+    // same person. A half-confident one must be recognised, or it is dropped: that is what
+    // keeps the back of a head or a hand from being held as a face.
+    if (isHeld && recoverSeq[(size_t)idx] >= 0) {
+      const Impl::SeqFace& sf = p_->seq.faces[(size_t)recoverSeq[(size_t)idx]];
+      float cosId = -1.f;
+      if (sf.haveId) {
+        double c = 0;
+        for (int i = 0; i < 512; ++i) c += (double)f.embeddingNorm[i] * sf.idEmb[i];
+        cosId = (float)c;
+      }
+      if (needId && cosId < 0.3f) continue;
+      f.idMatched = cosId >= 0.3f;
+      if (sf.haveId && (interp || (isAnchored && cosId < 0.3f))) {
+        std::memcpy(f.embeddingNorm, sf.idEmb, sizeof(f.embeddingNorm));
+        for (int i = 0; i < 512; ++i) f.embedding[i] = (float)(sf.idEmb[i] * nrm);
+      }
+    }
+
     faces.push_back(f);
     ++facesDone;
   }
@@ -1765,7 +1951,14 @@ std::vector<Face> Pipeline::analyse(const ffcv::Image& frame, bool boxesOnly,
   // never touch the sequence state.
   if (!boxesOnly) {
     for (Face& f : faces)
-      f.poseFade = ffmotion::poseFade(f.landmark5_68, cfg.poseFadeStart + p_->sideBonus(f, cfg));
+      // With the SIDE GUARD on, a turned face keeps its swap on the visible half and the far
+      // side as filmed, so the swapper's invented far eye never shows -- the reason the
+      // fade started as early as 55-60 degrees. The fade then begins 25 degrees later
+      // (80-85: beyond a full profile), instead of leaving side views half original.
+      // Measured on a two-person clip: 202 of 305 faces were partly faded before.
+      f.poseFade = ffmotion::poseFade(
+          f.landmark5_68, cfg.poseFadeStart + p_->sideBonus(f, cfg) +
+                              ((cfg.sideGuard && cfg.poseFadeStart < 90.f) ? 25.f : 0.f));
     if (p_->seq.on && !noTrack) p_->temporal(faces);
   }
 
@@ -1854,6 +2047,25 @@ void Pipeline::setSequence(bool on) {
   p_->seq.resetPending = true;
 }
 
+void Pipeline::setAhead(std::function<bool(int, ffcv::Image&)> provider, int depth) {
+  if (!p_) return;
+  // The cache of searched look-ahead frames is NOT cleared here: the provider is set and
+  // unset around every frame, the cache lives as long as the frames it describes.
+  p_->aheadProvider = std::move(provider);
+  p_->aheadDepth = p_->aheadProvider ? std::max(0, std::min(12, depth)) : 0;
+}
+
+void Pipeline::advanceAhead() {
+  if (p_ && !p_->aheadCache.empty()) p_->aheadCache.pop_front();
+}
+
+int Pipeline::gapFilledFaces() {
+  if (!p_) return 0;
+  const int n = p_->gapFilled;
+  p_->gapFilled = 0;
+  return n;
+}
+
 bool Pipeline::hasOcclusionModel() const { return p_ && p_->n.occ != nullptr; }
 bool Pipeline::hasParserModel() const { return p_ && p_->n.parse != nullptr; }
 
@@ -1907,6 +2119,19 @@ void Pipeline::Impl::temporal(std::vector<Face>& faces) {
     // of a big turn or tilt the swap eases out instead of flicking on and off.
     sf.fade += (f.poseFade < sf.fade ? 0.2f : 0.35f) * (f.poseFade - sf.fade);
     sf.recRun = f.recovered ? sf.recRun + 1 : 0;
+    sf.idOk = f.recovered && f.idMatched;
+    // Identity while clearly seen (a real detection the landmarker is sure of).
+    if (!f.recovered && f.lmScore >= 0.8f) {
+      const float a = sf.haveId ? 0.9f : 0.f;
+      double n2 = 0;
+      for (int i = 0; i < 512; ++i) {
+        sf.idEmb[i] = sf.idEmb[i] * a + f.embeddingNorm[i] * (1.f - a);
+        n2 += (double)sf.idEmb[i] * sf.idEmb[i];
+      }
+      const float inv = n2 > 1e-12 ? (float)(1.0 / std::sqrt(n2)) : 0.f;
+      for (int i = 0; i < 512; ++i) sf.idEmb[i] *= inv;
+      sf.haveId = inv > 0.f;
+    }
     std::memcpy(sf.lm5, f.landmark5_68, sizeof(sf.lm5));
     sf.span = std::hypot(f.landmark5_68[2] - f.landmark5_68[0], f.landmark5_68[3] - f.landmark5_68[1]);
     sf.vel[0] = f.vel[0]; sf.vel[1] = f.vel[1];
@@ -3470,6 +3695,107 @@ float cheekY(const float* l68, F Y) {
 }
 }  // namespace
 
+namespace {
+// ---- TEXTURE MATCH helpers. "Fine detail" = luma minus its 5x5 mean; its level is the mean
+// size of that difference under the mask, large values (edges) capped so that it measures
+// texture and grain rather than the outline of an eye.
+void highPass5(const std::vector<float>& Y, int W, int H, std::vector<float>& out) {
+  std::vector<float> tmp((size_t)W * H);
+  for (int y = 0; y < H; ++y) {
+    const float* r = Y.data() + (size_t)y * W;
+    float* t = tmp.data() + (size_t)y * W;
+    for (int x = 0; x < W; ++x) {
+      const int x0 = std::max(0, x - 2), x1 = std::min(W - 1, x + 2);
+      float s = 0; for (int k = x0; k <= x1; ++k) s += r[k];
+      t[x] = s / (float)(x1 - x0 + 1);
+    }
+  }
+  out.resize((size_t)W * H);
+  for (int y = 0; y < H; ++y) {
+    const int y0 = std::max(0, y - 2), y1 = std::min(H - 1, y + 2);
+    for (int x = 0; x < W; ++x) {
+      float s = 0; for (int k = y0; k <= y1; ++k) s += tmp[(size_t)k * W + x];
+      out[(size_t)y * W + x] = Y[(size_t)y * W + x] - s / (float)(y1 - y0 + 1);
+    }
+  }
+}
+float detailLevel(const std::vector<float>& hp, const ffcv::MatF& mask) {
+  double s = 0; size_t n = 0;
+  for (size_t i = 0; i < hp.size(); ++i)
+    if (mask.data[i] > 0.5f) { s += std::fmin(std::fabs(hp[i]), 16.f); ++n; }
+  return n > 100 ? (float)(s / (double)n) : 0.f;
+}
+}  // namespace
+
+// The original face's fine detail, at `outCS` (the crop is averaged down when it is larger).
+static void makeTexRefInto(const ffcv::Image& orig, const ffcv::MatF& maskAtOut, int outCS,
+                           float& dT, std::vector<int8_t>& grain) {
+  const int f = std::max(1, orig.w / outCS);
+  std::vector<float> Y((size_t)outCS * outCS);
+  for (int y = 0; y < outCS; ++y)
+    for (int x = 0; x < outCS; ++x) {
+      float s = 0;
+      for (int dy = 0; dy < f; ++dy) {
+        const uint8_t* r = orig.row(y * f + dy) + (size_t)(x * f) * 3;
+        for (int dx = 0; dx < f; ++dx, r += 3) s += 0.114f * r[0] + 0.587f * r[1] + 0.299f * r[2];
+      }
+      Y[(size_t)y * outCS + x] = s / (float)(f * f);
+    }
+  std::vector<float> hp;
+  highPass5(Y, outCS, outCS, hp);
+  dT = detailLevel(hp, maskAtOut);
+  // The grain: the same difference with everything larger than 2.5x the level clipped --
+  // noise passes, the edges of the ORIGINAL person's features do not.
+  const float lim = std::fmin(60.f, std::fmax(1.f, 2.5f * dT));
+  grain.resize(hp.size());
+  for (size_t i = 0; i < hp.size(); ++i)
+    grain[i] = (int8_t)std::lround(std::fmax(-lim, std::fmin(lim, hp[i])) * 2.f);
+}
+
+// Brings `out` (the finished face, crop space, BGR 0..255) to the original's fine detail.
+static void applyTexture(float dT, const std::vector<int8_t>& grain, ffcv::MatF& out,
+                         const ffcv::MatF& mask, float amount, float* ema) {
+  const int W = out.w, H = out.h;
+  if (dT <= 0.f || grain.size() != (size_t)W * H) return;
+  std::vector<float> Y((size_t)W * H), hp;
+  for (size_t i = 0, n = (size_t)W * H; i < n; ++i) {
+    const float* o = out.data.data() + i * 3;
+    Y[i] = 0.114f * o[0] + 0.587f * o[1] + 0.299f * o[2];
+  }
+  highPass5(Y, W, H, hp);
+  const float dO = detailLevel(hp, mask);
+  if (dO <= 0.f) return;
+  float r = dO / std::fmax(dT, 0.4f);
+  if (ema) { *ema = *ema > 0.f ? *ema * 0.8f + r * 0.2f : r; r = *ema; }
+  if (r > 1.25f) {
+    // SHARPER than the footage: soften towards it (its own 5x5 mean), at most half way.
+    const float k = std::fmin(0.5f, 1.f - 1.25f / r) * amount;
+    for (size_t i = 0, n = (size_t)W * H; i < n; ++i) {
+      if (mask.data[i] <= 0.f) continue;
+      float* o = out.data.data() + i * 3;
+      const float d = hp[i] * k;          // the detail removed, the same on B, G and R
+      o[0] -= d; o[1] -= d; o[2] -= d;
+    }
+  } else if (r < 0.9f) {
+    // SMOOTHER than the footage: the footage's own grain on top, as much as is missing
+    // (detail adds like noise: in quadrature).
+    double s = 0; size_t n2 = 0;
+    for (size_t i = 0; i < grain.size(); ++i)
+      if (mask.data[i] > 0.5f) { s += std::fabs((float)grain[i]) * 0.5f; ++n2; }
+    const float dG = n2 ? (float)(s / (double)n2) : 0.f;
+    const float want = 0.95f * dT;
+    if (dG > 0.2f && want > dO) {
+      const float g = std::fmin(1.f, std::sqrt(want * want - dO * dO) / dG) * amount;
+      for (size_t i = 0, n = (size_t)W * H; i < n; ++i) {
+        if (mask.data[i] <= 0.f) continue;
+        float* o = out.data.data() + i * 3;
+        const float d = (float)grain[i] * 0.5f * g;
+        for (int c = 0; c < 3; ++c) o[c] = std::fmin(255.f, std::fmax(0.f, o[c] + d));
+      }
+    }
+  }
+}
+
 Pipeline::Impl::LipColor Pipeline::Impl::lipColorOf(const ffcv::Image& img, const float* l68) {
   LipColor lc;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
@@ -3501,6 +3827,7 @@ Pipeline::Impl::LipColor Pipeline::Impl::lipColorOf(const ffcv::Image& img, cons
 
 bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
   p_->maskCache.clear();
+  p_->texRefs.clear();
   p_->havePreSwap = false;   // set again below only when THIS frame is swapped
   if (!p_->cfg.occlusionMask && !p_->n.occTried) setMaskState(0, "switched off");
   if (!p_->cfg.regionMask && !p_->cfg.keepMouth && !p_->cfg.keepLips && !p_->cfg.hairOnlyParser &&
@@ -4227,6 +4554,30 @@ bool Pipeline::swapAll(ffcv::Image& frame, const std::vector<Face>& faces) {
       msGeom += nowMs() - t0;
     }
 
+    // TEXTURE MATCH: the face takes the footage's fine detail. Here when this paste is the
+    // last word on the face; when the 256 enhancer follows, it is left for that pass (the
+    // enhancer changes the texture again), which finds the reference by this face's points.
+    if (cfg.textureMatch > 0.f) {
+      t0 = nowMs();
+      const bool enh512 = cfg.enhancer512 && p_->enh512Net() != nullptr;
+      const bool enhLater = cfg.faceEnhance && p_->n.enh && !enh512 && CS0 % kEnhSize == 0;
+      Impl::TexRef tr;
+      std::memcpy(tr.lm5, f.landmark5_68, sizeof(tr.lm5));
+      if (enhLater) {
+        tr.cs = CS0;
+        if (CS == CS0) makeTexRefInto(crop, *useMask, CS0, tr.dT, tr.grain);
+        else makeTexRefInto(crop, ffmotion::resizeMask(*useMask, CS0, CS0), CS0, tr.dT, tr.grain);
+        p_->texRefs.push_back(std::move(tr));
+      } else if (!(cfg.faceEnhance && enh512)) {
+        tr.cs = CS;
+        makeTexRefInto(crop, *useMask, CS, tr.dT, tr.grain);
+        Impl::SeqFace* tq = p_->seqFaceAny(f, fi);
+        applyTexture(tr.dT, tr.grain, outCrop, *useMask, std::fmin(1.f, cfg.textureMatch),
+                     tq ? &tq->texR : nullptr);
+      }
+      msGeom += nowMs() - t0;
+    }
+
     // FF_DUMP_MASK (host tests only): the final swap mask as a 6x6 grid of means over the
     // crop, plus the pose fade -- what was swapped, and what went back to the original.
     if (getenv("FF_DUMP_MASK")) {
@@ -4392,6 +4743,14 @@ bool Pipeline::enhance(ffcv::Image& frame, const std::vector<Face>& faces) {
     }
 
     t0 = nowMs();
+    // TEXTURE MATCH after the enhancer: this is the last word on the face.
+    if (cfg.textureMatch > 0.f)
+      if (const Impl::TexRef* tr = p_->texRefFor(f))
+        if (tr->cs == CS) {
+          Impl::SeqFace* tq = p_->seqFaceAny(f, fi);
+          applyTexture(tr->dT, tr->grain, outF, *useMask, std::fmin(1.f, cfg.textureMatch),
+                       tq ? &tq->texR : nullptr);
+        }
     ffcv::pasteBack(frame, outF, *useMask, am);
     msGeom += nowMs() - t0;
   }

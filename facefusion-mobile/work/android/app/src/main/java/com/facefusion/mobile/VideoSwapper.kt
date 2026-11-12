@@ -14,6 +14,15 @@ import java.nio.ByteOrder
 private const val PIPE_DEPTH = 2
 
 /**
+ * LOOK-AHEAD for gap fill: how many decoded frames the swap keeps in hand beyond the one it
+ * is working on. A face the detector loses and finds again within this many frames is
+ * carried through the gap (NativePipe.processFrameAhead). The frames wait here instead of
+ * in the decode queue (which shrinks to one), so the run holds four frames more than
+ * before -- about 25 MB at 1080p, 11 MB at 720p. "Lowest memory" turns it off.
+ */
+private const val LOOK_AHEAD = 5
+
+/**
  * Decode -> swap -> encode, with the original audio copied through and an optional trim.
  *
  * Deliberately ByteBuffer-based rather than Surface/GL: a Surface pipeline never exposes the
@@ -455,6 +464,7 @@ class VideoSwapper(
         // every earlier one -- they accumulate for the life of the pipeline.
         NativePipe.resetStats()
         runCatching { NativePipe.swapReport() }   // clears the previous run's counts
+        runCatching { NativePipe.gapFilledFaces() }
         var cancelled = false
         var lastThermal = -1
 
@@ -475,8 +485,10 @@ class VideoSwapper(
         class Frame(val bgr: ByteArray, val ptsUs: Long)
         // "Lowest memory": one frame in flight between the stages instead of two.
         val pipeDepth = if (lowMemory) 1 else PIPE_DEPTH
+        val lookAhead = if (lowMemory) 0 else LOOK_AHEAD
         val end = Frame(ByteArray(0), Long.MIN_VALUE)
-        val decodedQ = java.util.concurrent.ArrayBlockingQueue<Frame>(pipeDepth)
+        val decodedQ = java.util.concurrent.ArrayBlockingQueue<Frame>(
+            if (lookAhead > 0) 1 else pipeDepth)
         val encodeQ = java.util.concurrent.ArrayBlockingQueue<Frame>(pipeDepth)
         val stop = java.util.concurrent.atomic.AtomicBoolean(false)
         val decodeError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
@@ -619,6 +631,8 @@ class VideoSwapper(
                 error("video stages did not stop in time")
         }
 
+        val pending = java.util.ArrayDeque<Frame>()
+        var decodeEnded = false
         try {
             while (true) {
                 // HEAT: rest between frames once the phone is warm (see Thermal), so a long
@@ -649,15 +663,28 @@ class VideoSwapper(
                     break
                 }
                 encodeError.get()?.let { throw it }
-                val f = decodedQ.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
-                if (f === end) {
-                    decodeError.get()?.let { throw it }
-                    break
+                // LOOK-AHEAD: keep `lookAhead` frames in hand beyond the one being swapped.
+                // Same frames, same order; a frame is only swapped a few frames later than
+                // it was decoded, and the end of the clip drains what is in hand.
+                while (!decodeEnded && pending.size < lookAhead + 1) {
+                    val n = decodedQ.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS) ?: break
+                    if (n === end) {
+                        decodeError.get()?.let { throw it }
+                        decodeEnded = true
+                    } else pending.addLast(n)
                 }
+                if (pending.isEmpty()) { if (decodeEnded) break else continue }
+                if (!decodeEnded && pending.size < lookAhead + 1) continue
+                val f = pending.removeFirst()
                 // `swapped` is the OUTPUT frame index: it already accounts for decimation.
                 val workT0 = System.nanoTime()
-                val faces = NativePipe.processFrameAt(f.bgr, outW, outH,
-                                                      if (syncing) swapped else -1)
+                val faces =
+                    if (lookAhead > 0)
+                        NativePipe.processFrameAhead(f.bgr, outW, outH,
+                            if (syncing) swapped else -1,
+                            Array(pending.size) { pending.elementAt(it).bgr })
+                    else NativePipe.processFrameAt(f.bgr, outW, outH,
+                                                   if (syncing) swapped else -1)
                 boost.report(System.nanoTime() - workT0)
                 if (faces < 0) error("native: ${NativePipe.lastError()}")
                 if (faces == 0) {
@@ -775,6 +802,10 @@ class VideoSwapper(
                         swapped, elapsedMs / 1000.0))
         closeNoFaceRun(lastFramePtsUs)
         runCatching { NativePipe.swapReport() }.getOrNull()?.takeIf { it.isNotEmpty() }?.let(onLog)
+        runCatching { NativePipe.gapFilledFaces() }.getOrNull()?.takeIf { it > 0 }?.let {
+            onLog("gap fill: a face the detector lost was carried through $it frame" +
+                  (if (it == 1) "" else "s") + " (found again within $LOOK_AHEAD frames)")
+        }
         if (noFaceFrames > 0)
             onLog("no face found in $noFaceFrames of $swapped frames (left as filmed): " +
                   noFaceRuns.joinToString(", "))

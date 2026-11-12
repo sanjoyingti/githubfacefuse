@@ -267,6 +267,11 @@ data class SwapOptions(
     // 1.0.59: the lips and the open mouth keep the video's own shape, so they are always in
     // line with the filmed mouth; with Lipstick match they take the source's lip colour.
     val lipsFollow: Boolean = false,
+    // 1.0.62. Texture match: the finished face takes the video's own grain and sharpness
+    // (no model, no extra pass). Gap fill: a face the detector loses for a few frames and
+    // finds again is carried through them. Both on: they cost next to nothing.
+    val textureMatch: Boolean = true,
+    val gapFill: Boolean = true,
 ) {
     /**
      * The most realistic settings this app has, applied in one tap ("Most realistic").
@@ -494,6 +499,8 @@ data class SwapOptions(
             .putBoolean(K_BEST_OUT, bestQualityOutput)
             .putBoolean(K_SIDE_GUARD, sideGuard)
             .putBoolean(K_LIPS_FOLLOW, lipsFollow)
+            .putBoolean(K_TEXTURE, textureMatch)
+            .putBoolean(K_GAP_FILL, gapFill)
             .apply()
     }
 
@@ -556,6 +563,8 @@ data class SwapOptions(
         private const val K_BEST_OUT = "best_quality_output"
         private const val K_SIDE_GUARD = "side_guard"
         private const val K_LIPS_FOLLOW = "lips_follow"
+        private const val K_TEXTURE = "texture_match"
+        private const val K_GAP_FILL = "gap_fill"
 
         /**
          * face_editor's sliders, in the order the native side reads them
@@ -663,6 +672,8 @@ data class SwapOptions(
                 bestQualityOutput = p.getBoolean(K_BEST_OUT, d.bestQualityOutput),
                 sideGuard = p.getBoolean(K_SIDE_GUARD, d.sideGuard),
                 lipsFollow = p.getBoolean(K_LIPS_FOLLOW, d.lipsFollow),
+                textureMatch = p.getBoolean(K_TEXTURE, d.textureMatch),
+                gapFill = p.getBoolean(K_GAP_FILL, d.gapFill),
             )
         }
     }

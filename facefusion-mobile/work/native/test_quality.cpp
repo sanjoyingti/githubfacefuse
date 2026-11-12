@@ -138,6 +138,7 @@ int main(int argc, char** argv) {
   ffpipe::Config cfg;
   bool sequence = false;
   int track = 0;
+  int ahead = 0;   // look-ahead frames for gap fill (the app's video run uses 4)
   std::vector<std::string> frames, extras;
   bool detectOnly = false;
   bool likeness = false;
@@ -177,6 +178,9 @@ int main(int argc, char** argv) {
     else if (a == "--likeness") likeness = v() == "1";
     else if (a == "--side-guard") cfg.sideGuard = v() == "1";
     else if (a == "--lips-follow") cfg.lipsFollow = v() == "1";
+    else if (a == "--ahead") ahead = atoi(v().c_str());
+    else if (a == "--texture") cfg.textureMatch = (float)atof(v().c_str());
+    else if (a == "--gapfill") cfg.gapFill = v() == "1";
     else if (a == "--double") cfg.doubleSwap = v() == "1";
     else if (a == "--autoweight") cfg.autoWeight = v() == "1";
     else if (a == "--hair-only") cfg.hairOnlyParser = v() == "1";
@@ -264,6 +268,13 @@ int main(int argc, char** argv) {
     ffcv::Image fr;
     if (!readPpm(fp, fr)) { fprintf(stderr, "cannot read %s\n", fp.c_str()); return 4; }
     pipe.resetStats();
+    if (ahead > 0) {
+      const size_t cur = (size_t)(&fp - &frames[0]);
+      pipe.setAhead([&frames, cur](int j, ffcv::Image& out) {
+        const size_t k = cur + 1 + (size_t)j;
+        return k < frames.size() && readPpm(frames[k], out);
+      }, ahead);
+    }
     if (!dumpEmb.empty()) {
       // Faces for the people-grouping test: what scanFaces sees (no tracking), one record
       // per face: frame, box, detector score, yaw, pitch, then the embedding as int8.
@@ -319,6 +330,7 @@ int main(int argc, char** argv) {
         for (int k = 48; k < 68; ++k) printf(" %.0f,%.0f", f.landmark68[2 * k], f.landmark68[2 * k + 1]);
         printf("\n");
       }
+    if (ahead > 0) pipe.advanceAhead();
     printf("frame %d faces %zu", idx - 1, faces.size());
     for (const auto& f : faces) {
       ffmotion::Pose p = ffmotion::estimatePose(f.landmark5_68);
@@ -327,6 +339,11 @@ int main(int argc, char** argv) {
              f.lmScore, eL, eR, f.detScore, p.yaw, p.pitch, f.poseFade, f.box[0], f.box[1], f.box[2], f.box[3],
              (f.landmark5_68[6] + f.landmark5_68[8]) * 0.5f,
              (f.landmark5_68[7] + f.landmark5_68[9]) * 0.5f);
+      if (getenv("FF_DUMP_LM5")) {
+        printf(" {rec %d lm5", f.recovered ? 1 : 0);
+        for (int k = 0; k < 10; ++k) printf(" %.1f", f.landmark5_68[k]);
+        printf("}");
+      }
     }
     printf("  mask %.0f ms  swap %.0f ms  occ=%d parse=%d\n", pipe.msGeomMask, pipe.msSwap,
            pipe.hasOcclusionModel(), pipe.hasParserModel());
@@ -334,6 +351,7 @@ int main(int argc, char** argv) {
   if (assignTest) printf("ASSIGN two-faces-same-person frames %d; person1 clear faces %d missed %d; others clear %d wrongly swapped %d\n", assignBad2, assignA, assignMissA, assignOther, assignWrongB);
   if (likeN) printf("LIKENESS mean %.3f over %d faces\n", likeSum / likeN, likeN);
   { std::string r = pipe.swapReport(true); if (!r.empty()) printf("REPORT %s\n", r.c_str()); }
+  printf("GAP FILL carried %d faces\n", pipe.gapFilledFaces());
   printf("SECOND DETECTOR added %d faces; SECOND LANDMARKER used for %d faces\n", pipe.secondDetectorHits(), pipe.turnedLandmarkerUsed());
   printf("%s\n", ffpipe::Pipeline::maskStatus().c_str());
   {

@@ -355,6 +355,12 @@ fun RealismCard(
              style = MaterialTheme.typography.bodySmall, fontSize = 11.sp,
              color = MaterialTheme.colorScheme.onSurfaceVariant,
              modifier = Modifier.padding(top = 4.dp))
+        OptionSwitch(stringResource(R.string.opt_texture_match), opts.textureMatch,
+                     { onChange(opts.copy(textureMatch = it)) },
+                     hint = stringResource(R.string.opt_texture_match_hint))
+        OptionSwitch(stringResource(R.string.opt_gap_fill), opts.gapFill,
+                     { onChange(opts.copy(gapFill = it)) },
+                     hint = stringResource(R.string.opt_gap_fill_hint))
         OptionSwitch(stringResource(R.string.opt_auto_weight), opts.autoWeight,
                      { onChange(opts.copy(autoWeight = it)) },
                      hint = stringResource(R.string.opt_auto_weight_hint))

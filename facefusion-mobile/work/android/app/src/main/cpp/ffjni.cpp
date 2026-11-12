@@ -161,6 +161,8 @@ struct Quality {
   float lightMatch = 0.f, lipstick = 0.f;
   bool sideGuard = true;
   bool lipsFollow = false;
+  // 1.0.62
+  bool textureMatch = true, gapFill = true;
 };
 Quality g_quality;
 // Whether the caller is feeding consecutive frames (setSequence). Re-applied at initEx so a
@@ -199,6 +201,8 @@ void applyQuality(ffpipe::Config& cfg) {
   cfg.lipstickMatch = g_quality.lipstick;
   cfg.sideGuard = g_quality.sideGuard;
   cfg.lipsFollow = g_quality.lipsFollow;
+  cfg.textureMatch = g_quality.textureMatch ? 1.f : 0.f;
+  cfg.gapFill = g_quality.gapFill;
   cfg.poseFadeStart = g_quality.poseFadeStart;
   cfg.motionSmooth = g_quality.smooth;
   cfg.lowScoreRecovery = g_quality.recover;
@@ -865,6 +869,21 @@ JNIEXPORT void JNICALL
 Java_com_facefusion_mobile_NativePipe_setSideGuard(JNIEnv*, jclass, jboolean on) {
   FF_PIPE_LOCK;
   g_quality.sideGuard = on == JNI_TRUE;
+  if (g_pipe) {
+    ffpipe::Config c = g_pipe->config();
+    applyQuality(c);
+    g_pipe->updateConfig(c);
+  }
+}
+
+// 1.0.62: texture match (the footage's grain and sharpness on the finished face) and gap
+// fill (a face the detector loses for a few frames is carried through them).
+JNIEXPORT void JNICALL
+Java_com_facefusion_mobile_NativePipe_setRealism6(JNIEnv*, jclass, jboolean texture,
+                                                 jboolean gapFill) {
+  FF_PIPE_LOCK;
+  g_quality.textureMatch = texture == JNI_TRUE;
+  g_quality.gapFill = gapFill == JNI_TRUE;
   if (g_pipe) {
     ffpipe::Config c = g_pipe->config();
     applyQuality(c);
@@ -1550,6 +1569,56 @@ static jint processFrameAtImpl(JNIEnv* env, jbyteArray jBgr, jint w, jint h,
     env->SetByteArrayRegion(jBgr, 0, (jsize)img.data.size(), (const jbyte*)img.data.data());
   }
   return (jint)faces.size();
+}
+
+/**
+ * processFrameAt with LOOK-AHEAD: `jAhead` holds the next frames of the run (index 0 is
+ * the frame after this one), all w x h BGR. They are only read when a face has been lost
+ * on this frame (gap fill, see Pipeline::setAhead), so a frame where every face is found
+ * costs nothing extra. Must be called for EVERY frame of the run, in order: it also moves
+ * the look-ahead on by one frame.
+ */
+JNIEXPORT jint JNICALL
+Java_com_facefusion_mobile_NativePipe_processFrameAhead(JNIEnv* env, jclass, jbyteArray jBgr,
+                                                        jint w, jint h, jint frameIndex,
+                                                        jobjectArray jAhead) {
+  FF_PIPE_LOCK;
+  if (!g_pipe) { g_err = "pipeline not initialised"; return -1; }
+  const jsize n = jAhead ? env->GetArrayLength(jAhead) : 0;
+  const jsize want = (jsize)((size_t)w * (size_t)h * 3);
+  if (n > 0)
+    g_pipe->setAhead([env, jAhead, n, w, h, want](int j, ffcv::Image& out) -> bool {
+      if (j < 0 || j >= n) return false;
+      jbyteArray a = (jbyteArray)env->GetObjectArrayElement(jAhead, j);
+      if (!a) return false;
+      bool ok = false;
+      if (env->GetArrayLength(a) == want) {
+        out = ffcv::Image(w, h, 3);
+        env->GetByteArrayRegion(a, 0, want, (jbyte*)out.data.data());
+        ok = true;
+      }
+      env->DeleteLocalRef(a);
+      return ok;
+    }, (int)n);
+  jint r = -1;
+  try {
+    r = processFrameAtImpl(env, jBgr, w, h, frameIndex);
+  } catch (const std::exception& e) {
+    g_err = std::string("native error: ") + e.what();
+  } catch (...) {
+    g_err = "native error";
+  }
+  // The provider holds this call's JNIEnv and array: never keep it past the call.
+  g_pipe->setAhead(nullptr, 0);
+  g_pipe->advanceAhead();
+  return r;
+}
+
+/** Faces carried through frames the detector missed since the last call (for the log). */
+JNIEXPORT jint JNICALL
+Java_com_facefusion_mobile_NativePipe_gapFilledFaces(JNIEnv*, jclass) {
+  FF_PIPE_LOCK;
+  return g_pipe ? (jint)g_pipe->gapFilledFaces() : 0;
 }
 
 /**
